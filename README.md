@@ -19,10 +19,21 @@ You build and run a max-security prison from the top-down view… then real play
 
 Prison Architect lets you fight AI escapes alone — Lockdown turns it into a multiplayer game of *"nobody escapes MY prison."*
 
+## 🎮 Play the current build (Phase 1 MVP)
+
+1. Download **[Lockdown.rbxlx](Lockdown.rbxlx)** (open the file on GitHub → "Download raw file")
+2. Double-click it — it opens in Roblox Studio
+3. Press ▶ Play, walk to your prison, step on the green pad
+
+First time? Follow the click-by-click guide: **[SETUP.md](SETUP.md)** — no coding anywhere, promise.
+
 ## 📂 What's in this repo
 
 | Doc | What it's for |
 |---|---|
+| [SETUP.md](SETUP.md) | Click-by-click: install Studio, open the game, publish, play with friends |
+| `Lockdown.rbxlx` | **The game itself** — the built place file, updated every phase |
+| `src/` + `default.project.json` | All the game code (Luau, organized by [Rojo](https://rojo.space)) — Claude's department |
 | [docs/WHO_DOES_WHAT.md](docs/WHO_DOES_WHAT.md) | How we build this together — Claude writes all the code, you playtest & publish |
 | [docs/GAME_PLAN.md](docs/GAME_PLAN.md) | The full design doc — core loop, systems, Roblox-only features, themes, monetization |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | The build roadmap (Phases 0–7) as a tickable checklist — the working to-do list |

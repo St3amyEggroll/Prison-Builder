@@ -1,0 +1,38 @@
+---
+# Minimal Roblox global definitions for selene (the offline Luau linter).
+# Just enough for this project; "any: true" = allow any use of the global.
+base: lua51
+name: roblox-min
+lua_versions:
+  - luau
+globals:
+  game:
+    any: true
+  workspace:
+    any: true
+  script:
+    any: true
+  task:
+    any: true
+  warn:
+    any: true
+  Instance:
+    any: true
+  Enum:
+    any: true
+  Vector2:
+    any: true
+  Vector3:
+    any: true
+  Color3:
+    any: true
+  CFrame:
+    any: true
+  UDim:
+    any: true
+  UDim2:
+    any: true
+  Random:
+    any: true
+  TweenInfo:
+    any: true

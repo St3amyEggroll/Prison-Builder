@@ -10,21 +10,23 @@
 
 Get comfy in Roblox Studio before building the real thing.
 
+> **Superseded for the coding parts** — Claude writes all the code (see [WHO_DOES_WHAT.md](WHO_DOES_WHAT.md)), so the tutorials and hello-world are optional. Your only must-do items are installing Studio and making the group. The click-by-click guide is [SETUP.md](../SETUP.md).
+
 - [ ] Install Roblox Studio; make a Roblox group to publish the game under
-- [ ] Do 1–2 beginner tutorials (parts, scripts, GUI) on the official Creator docs
-- [ ] Learn how saving works (DataStores). Look up ProfileService or DataStore2
-- [ ] Build a throwaway "hello world": a button that gives +$10 on screen. Prove the basics work
+- [ ] ~~Do 1–2 beginner tutorials~~ *(optional now — Claude codes)*
+- [x] Learn how saving works (DataStores) — *handled: Claude built cloud saving in Phase 1*
+- [x] Build a throwaway "hello world" — *skipped ahead: Phase 1 is the real thing*
 
 ## Phase 1 — MVP: the core money loop 🚀 *shippable*
 
 Smallest fun thing: buy cell → inmate → earns cash → buy another. Nothing else yet.
 
-- [ ] One plot with a baseplate and a "buy" button for a cell
-- [ ] Buying a cell spawns an inmate that pays cash on a timer
-- [ ] Build the inmate as a **lightweight custom rig** (not a default character) — you'll have loads of them, so dodge the lag from the very start
-- [ ] Cash counter UI that goes up; buttons to buy more cells
-- [ ] Save/load the player's cash and cells
-- [ ] Playtest with a friend. Is expanding fun on its own? Fix until "yes"
+- [x] One plot with a baseplate and a "buy" button for a cell — *6 walled plots, walk-on buy pad (works on phones too)*
+- [x] Buying a cell spawns an inmate that pays cash on a timer — *$2/sec each, 22 cells with rising prices*
+- [x] Build the inmate as a **lightweight custom rig** (not a default character) — *6 anchored parts, no Humanoid, client-side idle sway, distance culling*
+- [x] Cash counter UI that goes up; buttons to buy more cells — *smooth count-up HUD, floating +$ popups, income/sec line*
+- [x] Save/load the player's cash and cells — *cloud DataStore save on leave + 60s autosave + shutdown save*
+- [ ] Playtest with a friend. Is expanding fun on its own? Fix until "yes" — **← your move!**
 
 ## Phase 2 — Needs & staff foundation
 

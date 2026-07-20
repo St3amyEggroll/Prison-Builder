@@ -45,3 +45,9 @@ globals:
       - type: number
       - type: number
       - type: number
+  table.find:
+    args:
+      - type: table
+      - type: any
+      - type: number
+        required: false

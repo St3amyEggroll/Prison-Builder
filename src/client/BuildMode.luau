@@ -1,19 +1,21 @@
--- BuildMode: the whole building experience on the player's screen.
+-- BuildMode: the whole building experience on the player's screen,
+-- arranged like Prison Architect's bottom toolbar:
 --
---   🔨 Build (or B)      ->  top-down build camera + the build panel
---   🧱 Objects tab       ->  pick an asset, ghost preview snaps to your
---                            grid; click/tap places. 1-square assets
---                            (walls, fences, floors) support PRESS-DRAG
---                            to build a whole line at once, auto-rotated
---                            along the drag.
---   🎨 Rooms tab         ->  pick the room type FIRST, then drag a
---                            rectangle to paint it (eraser included).
---   ↻ / R                ->  rotate the ghost 90°
---   🗑️                   ->  demolish mode
+--   [🧱 Walls & Doors] [🟫 Flooring] [🎨 Rooms] [🪑 Objects] [🗑️ Bulldoze] [🏗️] [👮] [💡]
 --
--- The menu builds itself from ReplicatedStorage/Buildables (live 3D
--- thumbnails included), so new assets appear automatically. The server
--- re-validates everything — this file is just the friendly face.
+-- Category buttons open an item panel above the bar (3D thumbnails for
+-- assets, color chips for rooms). Grayed-out buttons are future phases,
+-- just like PA's locked tabs. Assets pick their button with a "Category"
+-- attribute — a name the toolbar has never seen becomes a new button
+-- automatically.
+--
+--   🔨 Build (or B)  ->  build mode: top-down camera + the toolbar
+--   Objects           ->  ghost preview snaps to the grid; click places;
+--                         1-square assets PRESS-DRAG into whole lines
+--   Rooms             ->  pick the type FIRST, then drag a rectangle
+--   ↻ / R             ->  rotate 90°   ·   🗑️ Bulldoze -> click to demolish
+--
+-- The server re-validates everything — this file is just the friendly face.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -46,21 +48,48 @@ function BuildMode.start()
 	local buildablesFolder = ReplicatedStorage:WaitForChild(Config.BuildablesFolderName)
 	local catalogByName, catalogOrdered = AssetCatalog.load(buildablesFolder)
 
+	-- Which categories exist? Start from the standard order, then append
+	-- any new names the map-maker invented on their own assets.
+	local categories = {}
+	local categorySeen = {}
+	for _, name in ipairs(Config.AssetCategories) do
+		categorySeen[name] = false
+	end
+	for _, asset in ipairs(catalogOrdered) do
+		categorySeen[asset.category] = true
+	end
+	for _, name in ipairs(Config.AssetCategories) do
+		if categorySeen[name] then
+			table.insert(categories, name)
+		end
+	end
+	local extras = {}
+	for name, present in pairs(categorySeen) do
+		if present and not table.find(Config.AssetCategories, name) then
+			table.insert(extras, name)
+		end
+	end
+	table.sort(extras)
+	for _, name in ipairs(extras) do
+		table.insert(categories, name)
+	end
+
 	-- My zone (the server drops a "BuildZone" pointer into the Player).
-	local zone = nil -- { part, info, placed }
-	local occupied = {} -- local mirror of taken squares, for preview colors
+	local zone = nil
+	local occupied = {}
 
 	-- State.
 	local mode = "off" -- "off" | "objects" | "rooms" | "delete"
-	local selected = nil -- asset being placed (objects tab)
-	local selectedRoom = nil -- room type id being painted (rooms tab; 0 = eraser)
+	local currentCategory = categories[1] or "Objects"
+	local selected = nil
+	local selectedRoom = nil
 	local rot = 0
 	local ghost, ghostHighlight = nil, nil
 	local ghostCell, ghostValid = nil, false
 	local lastPointer = Vector2.new(0, 0)
-	local pressing = false -- a press that started on the world, not UI
+	local pressing = false
 	local pressStartCell = nil
-	local stretchBox = nil -- the drag preview (lines & room rects)
+	local stretchBox = nil
 	local hoverHighlight = nil
 	local zoneBox = nil
 
@@ -193,7 +222,6 @@ function BuildMode.start()
 		end
 	end
 
-	-- The translucent slab shown while dragging a line or a room rect.
 	local function showStretchBox(x1, z1, x2, z2, color)
 		if not stretchBox then
 			stretchBox = Instance.new("Part")
@@ -233,7 +261,7 @@ function BuildMode.start()
 		ghostHighlight.OutlineColor = color
 	end
 
-	-- UI -----------------------------------------------------------------
+	-- UI: build toggle, PA-style bottom toolbar, item panel ----------------
 
 	local gui = Instance.new("ScreenGui")
 	gui.Name = "LockdownBuild"
@@ -254,9 +282,76 @@ function BuildMode.start()
 	toggleCorner.Parent = toggle
 	toggle.Parent = gui
 
+	-- The bottom bar (visible whenever build mode is open).
+	local toolbar = Instance.new("Frame")
+	toolbar.AnchorPoint = Vector2.new(0.5, 1)
+	toolbar.Position = UDim2.new(0.5, 0, 1, -10)
+	toolbar.AutomaticSize = Enum.AutomaticSize.X
+	toolbar.Size = UDim2.new(0, 0, 0, 66)
+	toolbar.BackgroundColor3 = PANEL_BG
+	toolbar.BackgroundTransparency = 0.15
+	toolbar.Visible = false
+	local toolbarCorner = Instance.new("UICorner")
+	toolbarCorner.CornerRadius = UDim.new(0, 12)
+	toolbarCorner.Parent = toolbar
+	local toolbarPad = Instance.new("UIPadding")
+	toolbarPad.PaddingLeft = UDim.new(0, 6)
+	toolbarPad.PaddingRight = UDim.new(0, 6)
+	toolbarPad.PaddingTop = UDim.new(0, 6)
+	toolbarPad.PaddingBottom = UDim.new(0, 6)
+	toolbarPad.Parent = toolbar
+	local toolbarLayout = Instance.new("UIListLayout")
+	toolbarLayout.FillDirection = Enum.FillDirection.Horizontal
+	toolbarLayout.Padding = UDim.new(0, 6)
+	toolbarLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	toolbarLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	toolbarLayout.Parent = toolbar
+	toolbar.Parent = gui
+
+	-- A PA-style toolbar button: big icon on top, small label under it.
+	local toolbarOrder = 0
+	local function toolbarButton(icon, name, enabled)
+		toolbarOrder += 1
+		local button = Instance.new("TextButton")
+		button.LayoutOrder = toolbarOrder
+		button.Size = UDim2.new(0, 74, 0, 54)
+		button.BackgroundColor3 = BUTTON_BG
+		button.BackgroundTransparency = enabled and 0 or 0.5
+		button.Text = ""
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(0, 10)
+		corner.Parent = button
+
+		local iconLabel = Instance.new("TextLabel")
+		iconLabel.Size = UDim2.new(1, 0, 0, 30)
+		iconLabel.Position = UDim2.new(0, 0, 0, 2)
+		iconLabel.BackgroundTransparency = 1
+		iconLabel.Font = Enum.Font.GothamBold
+		iconLabel.TextSize = 22
+		iconLabel.TextTransparency = enabled and 0 or 0.5
+		iconLabel.Text = icon
+		iconLabel.Parent = button
+
+		local nameLabel = Instance.new("TextLabel")
+		nameLabel.AnchorPoint = Vector2.new(0, 1)
+		nameLabel.Position = UDim2.new(0, 2, 1, -3)
+		nameLabel.Size = UDim2.new(1, -4, 0, 16)
+		nameLabel.BackgroundTransparency = 1
+		nameLabel.Font = Enum.Font.GothamBold
+		nameLabel.TextScaled = true
+		nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+		nameLabel.TextTransparency = enabled and 0 or 0.55
+		nameLabel.Text = name
+		nameLabel.Parent = button
+
+		button.Parent = toolbar
+		return button
+	end
+
+	-- The item panel that opens above the toolbar.
 	local panel = Instance.new("Frame")
 	panel.AnchorPoint = Vector2.new(0.5, 1)
-	panel.Position = UDim2.new(0.5, 0, 1, -70)
+	panel.Position = UDim2.new(0.5, 0, 1, -82)
 	panel.Size = UDim2.new(0.94, 0, 0, 150)
 	panel.BackgroundColor3 = PANEL_BG
 	panel.BackgroundTransparency = 0.15
@@ -268,41 +363,33 @@ function BuildMode.start()
 
 	local status = Instance.new("TextLabel")
 	status.AnchorPoint = Vector2.new(0.5, 1)
-	status.Position = UDim2.new(0.5, 0, 0, -6)
-	status.Size = UDim2.new(1, 0, 0, 22)
+	status.Position = UDim2.new(0.5, 0, 1, -238)
+	status.Size = UDim2.new(0.9, 0, 0, 24)
 	status.BackgroundTransparency = 1
 	status.Font = Enum.Font.GothamBold
 	status.TextScaled = true
 	status.TextColor3 = Color3.fromRGB(255, 255, 255)
 	status.TextStrokeTransparency = 0.4
 	status.Text = ""
-	status.Parent = panel
+	status.Parent = gui
 
-	local function sideButton(text, x, y)
-		local button = Instance.new("TextButton")
-		button.Size = UDim2.new(0, 44, 0, 44)
-		button.Position = UDim2.new(0, x, 0, y)
-		button.BackgroundColor3 = BUTTON_BG
-		button.Font = Enum.Font.GothamBold
-		button.TextSize = 20
-		button.TextColor3 = Color3.fromRGB(255, 255, 255)
-		button.Text = text
-		local corner = Instance.new("UICorner")
-		corner.CornerRadius = UDim.new(0, 10)
-		corner.Parent = button
-		button.Parent = panel
-		return button
-	end
-
-	local objectsTab = sideButton("🧱", 8, 8)
-	local roomsTab = sideButton("🎨", 8, 60)
-	local rotateButton = sideButton("↻", 58, 8)
-	local deleteButton = sideButton("🗑️", 58, 60)
+	local rotateButton = Instance.new("TextButton")
+	rotateButton.Size = UDim2.new(0, 44, 0, 44)
+	rotateButton.Position = UDim2.new(0, 8, 0.5, -22)
+	rotateButton.BackgroundColor3 = BUTTON_BG
+	rotateButton.Font = Enum.Font.GothamBold
+	rotateButton.TextSize = 22
+	rotateButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+	rotateButton.Text = "↻"
+	local rotateCorner = Instance.new("UICorner")
+	rotateCorner.CornerRadius = UDim.new(0, 10)
+	rotateCorner.Parent = rotateButton
+	rotateButton.Parent = panel
 
 	local function makeList()
 		local list = Instance.new("ScrollingFrame")
-		list.Position = UDim2.new(0, 110, 0, 8)
-		list.Size = UDim2.new(1, -118, 1, -16)
+		list.Position = UDim2.new(0, 60, 0, 8)
+		list.Size = UDim2.new(1, -68, 1, -16)
 		list.BackgroundTransparency = 1
 		list.ScrollBarThickness = 6
 		list.ScrollingDirection = Enum.ScrollingDirection.X
@@ -334,12 +421,16 @@ function BuildMode.start()
 		end)
 	end
 
-	-- Objects tab tiles (3D thumbnails).
-	local assetButtons = {}
+	-- Item tiles ----------------------------------------------------------
+
+	local assetButtons = {} -- asset name -> { button, category }
 	local roomButtons = {}
+	local categoryButtons = {} -- category name -> toolbar button
+	local roomsButton, deleteButton
+
 	local function refreshSelectionLook()
-		for name, button in pairs(assetButtons) do
-			button.BackgroundColor3 = (selected and selected.name == name) and SELECTED_BG or BUTTON_BG
+		for name, entry in pairs(assetButtons) do
+			entry.button.BackgroundColor3 = (selected and selected.name == name) and SELECTED_BG or BUTTON_BG
 		end
 		for id, button in pairs(roomButtons) do
 			local stroke = button:FindFirstChildOfClass("UIStroke")
@@ -347,9 +438,17 @@ function BuildMode.start()
 				stroke.Transparency = (selectedRoom == id) and 0 or 1
 			end
 		end
-		objectsTab.BackgroundColor3 = (mode == "objects") and SELECTED_BG or BUTTON_BG
-		roomsTab.BackgroundColor3 = (mode == "rooms") and SELECTED_BG or BUTTON_BG
+		for name, button in pairs(categoryButtons) do
+			button.BackgroundColor3 = (mode == "objects" and currentCategory == name) and SELECTED_BG or BUTTON_BG
+		end
+		roomsButton.BackgroundColor3 = (mode == "rooms") and SELECTED_BG or BUTTON_BG
 		deleteButton.BackgroundColor3 = (mode == "delete") and Color3.fromRGB(140, 50, 50) or BUTTON_BG
+	end
+
+	local function refreshTileVisibility()
+		for _, entry in pairs(assetButtons) do
+			entry.button.Visible = entry.category == currentCategory
+		end
 	end
 
 	local selectAsset, selectRoom
@@ -396,10 +495,9 @@ function BuildMode.start()
 			selectAsset(asset)
 		end)
 		tile.Parent = objectsList
-		assetButtons[asset.name] = tile
+		assetButtons[asset.name] = { button = tile, category = asset.category }
 	end
 
-	-- Rooms tab tiles (color chips). Index 0 = the eraser.
 	local function roomTile(id, name, color, order)
 		local tile = Instance.new("TextButton")
 		tile.LayoutOrder = order
@@ -441,8 +539,6 @@ function BuildMode.start()
 	end
 	roomTile(0, "✖ Eraser", Color3.fromRGB(80, 80, 85), #Config.RoomTypes + 1)
 
-	gui.Parent = playerGui
-
 	-- Mode switching -----------------------------------------------------
 
 	local function clearHover()
@@ -464,11 +560,14 @@ function BuildMode.start()
 		if mode ~= "rooms" then
 			selectedRoom = nil
 		end
-		panel.Visible = mode ~= "off"
-		objectsList.Visible = mode ~= "rooms"
+		toolbar.Visible = mode ~= "off"
+		panel.Visible = mode == "objects" or mode == "rooms"
+		objectsList.Visible = mode == "objects"
 		roomsList.Visible = mode == "rooms"
+		rotateButton.Visible = mode == "objects"
 		toggle.Text = mode == "off" and "🔨 Build" or "✖ Close"
 		refreshSelectionLook()
+		refreshTileVisibility()
 
 		if zoneBox then
 			zoneBox:Destroy()
@@ -491,19 +590,21 @@ function BuildMode.start()
 		end
 	end
 
+	local function selectCategory(name)
+		currentCategory = name
+		setMode("objects")
+	end
+
 	selectAsset = function(asset)
 		if not zone then
 			flashStatus("No build plot assigned yet!", RED)
 			return
 		end
-		mode = "objects"
 		selected = asset
 		selectedRoom = nil
 		clearHover()
 		hideStretchBox()
 		makeGhost(asset)
-		objectsList.Visible = true
-		roomsList.Visible = false
 		refreshSelectionLook()
 		if asset.cellsW == 1 and asset.cellsD == 1 then
 			flashStatus("Placing " .. asset.name .. " — drag for a whole line! (R rotates)", GREEN)
@@ -517,7 +618,6 @@ function BuildMode.start()
 			flashStatus("No build plot assigned yet!", RED)
 			return
 		end
-		mode = "rooms"
 		selectedRoom = id
 		selected = nil
 		destroyGhost()
@@ -530,26 +630,52 @@ function BuildMode.start()
 		end
 	end
 
-	toggle.Activated:Connect(function()
-		setMode(mode == "off" and "objects" or "off")
-	end)
-	objectsTab.Activated:Connect(function()
-		setMode("objects")
-	end)
-	roomsTab.Activated:Connect(function()
+	-- Build the toolbar buttons (PA order: build stuff, rooms, objects,
+	-- bulldoze, then the locked future tabs).
+	for _, name in ipairs(categories) do
+		if name ~= "Objects" then
+			local button = toolbarButton(Config.CategoryIcons[name] or "📦", name, true)
+			button.Activated:Connect(function()
+				selectCategory(name)
+			end)
+			categoryButtons[name] = button
+		end
+	end
+	roomsButton = toolbarButton("🎨", "Rooms", true)
+	roomsButton.Activated:Connect(function()
 		setMode("rooms")
 	end)
-	rotateButton.Activated:Connect(function()
-		rot = (rot + 1) % 4
-	end)
+	if table.find(categories, "Objects") then
+		local button = toolbarButton(Config.CategoryIcons.Objects, "Objects", true)
+		button.Activated:Connect(function()
+			selectCategory("Objects")
+		end)
+		categoryButtons.Objects = button
+	end
+	deleteButton = toolbarButton("🗑️", "Bulldoze", true)
 	deleteButton.Activated:Connect(function()
 		if mode == "delete" then
 			setMode("objects")
 		else
 			setMode("delete")
-			flashStatus("Demolish mode: tap an object to remove it", RED)
+			flashStatus("Bulldoze: tap an object to remove it", RED)
 		end
 	end)
+	for _, future in ipairs(Config.ComingSoon) do
+		local button = toolbarButton(future.icon, future.name, false)
+		button.Activated:Connect(function()
+			flashStatus(future.note, Color3.fromRGB(220, 220, 220))
+		end)
+	end
+
+	toggle.Activated:Connect(function()
+		setMode(mode == "off" and "objects" or "off")
+	end)
+	rotateButton.Activated:Connect(function()
+		rot = (rot + 1) % 4
+	end)
+
+	gui.Parent = playerGui
 
 	-- Requests -----------------------------------------------------------
 
@@ -651,7 +777,6 @@ function BuildMode.start()
 		if input.UserInputType == Enum.UserInputType.MouseButton1
 			or input.UserInputType == Enum.UserInputType.Touch
 		then
-			-- A second finger means a camera gesture — cancel the press.
 			if input.UserInputType == Enum.UserInputType.Touch and BuildCamera.touchCount() > 1 then
 				pressing = false
 				hideStretchBox()
@@ -713,7 +838,6 @@ function BuildMode.start()
 	RunService.RenderStepped:Connect(function()
 		if mode == "objects" then
 			updateGhost()
-			-- Dragging a 1-square asset: show the line preview instead.
 			if pressing and pressStartCell and selected
 				and selected.cellsW == 1 and selected.cellsD == 1 and ghostCell
 			then

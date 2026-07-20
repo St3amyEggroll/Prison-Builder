@@ -33,6 +33,8 @@ Get comfy in Roblox Studio before building the real thing.
 - [x] **Drag-to-build lines** for 1-square assets (walls, fences, floors), auto-rotated along the drag
 - [x] **Intake system**: 🚔 menu with accept + auto-intake; arrivals wait handcuffed at the plot's front, get escorted to an empty cell, then wander their home (inmate life!)
 - [x] PA-style sizing: walls fill a whole grid square; doors are fence-thin at full width
+- [x] **PA-style bottom toolbar**: Walls & Doors / Flooring / Rooms / Objects / Bulldoze, with grayed-out Foundations, Staff & Utilities tabs for future phases; assets sort by a `Category` attribute (new names auto-create buttons)
+- [x] **Room names written on the floor** (flood-filled regions, flat PA-style text)
 - [ ] Owner: first version of the real map (`PlotZones` + SpawnLocation) — **← your move!**
 - [ ] Owner: first custom asset in `Buildables`
 - [ ] Playtest with a friend. Is building fun on its own? Fix until "yes"

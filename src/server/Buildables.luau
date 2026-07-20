@@ -41,18 +41,21 @@ local PLACEHOLDERS = {
 		-- A full grid square of solid wall, Prison Architect style — wall
 		-- runs tile with no gaps, corners just work.
 		name = "Wall",
+		category = "Walls & Doors",
 		build = function(model)
 			part({ Size = Vector3.new(4, 8, 4), CFrame = CFrame.new(0, 4, 0) }, model)
 		end,
 	},
 	{
 		name = "Floor Tile",
+		category = "Flooring",
 		build = function(model)
 			part({ Size = Vector3.new(4, 0.4, 4), CFrame = CFrame.new(0, 0.2, 0), Color = DARK }, model)
 		end,
 	},
 	{
 		name = "Fence",
+		category = "Walls & Doors",
 		build = function(model)
 			for i = 0, 4 do
 				part({
@@ -74,6 +77,7 @@ local PLACEHOLDERS = {
 		-- Same width and thinness as the Fence, so a door drops cleanly
 		-- into a fence run.
 		name = "Security Door",
+		category = "Walls & Doors",
 		build = function(model)
 			part({ Size = Vector3.new(0.4, 8, 0.4), CFrame = CFrame.new(-1.8, 4, 0) }, model)
 			part({ Size = Vector3.new(0.4, 8, 0.4), CFrame = CFrame.new(1.8, 4, 0) }, model)
@@ -88,6 +92,7 @@ local PLACEHOLDERS = {
 	},
 	{
 		name = "Prison Cell",
+		category = "Objects",
 		build = function(model)
 			part({ Size = Vector3.new(12, 0.4, 12), CFrame = CFrame.new(0, 0.2, 0), Color = DARK }, model)
 			part({ Size = Vector3.new(12, 7, 0.5), CFrame = CFrame.new(0, 3.5, 5.75) }, model)
@@ -126,6 +131,7 @@ local PLACEHOLDERS = {
 	},
 	{
 		name = "Guard Tower",
+		category = "Objects",
 		build = function(model)
 			for _, offset in ipairs({ { -3, -3 }, { 3, -3 }, { -3, 3 }, { 3, 3 } }) do
 				part({
@@ -167,6 +173,7 @@ function Buildables.init()
 				model.Name = def.name
 				def.build(model)
 				model:SetAttribute("Placeholder", true)
+				model:SetAttribute("Category", def.category)
 				model.Parent = folder
 			end
 		end

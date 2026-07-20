@@ -48,7 +48,7 @@ Opening build mode switches to the **top-down Prison Architect camera** (slightl
 | Pan the camera | **WASD** / arrows | two-finger drag |
 | Zoom | scroll wheel | pinch |
 | Rotate camera 45° | **Q** / **E** | — |
-| Tabs: objects / rooms | 🧱 / 🎨 buttons | same |
+| Pick a toolbar category (PA-style bottom bar) | 🧱 Walls & Doors · 🟫 Flooring · 🎨 Rooms · 🪑 Objects · 🗑️ Bulldoze | same |
 | Pick an asset or room type | click its tile | tap its tile |
 | Aim the ghost preview | move mouse | drag finger |
 | Place (when ghost is green) | click | tap |

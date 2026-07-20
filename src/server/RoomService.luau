@@ -63,6 +63,75 @@ local function renderRow(zone, z)
 	end
 end
 
+-- The room's name written flat on the floor, Prison Architect style.
+-- One label per contiguous region, found by flood fill.
+local function rebuildLabels(zone)
+	local state = zoneRooms[zone]
+	state.labelsFolder:ClearAllChildren()
+
+	local map = state.map
+	local seen = {}
+	for z = 0, zone.info.rows - 1 do
+		for x = 0, zone.info.cols - 1 do
+			local startKey = cellKey(x, z)
+			local t = map[startKey]
+			if t and not seen[startKey] then
+				-- Flood-fill the whole connected region of this type.
+				seen[startKey] = true
+				local stack = { { x, z } }
+				local minX, maxX, minZ, maxZ = x, x, z, z
+				while #stack > 0 do
+					local cell = table.remove(stack)
+					local cx, cz = cell[1], cell[2]
+					minX, maxX = math.min(minX, cx), math.max(maxX, cx)
+					minZ, maxZ = math.min(minZ, cz), math.max(maxZ, cz)
+					for _, step in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do
+						local nx, nz = cx + step[1], cz + step[2]
+						if nx >= 0 and nx < zone.info.cols and nz >= 0 and nz < zone.info.rows then
+							local nkey = cellKey(nx, nz)
+							if map[nkey] == t and not seen[nkey] then
+								seen[nkey] = true
+								table.insert(stack, { nx, nz })
+							end
+						end
+					end
+				end
+
+				local widthStuds = (maxX - minX + 1) * GRID
+				local depthStuds = (maxZ - minZ + 1) * GRID
+				local labelPart = Instance.new("Part")
+				labelPart.Name = "RoomLabel"
+				labelPart.Anchored = true
+				labelPart.CanCollide = false
+				labelPart.CanQuery = false
+				labelPart.CanTouch = false
+				labelPart.CastShadow = false
+				labelPart.Transparency = 1
+				labelPart.Size = Vector3.new(math.min(widthStuds, 28), 0.05, math.clamp(depthStuds, 3, 7))
+				labelPart.CFrame = zone.info.corner
+					* CFrame.new((minX + maxX + 1) / 2 * GRID, 0.22, (minZ + maxZ + 1) / 2 * GRID)
+
+				local surface = Instance.new("SurfaceGui")
+				surface.Face = Enum.NormalId.Top
+				surface.PixelsPerStud = 25
+				surface.Parent = labelPart
+				local text = Instance.new("TextLabel")
+				text.Size = UDim2.new(1, 0, 1, 0)
+				text.BackgroundTransparency = 1
+				text.Font = Enum.Font.GothamBlack
+				text.TextScaled = true
+				text.TextColor3 = Color3.fromRGB(255, 255, 255)
+				text.TextTransparency = 0.15
+				text.TextStrokeTransparency = 0.6
+				text.Text = string.upper(Config.RoomTypes[t].name)
+				text.Parent = surface
+
+				labelPart.Parent = state.labelsFolder
+			end
+		end
+	end
+end
+
 local function paintRect(zone, typeId, x1, z1, x2, z2)
 	local state = zoneRooms[zone]
 	for z = z1, z2 do
@@ -73,6 +142,7 @@ local function paintRect(zone, typeId, x1, z1, x2, z2)
 	for z = z1, z2 do
 		renderRow(zone, z)
 	end
+	rebuildLabels(zone)
 end
 
 -- Wiring (called by PlotService) ------------------------------------------
@@ -83,7 +153,10 @@ function RoomService.assignZone(player, zone, savedRooms)
 	local tilesFolder = Instance.new("Folder")
 	tilesFolder.Name = "RoomTiles"
 	tilesFolder.Parent = zone.part
-	zoneRooms[zone] = { map = {}, tilesFolder = tilesFolder, rowParts = {} }
+	local labelsFolder = Instance.new("Folder")
+	labelsFolder.Name = "RoomLabels"
+	labelsFolder.Parent = zone.part
+	zoneRooms[zone] = { map = {}, tilesFolder = tilesFolder, labelsFolder = labelsFolder, rowParts = {} }
 
 	-- Rebuild the paint from the save (stored as horizontal runs).
 	if type(savedRooms) == "table" then
@@ -106,6 +179,7 @@ function RoomService.assignZone(player, zone, savedRooms)
 		for z in pairs(touchedRows) do
 			renderRow(zone, z)
 		end
+		rebuildLabels(zone)
 	end
 end
 
@@ -114,6 +188,7 @@ function RoomService.releasePlayer(player)
 	playerZones[player] = nil
 	if zone and zoneRooms[zone] then
 		zoneRooms[zone].tilesFolder:Destroy()
+		zoneRooms[zone].labelsFolder:Destroy()
 		zoneRooms[zone] = nil
 	end
 end

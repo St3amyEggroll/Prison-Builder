@@ -6,7 +6,10 @@
 -- Drop ANY Model into ReplicatedStorage/Buildables and it shows up in
 -- the build menu automatically — that's the whole convention. Optional
 -- extras (set as Attributes on the Model):
---   SpawnsInmate (boolean): an inmate stands inside when it's placed.
+--   SpawnsInmate (boolean): marks the asset as housing for one prisoner.
+--   Category (string): which bottom-bar button it lives under
+--     ("Walls & Doors", "Flooring", "Objects", or any new name you like —
+--     unknown names become new toolbar buttons automatically).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -38,6 +41,10 @@ function AssetCatalog.load(folder)
 				cellsW = math.max(1, math.ceil((boxSize.X - 0.05) / Config.GridSize)),
 				cellsD = math.max(1, math.ceil((boxSize.Z - 0.05) / Config.GridSize)),
 				spawnsInmate = model:GetAttribute("SpawnsInmate") == true,
+				category = (function()
+					local raw = model:GetAttribute("Category")
+					return (type(raw) == "string" and raw ~= "") and raw or "Objects"
+				end)(),
 			}
 			byName[asset.name] = asset
 			table.insert(ordered, asset)

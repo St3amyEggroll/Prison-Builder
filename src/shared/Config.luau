@@ -25,6 +25,25 @@ Config.BuildablesFolderName = "Buildables"
 -- Set attribute "NoPlaceholders" = true on your Buildables folder once
 -- you have your own assets and want Claude's placeholder models gone.
 
+-- Toolbar categories -----------------------------------------------------
+
+-- The Prison Architect-style bottom bar. Assets declare theirs with a
+-- "Category" attribute (defaults to "Objects"); a category the code has
+-- never seen just becomes a new button automatically.
+Config.AssetCategories = { "Walls & Doors", "Flooring", "Objects" }
+Config.CategoryIcons = {
+	["Walls & Doors"] = "🧱",
+	["Flooring"] = "🟫",
+	["Objects"] = "🪑",
+}
+
+-- Shown grayed-out like PA's locked tabs — real features in later phases.
+Config.ComingSoon = {
+	{ icon = "🏗️", name = "Foundations", note = "Foundations — coming soon!" },
+	{ icon = "👮", name = "Staff", note = "Staff arrive in Phase 2!" },
+	{ icon = "💡", name = "Utilities", note = "Utilities — later, maybe. Pipes on a phone is a big ask 😄" },
+}
+
 -- Rooms ------------------------------------------------------------------
 
 -- Room types for the room painter (pick one, then drag a rectangle).

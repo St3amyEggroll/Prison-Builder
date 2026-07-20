@@ -40,6 +40,7 @@ That's the whole contract. No code edits, no naming lists, nothing to register.
 
 | Attribute | Type | What it does |
 |---|---|---|
+| `Category` | string | Which bottom-toolbar button the asset lives under: `Walls & Doors`, `Flooring`, or `Objects` (the default). **A brand-new name (e.g. `Security`) automatically becomes a new toolbar button** — organize however you like. |
 | `SpawnsInmate` | boolean, ticked | Marks the asset as **housing for one prisoner**. Prisoners arrive via the 🚔 Intake menu, wait handcuffed at your gate, and get escorted into an empty one of these. Put it on cell-type assets. |
 | `Price` | number | *Coming with the economy phase* — what it'll cost to place. Safe to add now. |
 

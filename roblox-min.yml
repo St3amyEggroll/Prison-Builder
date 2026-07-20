@@ -36,3 +36,12 @@ globals:
     any: true
   TweenInfo:
     any: true
+  RaycastParams:
+    any: true
+  typeof:
+    any: true
+  math.clamp:
+    args:
+      - type: number
+      - type: number
+      - type: number

@@ -9,50 +9,111 @@
       </Properties>
       <Item class="ModuleScript" referent="2">
         <Properties>
+          <string name="Name">AssetCatalog</string>
+          <string name="Source"><![CDATA[-- AssetCatalog: reads the Buildables folder and measures every Model in
+-- it, producing the list the build menu shows and the placement system
+-- uses. Server and client both run this over the same folder, so they
+-- always agree on sizes.
+--
+-- Drop ANY Model into ReplicatedStorage/Buildables and it shows up in
+-- the build menu automatically — that's the whole convention. Optional
+-- extras (set as Attributes on the Model):
+--   SpawnsInmate (boolean): an inmate stands inside when it's placed.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Config = require(ReplicatedStorage.Shared.Config)
+
+local AssetCatalog = {}
+
+-- Returns two views of the same data:
+--   byName: { ["Wall"] = asset, ... }        (for lookups)
+--   ordered: { asset, asset, ... }           (alphabetical, for the menu)
+-- Each asset: { name, model, size, pivotOffset, cellsW, cellsD, spawnsInmate }
+function AssetCatalog.load(folder)
+	local byName = {}
+	local ordered = {}
+
+	for _, model in ipairs(folder:GetChildren()) do
+		if model:IsA("Model") then
+			local boxCF, boxSize = model:GetBoundingBox()
+			-- The tiny 0.05 forgiveness means a model exactly GridSize
+			-- studs wide counts as 1 square, not accidentally 2.
+			local asset = {
+				name = model.Name,
+				model = model,
+				size = boxSize,
+				-- Where the model's pivot sits relative to its bounding
+				-- box — lets placement rest ANY model on the ground, no
+				-- matter how it was built or grouped.
+				pivotOffset = boxCF:ToObjectSpace(model:GetPivot()),
+				cellsW = math.max(1, math.ceil((boxSize.X - 0.05) / Config.GridSize)),
+				cellsD = math.max(1, math.ceil((boxSize.Z - 0.05) / Config.GridSize)),
+				spawnsInmate = model:GetAttribute("SpawnsInmate") == true,
+			}
+			byName[asset.name] = asset
+			table.insert(ordered, asset)
+		end
+	end
+
+	table.sort(ordered, function(a, b)
+		return a.name < b.name
+	end)
+
+	return byName, ordered
+end
+
+return AssetCatalog
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="3">
+        <Properties>
           <string name="Name">Config</string>
-          <string name="Source"><![CDATA[-- Config: every "game designer number" lives in this one file.
--- Want cells cheaper, inmates to pay more, or a bigger prison?
--- Change a number here and rebuild — no real code needs touching.
+          <string name="Source"><![CDATA[-- Config: every tunable number and naming convention in one place.
+--
+-- The two IMPORTANT CONVENTIONS the map-maker (you!) uses in Studio:
+--   * Workspace -> a folder named "PlotZones" holding flat, anchored
+--     Parts. Each Part is one player's build area. Your map, your rules —
+--     the code finds them wherever you put them.
+--   * ReplicatedStorage -> a folder named "Buildables" holding Models.
+--     Every Model in it automatically appears in the build menu.
+-- Full guide: docs/BUILDING_ASSETS.md
 
 local Config = {}
 
--- Money -----------------------------------------------------------------
+-- Building ---------------------------------------------------------------
 
--- Cash a brand-new warden starts with. It exactly covers the first cell,
--- so the very first thing a player does is buy something (instant win!).
-Config.StartingCash = 50
+-- Placement grid size in studs. Everything snaps to this. Assets bigger
+-- than one grid square automatically take up more squares.
+Config.GridSize = 4
 
--- Price of each cell, in order. Cell #1 costs 50, cell #2 costs 100, etc.
--- The list length also decides the max prison size for now (22 cells).
-Config.CellCosts = {
-	50, 100, 170, 280, 450, 700, 1100, 1700, 2600, 3900,
-	5800, 8500, 12000, 17000, 24000, 33000, 45000, 60000,
-	80000, 105000, 135000, 170000,
-}
-Config.MaxCells = #Config.CellCosts
+-- Rotation happens in steps of 90 degrees (0, 90, 180, 270).
 
--- Every PayoutInterval seconds, each inmate pays PayoutPerInmate cash.
--- 10 cash every 5 seconds = $2/sec per inmate. With the numbers above, a
--- new player affords cell #2 about 50 seconds in — under the golden-rule
--- 90 seconds for the first real upgrade.
-Config.PayoutInterval = 5
-Config.PayoutPerInmate = 10
+-- Folder names the code looks for (the conventions described up top).
+Config.ZonesFolderName = "PlotZones"
+Config.BuildablesFolderName = "Buildables"
 
--- World -----------------------------------------------------------------
-
--- How many player plots the server builds. Each visitor gets their own.
-Config.PlotCount = 6
+-- Set attribute "NoPlaceholders" = true on your Buildables folder once
+-- you have your own assets and want Claude's placeholder models gone.
 
 -- Saving ----------------------------------------------------------------
 
--- How often (seconds) progress is auto-saved, on top of saving when a
--- player leaves. Roblox limits DataStore writes, so keep this >= 60.
+-- How often (seconds) layouts auto-save, on top of saving when a player
+-- leaves. Roblox limits DataStore writes, so keep this >= 60.
 Config.AutosaveInterval = 60
+
+-- Fallback test map ------------------------------------------------------
+
+-- Only used when Workspace has no PlotZones folder yet: the code builds
+-- a simple flat test map so the game always runs. The moment your real
+-- map (with a PlotZones folder) exists, none of this happens.
+Config.FallbackZoneCount = 4
+Config.FallbackZoneSize = 128
 
 -- Flavor ----------------------------------------------------------------
 
--- Inmate names, assigned by cell number (cell #1 always holds Sneaky
--- Pete). Silly on purpose — this is a cozy prison.
+-- Inmate names for assets that spawn an inmate (SpawnsInmate attribute).
 Config.InmateNames = {
 	"Sneaky Pete", "Tunnel Tim", "Fingers McGee", "Slippery Sam",
 	"Crowbar Carl", "Ladder Larry", "Muddy Marv", "Wall-Eye Wally",
@@ -66,7 +127,7 @@ return Config
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="3">
+      <Item class="ModuleScript" referent="4">
         <Properties>
           <string name="Name">Format</string>
           <string name="Source"><![CDATA[-- Format: tiny helpers for turning numbers into friendly text,
@@ -96,94 +157,320 @@ return Format
 ]]></string>
         </Properties>
       </Item>
-    </Item>
-  </Item>
-  <Item class="ServerScriptService" referent="4">
-    <Properties>
-      <string name="Name">ServerScriptService</string>
-    </Properties>
-    <Item class="Script" referent="5">
-      <Properties>
-        <string name="Name">Server</string>
-        <token name="RunContext">0</token>
-        <string name="Source"><![CDATA[-- Lockdown server bootstrap. This is the first script the game runs.
--- It creates the RemoteEvents (the "phone lines" the server and each
--- player's screen use to talk), then starts every game system in order.
-
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-
--- Phone lines to the client:
---   Popup          -> "show a floating +$40 at this spot"
---   PurchaseResult -> "your buy attempt succeeded/failed, react!"
-local remotes = Instance.new("Folder")
-remotes.Name = "Remotes"
-
-local popupRemote = Instance.new("RemoteEvent")
-popupRemote.Name = "Popup"
-popupRemote.Parent = remotes
-
-local purchaseRemote = Instance.new("RemoteEvent")
-purchaseRemote.Name = "PurchaseResult"
-purchaseRemote.Parent = remotes
-
-remotes.Parent = ReplicatedStorage
-
--- Start the systems. Order matters: the world must exist before plots
--- are placed on it, and saving must be ready before players get plots.
-local World = require(script.World)
-local SaveService = require(script.SaveService)
-local PlotService = require(script.PlotService)
-local Economy = require(script.Economy)
-
-World.build()
-SaveService.init()
-PlotService.init()
-Economy.init()
-
-print("[Lockdown] Server ready — Phase 1 MVP")
-]]></string>
-      </Properties>
-      <Item class="ModuleScript" referent="6">
+      <Item class="ModuleScript" referent="5">
         <Properties>
-          <string name="Name">Economy</string>
-          <string name="Source"><![CDATA[-- Economy: the heartbeat of the money loop. Every few seconds, each
--- inmate pays their daily grant (well — five-secondly grant) to the
--- warden holding them. The client gets a Popup event so a satisfying
--- "+$40" floats up over the buy pad.
+          <string name="Name">GridMath</string>
+          <string name="Source"><![CDATA[-- GridMath: the snapping math, shared by server and client so the ghost
+-- preview on your screen and the server's final placement always agree.
+--
+-- Grid coordinates are integers: (0, 0) is one corner of a plot zone,
+-- and each step is Config.GridSize studs. An asset occupies a rectangle
+-- of w x d grid squares; (gx, gz) is the rectangle's smallest corner.
+-- Zones can sit anywhere in the map at any rotation — all math happens
+-- in the zone's own local space, so grids stay straight on rotated zones.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config = require(ReplicatedStorage.Shared.Config)
-local SaveService = require(script.Parent.SaveService)
-local PlotService = require(script.Parent.PlotService)
 
-local Economy = {}
+local GRID = Config.GridSize
 
-function Economy.init()
-	local popupRemote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Popup")
+local GridMath = {}
 
-	task.spawn(function()
-		while true do
-			task.wait(Config.PayoutInterval)
-			PlotService.eachOwnedPlot(function(player, plot)
-				if plot.cellCount <= 0 then
-					return
-				end
-				local amount = plot.cellCount * Config.PayoutPerInmate
-				SaveService.addCash(player, amount)
-				-- Only the owner sees their own popup — no screen spam
-				-- from five other prisons paying out at once.
-				popupRemote:FireClient(player, plot.pad.Position + Vector3.new(0, 4, 0), amount)
-			end)
-		end
-	end)
+-- Measure a zone Part once: how many grid squares fit, and the CFrame of
+-- the grid's corner on the zone's TOP surface.
+function GridMath.zoneInfo(zonePart)
+	local size = zonePart.Size
+	local cols = math.max(1, math.floor(size.X / GRID))
+	local rows = math.max(1, math.floor(size.Z / GRID))
+	local corner = zonePart.CFrame * CFrame.new(-cols * GRID / 2, size.Y / 2, -rows * GRID / 2)
+	return {
+		part = zonePart,
+		corner = corner,
+		cols = cols,
+		rows = rows,
+	}
 end
 
-return Economy
+-- An asset's footprint in grid squares, after rotation (a 1x3 wall
+-- turned 90 degrees occupies 3x1).
+function GridMath.footprint(asset, rot)
+	if rot % 2 == 0 then
+		return asset.cellsW, asset.cellsD
+	end
+	return asset.cellsD, asset.cellsW
+end
+
+-- World-space CFrame of the CENTER of a w x d footprint whose corner is
+-- at grid square (gx, gz), sitting on the zone's top surface.
+function GridMath.regionCenter(zoneInfo, gx, gz, w, d)
+	return zoneInfo.corner * CFrame.new((gx + w / 2) * GRID, 0, (gz + d / 2) * GRID)
+end
+
+-- Convert a world position (wherever the player is pointing) into the
+-- nearest valid grid corner for a w x d footprint, clamped inside the zone.
+function GridMath.worldToCell(zoneInfo, worldPos, w, d)
+	local localPos = zoneInfo.corner:PointToObjectSpace(worldPos)
+	local gx = math.floor(localPos.X / GRID - w / 2 + 0.5)
+	local gz = math.floor(localPos.Z / GRID - d / 2 + 0.5)
+	gx = math.clamp(gx, 0, math.max(0, zoneInfo.cols - w))
+	gz = math.clamp(gz, 0, math.max(0, zoneInfo.rows - d))
+	return gx, gz
+end
+
+function GridMath.inBounds(zoneInfo, gx, gz, w, d)
+	return gx >= 0 and gz >= 0 and gx + w <= zoneInfo.cols and gz + d <= zoneInfo.rows
+end
+
+-- The final world CFrame for a placed asset: footprint center, raised by
+-- half the asset's height, spun by the rotation, then adjusted by the
+-- asset's own pivot offset so ANY model lands resting on the ground.
+function GridMath.placementPivot(zoneInfo, asset, gx, gz, rot)
+	local w, d = GridMath.footprint(asset, rot)
+	local center = GridMath.regionCenter(zoneInfo, gx, gz, w, d)
+	local boundingBoxTarget = center
+		* CFrame.Angles(0, math.rad(rot * 90), 0)
+		* CFrame.new(0, asset.size.Y / 2, 0)
+	return boundingBoxTarget * asset.pivotOffset, center * CFrame.Angles(0, math.rad(rot * 90), 0)
+end
+
+return GridMath
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="7">
+    </Item>
+  </Item>
+  <Item class="ServerScriptService" referent="6">
+    <Properties>
+      <string name="Name">ServerScriptService</string>
+    </Properties>
+    <Item class="Script" referent="7">
+      <Properties>
+        <string name="Name">Server</string>
+        <token name="RunContext">0</token>
+        <string name="Source"><![CDATA[-- Lockdown server bootstrap — first thing the game runs.
+-- Creates the RemoteFunctions (the "ask the server" phone lines the
+-- build UI uses), then starts every system in order.
+--
+-- Order matters: saving must exist before plots hand out zones, and the
+-- asset catalog must exist before anything can be placed.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local remotes = Instance.new("Folder")
+remotes.Name = "Remotes"
+
+-- Client asks "place this asset at grid square X,Z rotated R" and gets
+-- back { ok = true } or { ok = false, err = "reason" }.
+local placeRequest = Instance.new("RemoteFunction")
+placeRequest.Name = "PlaceRequest"
+placeRequest.Parent = remotes
+
+local deleteRequest = Instance.new("RemoteFunction")
+deleteRequest.Name = "DeleteRequest"
+deleteRequest.Parent = remotes
+
+remotes.Parent = ReplicatedStorage
+
+local SaveService = require(script.SaveService)
+local Buildables = require(script.Buildables)
+local PlacementService = require(script.PlacementService)
+local PlotService = require(script.PlotService)
+
+SaveService.init()
+Buildables.init()
+PlacementService.init()
+PlotService.init()
+
+print("[Lockdown] Server ready — placement build")
+]]></string>
+      </Properties>
+      <Item class="ModuleScript" referent="8">
+        <Properties>
+          <string name="Name">Buildables</string>
+          <string name="Source"><![CDATA[-- Buildables: makes sure the asset folder exists and, until you've made
+-- your own models, fills it with simple placeholder assets so the build
+-- menu is never empty.
+--
+-- How replacing works (see docs/BUILDING_ASSETS.md):
+--   * Your Models in ReplicatedStorage/Buildables always win — a
+--     placeholder is only added if no model with that name exists yet.
+--   * Done with placeholders entirely? Set attribute NoPlaceholders =
+--     true on the Buildables folder and they all stay away.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Config = require(ReplicatedStorage.Shared.Config)
+local AssetCatalog = require(ReplicatedStorage.Shared.AssetCatalog)
+
+local Buildables = {}
+
+local GRAY = Color3.fromRGB(200, 198, 190)
+local DARK = Color3.fromRGB(95, 95, 100)
+local METAL = Color3.fromRGB(35, 35, 40)
+
+local function part(props, parent)
+	local p = Instance.new("Part")
+	p.Anchored = true
+	p.TopSurface = Enum.SurfaceType.Smooth
+	p.BottomSurface = Enum.SurfaceType.Smooth
+	p.Material = Enum.Material.Concrete
+	p.Color = GRAY
+	for key, value in pairs(props) do
+		p[key] = value
+	end
+	p.Parent = parent
+	return p
+end
+
+-- Each builder positions its parts with the model's bottom at Y = 0 and
+-- its footprint centered on the origin. The catalog measures the result,
+-- so these are just "build it roughly right and it works".
+local PLACEHOLDERS = {
+	{
+		name = "Wall",
+		build = function(model)
+			part({ Size = Vector3.new(4, 8, 1), CFrame = CFrame.new(0, 4, 0) }, model)
+		end,
+	},
+	{
+		name = "Floor Tile",
+		build = function(model)
+			part({ Size = Vector3.new(4, 0.4, 4), CFrame = CFrame.new(0, 0.2, 0), Color = DARK }, model)
+		end,
+	},
+	{
+		name = "Fence",
+		build = function(model)
+			for i = 0, 4 do
+				part({
+					Size = Vector3.new(0.3, 6, 0.3),
+					CFrame = CFrame.new(-1.8 + i * 0.9, 3, 0),
+					Material = Enum.Material.Metal,
+					Color = METAL,
+				}, model)
+			end
+			part({
+				Size = Vector3.new(4, 0.3, 0.3),
+				CFrame = CFrame.new(0, 5.85, 0),
+				Material = Enum.Material.Metal,
+				Color = METAL,
+			}, model)
+		end,
+	},
+	{
+		name = "Security Door",
+		build = function(model)
+			part({ Size = Vector3.new(0.5, 8, 1), CFrame = CFrame.new(-1.75, 4, 0) }, model)
+			part({ Size = Vector3.new(0.5, 8, 1), CFrame = CFrame.new(1.75, 4, 0) }, model)
+			part({ Size = Vector3.new(4, 1, 1), CFrame = CFrame.new(0, 7.5, 0) }, model)
+			part({
+				Size = Vector3.new(3, 7, 0.6),
+				CFrame = CFrame.new(0, 3.5, 0),
+				Material = Enum.Material.DiamondPlate,
+				Color = Color3.fromRGB(91, 105, 117),
+			}, model)
+		end,
+	},
+	{
+		name = "Prison Cell",
+		build = function(model)
+			part({ Size = Vector3.new(12, 0.4, 12), CFrame = CFrame.new(0, 0.2, 0), Color = DARK }, model)
+			part({ Size = Vector3.new(12, 7, 0.5), CFrame = CFrame.new(0, 3.5, 5.75) }, model)
+			part({ Size = Vector3.new(0.5, 7, 11), CFrame = CFrame.new(-5.75, 3.5, 0) }, model)
+			part({ Size = Vector3.new(0.5, 7, 11), CFrame = CFrame.new(5.75, 3.5, 0) }, model)
+			-- Barred front with a doorway gap on the right.
+			for i = 0, 3 do
+				part({
+					Size = Vector3.new(0.35, 6.6, 0.35),
+					CFrame = CFrame.new(-5 + i * 1.9, 3.3, -5.75),
+					Material = Enum.Material.Metal,
+					Color = METAL,
+				}, model)
+			end
+			part({
+				Size = Vector3.new(12, 0.4, 0.4),
+				CFrame = CFrame.new(0, 6.8, -5.75),
+				Material = Enum.Material.Metal,
+				Color = METAL,
+			}, model)
+			-- Bed.
+			part({
+				Size = Vector3.new(2.8, 0.5, 5.6),
+				CFrame = CFrame.new(4, 0.65, 2),
+				Material = Enum.Material.Metal,
+				Color = Color3.fromRGB(70, 70, 75),
+			}, model)
+			part({
+				Size = Vector3.new(2.6, 0.6, 5.4),
+				CFrame = CFrame.new(4, 1.2, 2),
+				Material = Enum.Material.Fabric,
+				Color = Color3.fromRGB(235, 235, 230),
+			}, model)
+			model:SetAttribute("SpawnsInmate", true)
+		end,
+	},
+	{
+		name = "Guard Tower",
+		build = function(model)
+			for _, offset in ipairs({ { -3, -3 }, { 3, -3 }, { -3, 3 }, { 3, 3 } }) do
+				part({
+					Size = Vector3.new(1, 10, 1),
+					CFrame = CFrame.new(offset[1], 5, offset[2]),
+					Material = Enum.Material.Metal,
+					Color = METAL,
+				}, model)
+			end
+			part({ Size = Vector3.new(8, 1, 8), CFrame = CFrame.new(0, 10.5, 0), Color = DARK }, model)
+			for _, offset in ipairs({ { -3.5, -3.5 }, { 3.5, -3.5 }, { -3.5, 3.5 }, { 3.5, 3.5 } }) do
+				part({
+					Size = Vector3.new(0.5, 4, 0.5),
+					CFrame = CFrame.new(offset[1], 13, offset[2]),
+					Material = Enum.Material.Metal,
+					Color = METAL,
+				}, model)
+			end
+			part({ Size = Vector3.new(9, 0.8, 9), CFrame = CFrame.new(0, 15.4, 0), Color = GRAY }, model)
+		end,
+	},
+}
+
+local catalogByName = nil
+local catalogOrdered = nil
+
+function Buildables.init()
+	local folder = ReplicatedStorage:FindFirstChild(Config.BuildablesFolderName)
+	if not folder then
+		folder = Instance.new("Folder")
+		folder.Name = Config.BuildablesFolderName
+		folder.Parent = ReplicatedStorage
+	end
+
+	if folder:GetAttribute("NoPlaceholders") ~= true then
+		for _, def in ipairs(PLACEHOLDERS) do
+			if not folder:FindFirstChild(def.name) then
+				local model = Instance.new("Model")
+				model.Name = def.name
+				def.build(model)
+				model:SetAttribute("Placeholder", true)
+				model.Parent = folder
+			end
+		end
+	end
+
+	catalogByName, catalogOrdered = AssetCatalog.load(folder)
+	print(("[Lockdown] Build menu loaded: %d assets"):format(#catalogOrdered))
+end
+
+function Buildables.get(name)
+	return catalogByName[name]
+end
+
+return Buildables
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="9">
         <Properties>
           <string name="Name">InmateService</string>
           <string name="Source"><![CDATA[-- InmateService: builds inmates as LIGHTWEIGHT CUSTOM RIGS.
@@ -289,348 +576,363 @@ return InmateService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="8">
+      <Item class="ModuleScript" referent="10">
+        <Properties>
+          <string name="Name">PlacementService</string>
+          <string name="Source"><![CDATA[-- PlacementService: the server half of the building system. The client
+-- may PREVIEW anything, but nothing exists until this file approves it.
+-- Every request is re-checked here (owner? real asset? inside the zone?
+-- not overlapping?) because clients can be modified by cheaters — the
+-- golden rule of Roblox: never trust the client.
+--
+-- It also keeps each player's layout as plain data ({name, x, z, rot}
+-- per object), which is what gets cloud-saved and rebuilt on rejoin.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local GridMath = require(ReplicatedStorage.Shared.GridMath)
+local Buildables = require(script.Parent.Buildables)
+local InmateService = require(script.Parent.InmateService)
+
+local PlacementService = {}
+
+local playerZones = {} -- player -> zone record (set by PlotService)
+local occupancy = {} -- zone -> set of "gx:gz" occupied grid squares
+local layouts = {} -- player -> array of {n, x, z, r, id, model}
+local lastAction = {} -- player -> os.clock() (anti-spam)
+local nextId = 0
+
+local function cellKey(gx, gz)
+	return gx .. ":" .. gz
+end
+
+local function eachCell(gx, gz, w, d, fn)
+	for x = gx, gx + w - 1 do
+		for z = gz, gz + d - 1 do
+			fn(cellKey(x, z))
+		end
+	end
+end
+
+local function regionFree(zone, gx, gz, w, d)
+	local taken = occupancy[zone]
+	local free = true
+	eachCell(gx, gz, w, d, function(key)
+		if taken[key] then
+			free = false
+		end
+	end)
+	return free
+end
+
+local function setRegion(zone, gx, gz, w, d, value)
+	local taken = occupancy[zone]
+	eachCell(gx, gz, w, d, function(key)
+		taken[key] = value
+	end)
+end
+
+-- The one true "make it exist" function — used by live purchases and by
+-- save-file rebuilds, so they can never behave differently.
+local function placeInternal(player, zone, asset, gx, gz, rot)
+	local w, d = GridMath.footprint(asset, rot)
+	if not GridMath.inBounds(zone.info, gx, gz, w, d) then
+		return nil, "That spot is outside your plot."
+	end
+	if not regionFree(zone, gx, gz, w, d) then
+		return nil, "Something is already there."
+	end
+
+	nextId += 1
+	local id = nextId
+
+	local pivot, groundCF = GridMath.placementPivot(zone.info, asset, gx, gz, rot)
+	local model = asset.model:Clone()
+	model:PivotTo(pivot)
+	-- Attributes double as the client's info source (for previews and
+	-- delete-mode) and as debugging breadcrumbs in the Explorer.
+	model:SetAttribute("LayoutId", id)
+	model:SetAttribute("Asset", asset.name)
+	model:SetAttribute("GX", gx)
+	model:SetAttribute("GZ", gz)
+	model:SetAttribute("Rot", rot)
+	model.Parent = zone.placed
+
+	if asset.spawnsInmate then
+		-- Parented to the placed model, so deleting the cell removes its
+		-- resident too.
+		InmateService.spawn(groundCF * CFrame.new(-1.5, 0.4, 1), id, model)
+	end
+
+	setRegion(zone, gx, gz, w, d, true)
+	table.insert(layouts[player], { n = asset.name, x = gx, z = gz, r = rot, id = id, model = model })
+	return model
+end
+
+-- Wiring (called by PlotService) -----------------------------------------
+
+function PlacementService.assignZone(player, zone, savedLayout)
+	playerZones[player] = zone
+	occupancy[zone] = {}
+	layouts[player] = {}
+
+	-- Rebuild everything from the save. Entries that no longer make
+	-- sense (asset renamed/deleted, corrupt data) are skipped quietly —
+	-- better to lose one wall than crash the whole load.
+	if type(savedLayout) == "table" then
+		for _, entry in ipairs(savedLayout) do
+			if type(entry) == "table"
+				and type(entry.n) == "string"
+				and type(entry.x) == "number"
+				and type(entry.z) == "number"
+				and type(entry.r) == "number"
+			then
+				local asset = Buildables.get(entry.n)
+				if asset then
+					placeInternal(player, zone, asset, math.floor(entry.x), math.floor(entry.z), math.floor(entry.r) % 4)
+				end
+			end
+		end
+	end
+end
+
+function PlacementService.releasePlayer(player)
+	local zone = playerZones[player]
+	playerZones[player] = nil
+	layouts[player] = nil
+	lastAction[player] = nil
+	if zone then
+		occupancy[zone] = nil
+		zone.placed:ClearAllChildren()
+	end
+end
+
+-- What SaveService writes to the cloud: just the plain numbers, no
+-- Instances or server-only ids.
+function PlacementService.snapshotLayout(player)
+	local out = {}
+	for _, entry in ipairs(layouts[player] or {}) do
+		table.insert(out, { n = entry.n, x = entry.x, z = entry.z, r = entry.r })
+	end
+	return out
+end
+
+-- Player requests (via RemoteFunctions) -----------------------------------
+
+local function tooFast(player)
+	local now = os.clock()
+	if lastAction[player] and now - lastAction[player] < 0.1 then
+		return true
+	end
+	lastAction[player] = now
+	return false
+end
+
+function PlacementService.handlePlace(player, assetName, gx, gz, rot)
+	local zone = playerZones[player]
+	if not zone then
+		return { ok = false, err = "You don't have a plot yet." }
+	end
+	if tooFast(player) then
+		return { ok = false, err = "Too fast!" }
+	end
+	if type(assetName) ~= "string" or type(gx) ~= "number" or type(gz) ~= "number" or type(rot) ~= "number" then
+		return { ok = false, err = "Bad request." }
+	end
+	local asset = Buildables.get(assetName)
+	if not asset then
+		return { ok = false, err = "Unknown asset." }
+	end
+
+	local model, err = placeInternal(player, zone, asset, math.floor(gx), math.floor(gz), math.floor(rot) % 4)
+	if not model then
+		return { ok = false, err = err }
+	end
+	return { ok = true }
+end
+
+function PlacementService.handleDelete(player, model)
+	local zone = playerZones[player]
+	if not zone then
+		return { ok = false, err = "You don't have a plot yet." }
+	end
+	if tooFast(player) then
+		return { ok = false, err = "Too fast!" }
+	end
+	-- The model must be a real placed object inside THIS player's zone.
+	if typeof(model) ~= "Instance" or not model:IsA("Model") or model.Parent ~= zone.placed then
+		return { ok = false, err = "That's not yours to demolish." }
+	end
+	local id = model:GetAttribute("LayoutId")
+
+	local layout = layouts[player]
+	for index, entry in ipairs(layout) do
+		if entry.id == id then
+			local asset = Buildables.get(entry.n)
+			if asset then
+				local w, d = GridMath.footprint(asset, entry.r)
+				setRegion(zone, entry.x, entry.z, w, d, nil)
+			end
+			table.remove(layout, index)
+			model:Destroy()
+			return { ok = true }
+		end
+	end
+	return { ok = false, err = "Couldn't find that object." }
+end
+
+function PlacementService.init()
+	local remotes = ReplicatedStorage:WaitForChild("Remotes")
+	remotes.PlaceRequest.OnServerInvoke = PlacementService.handlePlace
+	remotes.DeleteRequest.OnServerInvoke = PlacementService.handleDelete
+end
+
+return PlacementService
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="11">
         <Properties>
           <string name="Name">PlotService</string>
-          <string name="Source"><![CDATA[-- PlotService: the heart of Phase 1. Builds the row of prison plots,
--- gives every joining player their own, and handles the one big verb of
--- the MVP: step on the glowing pad -> buy a cell -> an inmate moves in.
+          <string name="Source"><![CDATA[-- PlotService: finds the build zones in YOUR hand-made map and assigns
+-- one to each player who joins.
 --
--- Layout of one plot (bird's-eye view, front gate at the bottom):
+-- The convention (docs/BUILDING_ASSETS.md): put a folder named
+-- "PlotZones" in Workspace, and drop flat anchored Parts in it — each
+-- Part is one player's build area. Size, position, and rotation are all
+-- up to you; the grid adapts.
 --
---        [c1][c2][c3][c4][c5][c6][c7][c8]      <- back row of cells
---      [c9]                          [c16]
---      [c10]                         [c17]
---      [c11]        (yard)           [c18]     <- cells fill the walls
---      [c12]                         [c19]        as you buy them
---      [c13]                         [c20]
---      [c14]         (pad)           [c21]
---      [c15]      __gate gap__       [c22]
---
--- Cells are just decoration + one inmate each. All the money math stays
--- in SaveService; all the rig building stays in InmateService.
+-- No PlotZones folder yet? A simple flat test map gets generated so the
+-- game always runs — handy before your real map exists, and it's what
+-- the quick-demo Lockdown.rbxlx uses.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Lighting = game:GetService("Lighting")
 
 local Config = require(ReplicatedStorage.Shared.Config)
-local Format = require(ReplicatedStorage.Shared.Format)
-local World = require(script.Parent.World)
+local GridMath = require(ReplicatedStorage.Shared.GridMath)
 local SaveService = require(script.Parent.SaveService)
-local InmateService = require(script.Parent.InmateService)
+local PlacementService = require(script.Parent.PlacementService)
 
 local PlotService = {}
 
-local COLOR_WALL = Color3.fromRGB(200, 198, 190)
-local COLOR_FLOOR = Color3.fromRGB(120, 120, 125)
-local COLOR_CELL_FLOOR = Color3.fromRGB(95, 95, 100)
-local COLOR_BARS = Color3.fromRGB(35, 35, 40)
-local COLOR_PAD = Color3.fromRGB(80, 255, 100)
+local zones = {} -- array of { part, info, placed, owner }
 
--- Where each cell sits inside a plot, in plot-local studs (plot center is
--- 0,0). "face" is the direction the open, barred side points (toward the
--- yard). 8 across the back, 7 down each side = 22, matching Config.
-local CELL_SLOTS = {}
-do
-	for i = 1, 8 do
-		CELL_SLOTS[i] = { pos = Vector3.new(-49 + (i - 1) * 14, 0, -52), face = Vector3.new(0, 0, 1) }
+-- Fallback test map (only when your map doesn't exist yet) --------------
+
+local function buildFallbackMap()
+	local root = Instance.new("Folder")
+	root.Name = "LockdownTestMap"
+
+	local ground = Instance.new("Part")
+	ground.Name = "Ground"
+	ground.Anchored = true
+	ground.Size = Vector3.new(900, 4, 500)
+	ground.CFrame = CFrame.new(0, -2, 0)
+	ground.Material = Enum.Material.Grass
+	ground.Color = Color3.fromRGB(106, 153, 85)
+	ground.Parent = root
+
+	local spawnLocation = Instance.new("SpawnLocation")
+	spawnLocation.Name = "Spawn"
+	spawnLocation.Anchored = true
+	spawnLocation.Size = Vector3.new(12, 1, 12)
+	spawnLocation.CFrame = CFrame.new(0, 0.5, 160)
+	spawnLocation.Neutral = true
+	spawnLocation.Duration = 0
+	spawnLocation.Parent = root
+
+	local zonesFolder = Instance.new("Folder")
+	zonesFolder.Name = Config.ZonesFolderName
+
+	local zoneSize = Config.FallbackZoneSize
+	local spacing = zoneSize + 15
+	for i = 1, Config.FallbackZoneCount do
+		local zone = Instance.new("Part")
+		zone.Name = "Zone" .. i
+		zone.Anchored = true
+		zone.Size = Vector3.new(zoneSize, 1, zoneSize)
+		zone.CFrame = CFrame.new((i - (Config.FallbackZoneCount + 1) / 2) * spacing, 0.5, 0)
+		zone.Material = Enum.Material.Concrete
+		zone.Color = Color3.fromRGB(163, 162, 165)
+		zone.Parent = zonesFolder
 	end
-	for i = 1, 7 do
-		CELL_SLOTS[8 + i] = { pos = Vector3.new(-56, 0, -37 + (i - 1) * 14), face = Vector3.new(1, 0, 0) }
-	end
-	for i = 1, 7 do
-		CELL_SLOTS[15 + i] = { pos = Vector3.new(56, 0, -37 + (i - 1) * 14), face = Vector3.new(-1, 0, 0) }
-	end
-	assert(#CELL_SLOTS == Config.MaxCells, "CELL_SLOTS must match Config.CellCosts length")
+	zonesFolder.Parent = root
+
+	root.Parent = workspace
+	Lighting.ClockTime = 14
+	Lighting.Brightness = 2
+	print("[Lockdown] No " .. Config.ZonesFolderName .. " folder found — built the fallback test map.")
+	return zonesFolder
 end
 
-local plots = {} -- plot index -> plot record
-local playerPlots = {} -- player -> plot record
-local lastBuyAttempt = {} -- player -> os.clock() of last pad touch (debounce)
+-- Zone management --------------------------------------------------------
 
-local remotes = ReplicatedStorage:WaitForChild("Remotes")
-local purchaseRemote = remotes:WaitForChild("PurchaseResult")
-
--- Building ---------------------------------------------------------------
-
-local function padText(plot)
-	if plot.cellCount >= Config.MaxCells then
-		return ("🔒 PRISON FULL!\n%d cells"):format(Config.MaxCells)
-	end
-	local nextCost = Config.CellCosts[plot.cellCount + 1]
-	return ("🔒 Buy Cell #%d\n%s"):format(plot.cellCount + 1, Format.money(nextCost))
-end
-
-local function signText(plot)
-	if plot.owner then
-		return "🔒 " .. plot.owner.DisplayName .. "'s Prison"
-	end
-	return "Unclaimed Prison"
-end
-
--- One plot: floor slab, four walls with a gate gap, a name sign, and the
--- glowing buy pad. Cells get added later, one purchase at a time.
-local function buildPlot(index)
-	local originCF = CFrame.new((index - (Config.PlotCount + 1) / 2) * 170, 0, -40)
-
-	local model = Instance.new("Model")
-	model.Name = "Plot" .. index
-
-	-- Floor slab; its top sits at Y = 0.5.
-	World.part({
-		Name = "Slab",
-		Size = Vector3.new(130, 1, 130),
-		CFrame = originCF,
-		Material = Enum.Material.Concrete,
-		Color = COLOR_FLOOR,
-	}, model)
-
-	-- Perimeter walls, 10 studs tall. The front wall has a 16-stud gate
-	-- gap so players can walk in.
-	local wallSpecs = {
-		{ Vector3.new(130, 10, 1.5), CFrame.new(0, 5.5, -60) }, -- back
-		{ Vector3.new(1.5, 10, 118), CFrame.new(-64.25, 5.5, 0) }, -- left
-		{ Vector3.new(1.5, 10, 118), CFrame.new(64.25, 5.5, 0) }, -- right
-		{ Vector3.new(57, 10, 1.5), CFrame.new(-36.5, 5.5, 60) }, -- front-left of gate
-		{ Vector3.new(57, 10, 1.5), CFrame.new(36.5, 5.5, 60) }, -- front-right of gate
-	}
-	for _, spec in ipairs(wallSpecs) do
-		World.part({
-			Name = "Wall",
-			Size = spec[1],
-			CFrame = originCF * spec[2],
-			Material = Enum.Material.Concrete,
-			Color = COLOR_WALL,
-		}, model)
+local function discoverZones()
+	local folder = workspace:FindFirstChild(Config.ZonesFolderName)
+	if not folder or #folder:GetChildren() == 0 then
+		folder = buildFallbackMap()
 	end
 
-	-- Invisible post above the gate holding the prison's name sign.
-	local signPost = World.part({
-		Name = "SignPost",
-		Size = Vector3.new(1, 1, 1),
-		CFrame = originCF * CFrame.new(0, 13, 60),
-		Transparency = 1,
-		CanCollide = false,
-		CanQuery = false,
-		CanTouch = false,
-	}, model)
-	local signGui = Instance.new("BillboardGui")
-	signGui.Name = "Sign"
-	signGui.Size = UDim2.new(0, 320, 0, 70)
-	signGui.MaxDistance = 400
-	local signLabel = Instance.new("TextLabel")
-	signLabel.Size = UDim2.new(1, 0, 1, 0)
-	signLabel.BackgroundTransparency = 1
-	signLabel.Font = Enum.Font.GothamBold
-	signLabel.TextScaled = true
-	signLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-	signLabel.TextStrokeTransparency = 0.3
-	signGui.Parent = signPost
-	signLabel.Parent = signGui
-
-	-- The glowing buy pad: a flat neon cylinder near the gate. Stepping
-	-- on it is how you buy (works identically on PC and phones — no UI).
-	local pad = World.part({
-		Name = "BuyPad",
-		Shape = Enum.PartType.Cylinder,
-		-- A cylinder's height runs along X, so we lay it flat by rolling
-		-- it 90 degrees; it becomes a 8-stud-wide, 0.5-thick disc.
-		Size = Vector3.new(0.5, 8, 8),
-		CFrame = originCF * CFrame.new(0, 0.85, 45) * CFrame.Angles(0, 0, math.rad(90)),
-		Material = Enum.Material.Neon,
-		Color = COLOR_PAD,
-		CanCollide = false,
-	}, model)
-	local padGui = Instance.new("BillboardGui")
-	padGui.Name = "PriceTag"
-	padGui.Size = UDim2.new(0, 220, 0, 64)
-	padGui.StudsOffset = Vector3.new(0, 4, 0)
-	padGui.MaxDistance = 180
-	local padLabel = Instance.new("TextLabel")
-	padLabel.Size = UDim2.new(1, 0, 1, 0)
-	padLabel.BackgroundTransparency = 1
-	padLabel.Font = Enum.Font.GothamBold
-	padLabel.TextScaled = true
-	padLabel.TextColor3 = Color3.fromRGB(170, 255, 170)
-	padLabel.TextStrokeTransparency = 0.3
-	padGui.Parent = pad
-	padLabel.Parent = padGui
-
-	-- Purchased cells and their inmates live in these folders.
-	local cellsFolder = Instance.new("Folder")
-	cellsFolder.Name = "Cells"
-	cellsFolder.Parent = model
-	local inmatesFolder = Instance.new("Folder")
-	inmatesFolder.Name = "Inmates"
-	inmatesFolder.Parent = model
-
-	model.Parent = workspace.Lockdown
-
-	local plot = {
-		index = index,
-		originCF = originCF,
-		model = model,
-		pad = pad,
-		padLabel = padLabel,
-		signLabel = signLabel,
-		cellsFolder = cellsFolder,
-		inmatesFolder = inmatesFolder,
-		owner = nil,
-		cellCount = 0,
-	}
-	plot.padLabel.Text = padText(plot)
-	plot.signLabel.Text = signText(plot)
-
-	pad.Touched:Connect(function(hit)
-		local character = hit.Parent
-		local player = character and Players:GetPlayerFromCharacter(character)
-		if not player or plot.owner ~= player then
-			return
+	for _, child in ipairs(folder:GetChildren()) do
+		if child:IsA("BasePart") then
+			local placed = Instance.new("Folder")
+			placed.Name = "Placed"
+			placed.Parent = child
+			table.insert(zones, {
+				part = child,
+				info = GridMath.zoneInfo(child),
+				placed = placed,
+				owner = nil,
+			})
+		else
+			warn("[Lockdown] Ignoring '" .. child.Name .. "' in " .. Config.ZonesFolderName .. " — zones must be Parts.")
 		end
-		-- Walking over the pad fires Touched many times a second; only
-		-- consider one buy attempt per second per player.
-		local now = os.clock()
-		if lastBuyAttempt[player] and now - lastBuyAttempt[player] < 1 then
-			return
-		end
-		lastBuyAttempt[player] = now
-		PlotService.tryBuyCell(player)
-	end)
-
-	return plot
+	end
+	print(("[Lockdown] %d build zones ready"):format(#zones))
 end
 
--- One cell: floor, three low walls, jail bars across the yard side, a
--- bed, and its resident inmate.
-local function buildCell(plot, cellIndex)
-	local slot = CELL_SLOTS[cellIndex]
-	-- Cell-local space: -Z points out through the bars toward the yard.
-	local base = plot.originCF * CFrame.new(0, 0.5, 0)
-		* CFrame.lookAt(slot.pos, slot.pos + slot.face)
-
-	local cell = Instance.new("Model")
-	cell.Name = "Cell" .. cellIndex
-
-	World.part({
-		Name = "Floor",
-		Size = Vector3.new(13.4, 0.4, 11.4),
-		CFrame = base * CFrame.new(0, 0.2, 0),
-		Material = Enum.Material.Concrete,
-		Color = COLOR_CELL_FLOOR,
-	}, cell)
-
-	-- Back and side walls (the plot's perimeter wall looms behind).
-	World.part({
-		Name = "BackWall",
-		Size = Vector3.new(13.4, 7, 0.4),
-		CFrame = base * CFrame.new(0, 3.9, 5.5),
-		Material = Enum.Material.Concrete,
-		Color = COLOR_WALL,
-	}, cell)
-	for _, x in ipairs({ -6.5, 6.5 }) do
-		World.part({
-			Name = "SideWall",
-			Size = Vector3.new(0.4, 7, 11.4),
-			CFrame = base * CFrame.new(x, 3.9, 0),
-			Material = Enum.Material.Concrete,
-			Color = COLOR_WALL,
-		}, cell)
-	end
-
-	-- Jail bars across the front. Purely decorative in Phase 1 — but they
-	-- make it a prison.
-	for k = 0, 5 do
-		World.part({
-			Name = "Bar",
-			Size = Vector3.new(0.35, 6.6, 0.35),
-			CFrame = base * CFrame.new(-5.4 + k * 2.16, 3.7, -5.5),
-			Material = Enum.Material.Metal,
-			Color = COLOR_BARS,
-		}, cell)
-	end
-	World.part({
-		Name = "BarRail",
-		Size = Vector3.new(13.4, 0.4, 0.4),
-		CFrame = base * CFrame.new(0, 7.2, -5.5),
-		Material = Enum.Material.Metal,
-		Color = COLOR_BARS,
-	}, cell)
-
-	-- A little bed: frame, mattress, pillow.
-	World.part({
-		Name = "BedFrame",
-		Size = Vector3.new(2.8, 0.5, 5.6),
-		CFrame = base * CFrame.new(4.7, 0.65, 1.8),
-		Material = Enum.Material.Metal,
-		Color = Color3.fromRGB(70, 70, 75),
-	}, cell)
-	World.part({
-		Name = "Mattress",
-		Size = Vector3.new(2.6, 0.6, 5.4),
-		CFrame = base * CFrame.new(4.7, 1.2, 1.8),
-		Material = Enum.Material.Fabric,
-		Color = Color3.fromRGB(235, 235, 230),
-	}, cell)
-	World.part({
-		Name = "Pillow",
-		Size = Vector3.new(2.2, 0.35, 1.3),
-		CFrame = base * CFrame.new(4.7, 1.65, -0.4),
-		Material = Enum.Material.Fabric,
-		Color = Color3.fromRGB(255, 170, 60),
-	}, cell)
-
-	cell.Parent = plot.cellsFolder
-
-	-- The resident moves in, standing on the cell floor.
-	InmateService.spawn(base * CFrame.new(-2, 0.4, 1), cellIndex, plot.inmatesFolder)
-end
-
--- Claiming & buying -------------------------------------------------------
-
-local function assignPlot(player)
-	-- Wait for the player's save to load so we know how many cells to
-	-- rebuild. If they left mid-load, waitForData returns nil.
+local function assignZone(player)
 	local data = SaveService.waitForData(player)
 	if not data or not player:IsDescendantOf(game) then
 		return
 	end
 
-	local plot = nil
-	for _, candidate in ipairs(plots) do
+	local zone = nil
+	for _, candidate in ipairs(zones) do
 		if candidate.owner == nil then
-			plot = candidate
+			zone = candidate
 			break
 		end
 	end
-	if not plot then
-		-- More visitors than plots (7+ players). MVP limitation: they can
-		-- wander and watch. Phase 5's Break Out mode gives them a job.
-		warn("[Lockdown] No free plot for " .. player.Name)
+	if not zone then
+		warn("[Lockdown] No free build zone for " .. player.Name)
 		return
 	end
 
-	plot.owner = player
-	playerPlots[player] = plot
+	zone.owner = player
+	PlacementService.assignZone(player, zone, data.layout)
+	SaveService.attachLayoutSource(player, PlacementService.snapshotLayout)
 
-	-- Rebuild everything they had saved from previous sessions.
-	for i = 1, math.min(data.cells, Config.MaxCells) do
-		plot.cellCount = i
-		buildCell(plot, i)
-	end
-	plot.padLabel.Text = padText(plot)
-	plot.signLabel.Text = signText(plot)
+	-- Tell this player's client which zone is theirs (the build UI needs
+	-- it for grid math and aiming).
+	local marker = Instance.new("ObjectValue")
+	marker.Name = "BuildZone"
+	marker.Value = zone.part
+	marker.Parent = player
 
-	-- Walk each new character to their own front gate (they spawn at the
-	-- plaza otherwise, which is confusing).
+	-- Walk each character spawn over to their zone's front edge.
 	local function placeCharacter(character)
 		local root = character:WaitForChild("HumanoidRootPart", 10)
-		if not root or plot.owner ~= player then
+		if not root or zone.owner ~= player then
 			return
 		end
-		task.wait(0.1) -- let the default spawn placement finish first
-		local gate = plot.originCF * CFrame.new(0, 3.5, 68)
-		local lookAtPad = plot.originCF * CFrame.new(0, 3.5, 45)
-		character:PivotTo(CFrame.lookAt(gate.Position, lookAtPad.Position))
+		task.wait(0.1)
+		local zoneCF, zoneSize = zone.part.CFrame, zone.part.Size
+		local edge = zoneCF * CFrame.new(0, zoneSize.Y / 2 + 3.5, zoneSize.Z / 2 + 6)
+		local lookTarget = zoneCF * CFrame.new(0, zoneSize.Y / 2 + 3.5, 0)
+		character:PivotTo(CFrame.lookAt(edge.Position, lookTarget.Position))
 	end
 	player.CharacterAdded:Connect(placeCharacter)
 	if player.Character then
@@ -638,95 +940,52 @@ local function assignPlot(player)
 	end
 end
 
-local function releasePlot(player)
-	lastBuyAttempt[player] = nil
-	local plot = playerPlots[player]
-	if not plot then
-		return
+local function releaseZone(player)
+	PlacementService.releasePlayer(player)
+	local marker = player:FindFirstChild("BuildZone")
+	if marker then
+		marker:Destroy()
 	end
-	playerPlots[player] = nil
-	plot.owner = nil
-	plot.cellCount = 0
-	plot.cellsFolder:ClearAllChildren()
-	plot.inmatesFolder:ClearAllChildren()
-	plot.padLabel.Text = padText(plot)
-	plot.signLabel.Text = signText(plot)
-end
-
-function PlotService.tryBuyCell(player)
-	local plot = playerPlots[player]
-	if not plot then
-		return
-	end
-
-	if plot.cellCount >= Config.MaxCells then
-		purchaseRemote:FireClient(player, false, { reason = "full" })
-		return
-	end
-
-	local cost = Config.CellCosts[plot.cellCount + 1]
-	if not SaveService.trySpend(player, cost) then
-		purchaseRemote:FireClient(player, false, {
-			reason = "poor",
-			shortfall = cost - SaveService.getCash(player),
-		})
-		return
-	end
-
-	plot.cellCount += 1
-	SaveService.setCells(player, plot.cellCount)
-	buildCell(plot, plot.cellCount)
-	plot.padLabel.Text = padText(plot)
-
-	purchaseRemote:FireClient(player, true, {
-		cellIndex = plot.cellCount,
-		cost = cost,
-	})
-end
-
--- Used by Economy to pay every prison owner each tick.
-function PlotService.eachOwnedPlot(callback)
-	for player, plot in pairs(playerPlots) do
-		callback(player, plot)
+	for _, zone in ipairs(zones) do
+		if zone.owner == player then
+			zone.owner = nil
+		end
 	end
 end
 
 function PlotService.init()
-	for i = 1, Config.PlotCount do
-		plots[i] = buildPlot(i)
-	end
+	discoverZones()
 
 	Players.PlayerAdded:Connect(function(player)
-		task.spawn(assignPlot, player)
+		task.spawn(assignZone, player)
 	end)
 	for _, player in ipairs(Players:GetPlayers()) do
-		task.spawn(assignPlot, player)
+		task.spawn(assignZone, player)
 	end
-	Players.PlayerRemoving:Connect(releasePlot)
+	Players.PlayerRemoving:Connect(releaseZone)
 end
 
 return PlotService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="9">
+      <Item class="ModuleScript" referent="12">
         <Properties>
           <string name="Name">SaveService</string>
-          <string name="Source"><![CDATA[-- SaveService: owns every player's money and progress, and saves it to
--- Roblox's DataStores (cloud storage tied to the published game).
+          <string name="Source"><![CDATA[-- SaveService: cloud-saves each player's prison layout so it's rebuilt
+-- exactly as they left it. (Cash returns here when the economy phase is
+-- wired back in — the save format already has room for it.)
 --
--- Plain-English rules this file enforces:
---   * The SERVER is the only thing that ever changes your cash. A hacked
---     client can ask, but never take. This is Roblox security 101.
---   * If loading a player's save fails, we give them a fresh session but
---     REFUSE to save over their cloud data — a network hiccup must never
---     wipe someone's prison.
---   * Saves happen when you leave, every 60s (autosave), and when the
+-- Safety rules this file enforces:
+--   * If loading a save fails, the player still gets to play — but we
+--     REFUSE to save over their cloud data that session. A network
+--     hiccup must never wipe someone's prison.
+--   * Saves happen when a player leaves, every 60 seconds, and when the
 --     server shuts down.
 --
--- Note for Studio: saving only works after the game is published with
--- "Studio Access to API Services" enabled (see SETUP.md). Before that,
--- everything still plays fine — progress just resets each session.
+-- Studio note: saving works after publishing with "Studio Access to API
+-- Services" enabled (SETUP.md). Until then everything plays fine, the
+-- layout just resets each session.
 
 local DataStoreService = game:GetService("DataStoreService")
 local Players = game:GetService("Players")
@@ -736,12 +995,12 @@ local Config = require(ReplicatedStorage.Shared.Config)
 
 local SaveService = {}
 
--- The cloud storage bucket. The "_v1" suffix lets us switch to a fresh
--- bucket later if the save format ever changes drastically.
+-- "_v2" = the placement-era save format. Old v1 saves (the preset-cell
+-- prototype) are intentionally left behind in their own bucket.
 local store = nil
 do
 	local ok, result = pcall(function()
-		return DataStoreService:GetDataStore("Lockdown_v1")
+		return DataStoreService:GetDataStore("Lockdown_v2")
 	end)
 	if ok then
 		store = result
@@ -750,23 +1009,12 @@ do
 	end
 end
 
--- Live data for everyone currently in the server: player -> state table.
-local state = {}
+local state = {} -- player -> { layout, cash, canSave, layoutSource }
 
 local function keyFor(player)
 	return "p_" .. player.UserId
 end
 
-local function defaultData()
-	return {
-		cash = Config.StartingCash,
-		cells = 0,
-		totalEarned = 0,
-	}
-end
-
--- Try a DataStore read up to 3 times before giving up (Roblox services
--- occasionally hiccup; retrying quietly fixes most of it).
 local function loadData(player)
 	if not store then
 		return nil, false
@@ -777,44 +1025,27 @@ local function loadData(player)
 			return store:GetAsync(key)
 		end)
 		if ok then
-			return result, true -- result may be nil for a first-time player
+			return result, true -- result is nil for a first-time player
 		end
 		warn(("[Lockdown] Load attempt %d failed for %s"):format(attempt, player.Name))
-		task.wait(attempt) -- back off a little more each try
+		task.wait(attempt)
 	end
 	return nil, false
 end
 
 local function onPlayerAdded(player)
 	local saved, loadOk = loadData(player)
-	local data = saved or defaultData()
-
-	-- leaderstats is a magic folder name: Roblox shows its values in the
-	-- player list automatically. Free UI!
-	local leaderstats = Instance.new("Folder")
-	leaderstats.Name = "leaderstats"
-
-	local cashValue = Instance.new("IntValue")
-	cashValue.Name = "Cash"
-	cashValue.Value = data.cash
-	cashValue.Parent = leaderstats
-
-	local inmatesValue = Instance.new("IntValue")
-	inmatesValue.Name = "Inmates"
-	inmatesValue.Value = data.cells
-	inmatesValue.Parent = leaderstats
-
-	leaderstats.Parent = player
+	if type(saved) ~= "table" then
+		saved = nil
+	end
 
 	state[player] = {
-		cash = data.cash,
-		cells = data.cells,
-		totalEarned = data.totalEarned or 0,
+		layout = saved and saved.layout or {},
+		cash = saved and saved.cash or 0,
 		-- Only allowed to write to the cloud if the read worked. A failed
-		-- read must never let default data overwrite a real save.
+		-- read must never let empty data overwrite a real save.
 		canSave = store ~= nil and loadOk,
-		cashValue = cashValue,
-		inmatesValue = inmatesValue,
+		layoutSource = nil,
 	}
 end
 
@@ -824,9 +1055,8 @@ local function saveNow(player)
 		return
 	end
 	local snapshot = {
+		layout = st.layoutSource and st.layoutSource(player) or st.layout,
 		cash = st.cash,
-		cells = st.cells,
-		totalEarned = st.totalEarned,
 	}
 	local ok, err = pcall(function()
 		store:UpdateAsync(keyFor(player), function()
@@ -838,9 +1068,9 @@ local function saveNow(player)
 	end
 end
 
--- Public API used by the other systems ---------------------------------
+-- Public API --------------------------------------------------------------
 
--- Waits until the player's data has loaded (returns nil if they left).
+-- Waits until the player's data has loaded (nil if they left meanwhile).
 function SaveService.waitForData(player)
 	while state[player] == nil and player:IsDescendantOf(game) do
 		task.wait(0.05)
@@ -848,48 +1078,17 @@ function SaveService.waitForData(player)
 	return state[player]
 end
 
-function SaveService.getCash(player)
+-- PlacementService knows the live layout; hand us the function that
+-- snapshots it, and every save pulls fresh data through it.
+function SaveService.attachLayoutSource(player, sourceFn)
 	local st = state[player]
-	return st and st.cash or 0
-end
-
--- Income and refunds go through here so leaderstats always stays in sync.
-function SaveService.addCash(player, amount)
-	local st = state[player]
-	if not st then
-		return
+	if st then
+		st.layoutSource = sourceFn
 	end
-	st.cash += amount
-	if amount > 0 then
-		st.totalEarned += amount
-	end
-	st.cashValue.Value = st.cash
-end
-
--- Spending: only succeeds if the player can actually afford it.
-function SaveService.trySpend(player, amount)
-	local st = state[player]
-	if not st or st.cash < amount then
-		return false
-	end
-	st.cash -= amount
-	st.cashValue.Value = st.cash
-	return true
-end
-
-function SaveService.setCells(player, count)
-	local st = state[player]
-	if not st then
-		return
-	end
-	st.cells = count
-	st.inmatesValue.Value = count
 end
 
 function SaveService.init()
 	Players.PlayerAdded:Connect(onPlayerAdded)
-	-- Catch anyone who joined before this script connected (rare, but
-	-- classic Studio race condition).
 	for _, player in ipairs(Players:GetPlayers()) do
 		task.spawn(onPlayerAdded, player)
 	end
@@ -899,7 +1098,6 @@ function SaveService.init()
 		state[player] = nil
 	end)
 
-	-- Autosave loop, so a server crash can only ever lose ~1 minute.
 	task.spawn(function()
 		while true do
 			task.wait(Config.AutosaveInterval)
@@ -909,7 +1107,6 @@ function SaveService.init()
 		end
 	end)
 
-	-- When Roblox shuts this server down, save everyone before it dies.
 	game:BindToClose(function()
 		for player in pairs(state) do
 			saveNow(player)
@@ -921,262 +1118,557 @@ return SaveService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="10">
-        <Properties>
-          <string name="Name">World</string>
-          <string name="Source"><![CDATA[-- World: builds the shared map — the grass ground, the welcome plaza
--- where players first spawn, and pleasant daytime lighting. The prisons
--- themselves are built per-player by PlotService.
-
-local Lighting = game:GetService("Lighting")
-
-local World = {}
-
--- Small helper used all over the server: make an anchored Part in one
--- call. Everything in this game is anchored (nothing needs physics),
--- which is a big part of why it runs well on phones.
-function World.part(props, parent)
-	local p = Instance.new("Part")
-	p.Anchored = true
-	p.TopSurface = Enum.SurfaceType.Smooth
-	p.BottomSurface = Enum.SurfaceType.Smooth
-	for key, value in pairs(props) do
-		p[key] = value
-	end
-	p.Parent = parent
-	return p
-end
-
-function World.build()
-	-- One folder to hold everything we generate, so the Explorer window
-	-- in Studio stays tidy.
-	local root = Instance.new("Folder")
-	root.Name = "Lockdown"
-
-	-- The ground: one huge grass slab. Its top surface sits at Y = 0,
-	-- which every other measurement in the game builds up from.
-	World.part({
-		Name = "Ground",
-		Size = Vector3.new(1600, 4, 1600),
-		CFrame = CFrame.new(0, -2, 0),
-		Material = Enum.Material.Grass,
-		Color = Color3.fromRGB(106, 153, 85),
-	}, root)
-
-	-- The welcome plaza, in front of the row of prisons. Players spawn
-	-- here for a split second before PlotService walks them to their plot.
-	World.part({
-		Name = "Plaza",
-		Size = Vector3.new(40, 1, 40),
-		CFrame = CFrame.new(0, 0.25, 110),
-		Material = Enum.Material.Slate,
-		Color = Color3.fromRGB(163, 162, 165),
-	}, root)
-
-	local spawnLocation = Instance.new("SpawnLocation")
-	spawnLocation.Name = "Spawn"
-	spawnLocation.Size = Vector3.new(12, 1, 12)
-	spawnLocation.CFrame = CFrame.new(0, 0.9, 110)
-	spawnLocation.Anchored = true
-	spawnLocation.Neutral = true
-	spawnLocation.Duration = 0 -- no forcefield bubble
-	spawnLocation.Material = Enum.Material.SmoothPlastic
-	spawnLocation.Color = Color3.fromRGB(80, 109, 84)
-	spawnLocation.Parent = root
-
-	root.Parent = workspace
-
-	-- Sunny mid-afternoon, always.
-	Lighting.ClockTime = 14
-	Lighting.Brightness = 2
-end
-
-return World
-]]></string>
-        </Properties>
-      </Item>
     </Item>
   </Item>
-  <Item class="StarterPlayer" referent="11">
+  <Item class="StarterPlayer" referent="13">
     <Properties>
       <string name="Name">StarterPlayer</string>
     </Properties>
-    <Item class="StarterPlayerScripts" referent="12">
+    <Item class="StarterPlayerScripts" referent="14">
       <Properties>
         <string name="Name">StarterPlayerScripts</string>
       </Properties>
-      <Item class="LocalScript" referent="13">
+      <Item class="LocalScript" referent="15">
         <Properties>
           <string name="Name">Client</string>
           <string name="Source"><![CDATA[-- Lockdown client bootstrap. Runs on each player's own device and starts
--- everything the player personally sees: the cash HUD, the floating
--- "+$" popups, and the little idle sway that brings inmates to life.
+-- what they personally see: the build mode UI and the idle sway that
+-- brings placed inmates to life.
 
-require(script.CashHud).start()
-require(script.Popups).start()
+require(script.BuildMode).start()
 require(script.InmateAnimator).start()
 ]]></string>
         </Properties>
-        <Item class="ModuleScript" referent="14">
+        <Item class="ModuleScript" referent="16">
           <Properties>
-            <string name="Name">CashHud</string>
-            <string name="Source"><![CDATA[-- CashHud: the on-screen money display, built entirely from code.
---   * Big cash counter, top-center, that smoothly counts up (juice!).
---   * An income line: "4 inmates · $8/sec".
---   * A hint bar at the bottom that doubles as the feedback line for
---     purchases ("Cell #3 built!" / "Need $120 more!").
--- Everything uses scale-friendly sizes and TextScaled so it reads fine
--- on a phone.
+            <string name="Name">BuildMode</string>
+            <string name="Source"><![CDATA[-- BuildMode: the whole building experience on the player's screen.
+--
+--   🔨 Build button (or B key)  ->  opens the asset menu
+--   pick an asset               ->  ghost preview follows your pointer,
+--                                   snapped to your plot's grid
+--   click / tap                 ->  asks the server to place it
+--   R key or ↻ button           ->  rotate 90 degrees
+--   🗑️ mode                     ->  click placed objects to demolish
+--
+-- The menu builds itself from whatever is in ReplicatedStorage/
+-- Buildables — including little live 3D thumbnails — so new assets the
+-- map-maker drops in show up automatically, no code changes ever.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
-local SoundService = game:GetService("SoundService")
+local UserInputService = game:GetService("UserInputService")
 
 local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
-local Format = require(ReplicatedStorage.Shared:WaitForChild("Format"))
+local GridMath = require(ReplicatedStorage.Shared:WaitForChild("GridMath"))
+local AssetCatalog = require(ReplicatedStorage.Shared:WaitForChild("AssetCatalog"))
 
-local CashHud = {}
+local BuildMode = {}
 
-local DEFAULT_HINT = "Walk onto the glowing green pad to buy a cell 🔑"
+local GREEN = Color3.fromRGB(80, 255, 120)
+local RED = Color3.fromRGB(255, 80, 80)
+local PANEL_BG = Color3.fromRGB(20, 24, 20)
 
-local function playBuiltInSound(fileName, volume)
-	-- These sounds ship inside the Roblox engine itself — nothing to
-	-- download, they can never go missing.
-	local sound = Instance.new("Sound")
-	sound.SoundId = "rbxasset://sounds/" .. fileName
-	sound.Volume = volume
-	SoundService:PlayLocalSound(sound)
-	sound:Destroy()
-end
-
-function CashHud.start()
+function BuildMode.start()
 	local player = Players.LocalPlayer
 	local playerGui = player:WaitForChild("PlayerGui")
-	local leaderstats = player:WaitForChild("leaderstats")
-	local cashValue = leaderstats:WaitForChild("Cash")
-	local inmatesValue = leaderstats:WaitForChild("Inmates")
+	local remotes = ReplicatedStorage:WaitForChild("Remotes")
+	local placeRequest = remotes:WaitForChild("PlaceRequest")
+	local deleteRequest = remotes:WaitForChild("DeleteRequest")
 
-	local gui = Instance.new("ScreenGui")
-	gui.Name = "LockdownHUD"
-	gui.ResetOnSpawn = false -- HUD survives respawns
+	local buildablesFolder = ReplicatedStorage:WaitForChild(Config.BuildablesFolderName)
+	local catalogByName, catalogOrdered = AssetCatalog.load(buildablesFolder)
 
-	-- Cash panel -------------------------------------------------------
-	local panel = Instance.new("Frame")
-	panel.Name = "CashPanel"
-	panel.AnchorPoint = Vector2.new(0.5, 0)
-	panel.Position = UDim2.new(0.5, 0, 0, 10)
-	panel.Size = UDim2.new(0, 250, 0, 74)
-	panel.BackgroundColor3 = Color3.fromRGB(20, 24, 20)
-	panel.BackgroundTransparency = 0.25
-	panel.BorderSizePixel = 0
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 14)
-	corner.Parent = panel
+	-- My zone (the server drops a "BuildZone" pointer into the Player).
+	local zone = nil -- { part, info, placed }
+	local occupied = {} -- local mirror of taken grid squares, for preview colors
 
-	local cashLabel = Instance.new("TextLabel")
-	cashLabel.Name = "Cash"
-	cashLabel.Size = UDim2.new(1, -16, 0, 44)
-	cashLabel.Position = UDim2.new(0, 8, 0, 4)
-	cashLabel.BackgroundTransparency = 1
-	cashLabel.Font = Enum.Font.GothamBlack
-	cashLabel.TextScaled = true
-	cashLabel.TextColor3 = Color3.fromRGB(140, 255, 150)
-	cashLabel.Text = Format.money(cashValue.Value)
-	cashLabel.Parent = panel
+	-- Build-mode state.
+	local mode = "off" -- "off" | "place" | "delete"
+	local selected = nil -- asset currently being placed
+	local rot = 0
+	local ghost = nil -- the preview model
+	local ghostHighlight = nil
+	local lastPointer = Vector2.new(0, 0)
+	local ghostCell = nil -- {gx, gz} of the current preview spot
+	local ghostValid = false
+	local hoverHighlight = nil -- delete-mode red glow
+	local zoneBox = nil -- outline of my plot while building
 
-	local incomeLabel = Instance.new("TextLabel")
-	incomeLabel.Name = "Income"
-	incomeLabel.Size = UDim2.new(1, -16, 0, 20)
-	incomeLabel.Position = UDim2.new(0, 8, 0, 48)
-	incomeLabel.BackgroundTransparency = 1
-	incomeLabel.Font = Enum.Font.Gotham
-	incomeLabel.TextScaled = true
-	incomeLabel.TextColor3 = Color3.fromRGB(210, 210, 210)
-	incomeLabel.Parent = panel
+	-- Occupancy mirror ---------------------------------------------------
+	-- The server stamps every placed model with its grid info, so the
+	-- client can tell "that square is taken" without asking.
 
-	panel.Parent = gui
-
-	-- Hint / feedback bar ---------------------------------------------
-	local hint = Instance.new("TextLabel")
-	hint.Name = "Hint"
-	hint.AnchorPoint = Vector2.new(0.5, 1)
-	hint.Position = UDim2.new(0.5, 0, 1, -14)
-	hint.Size = UDim2.new(0.9, 0, 0, 30)
-	hint.BackgroundTransparency = 1
-	hint.Font = Enum.Font.GothamBold
-	hint.TextScaled = true
-	hint.TextColor3 = Color3.fromRGB(255, 255, 255)
-	hint.TextStrokeTransparency = 0.4
-	hint.Text = DEFAULT_HINT
-	hint.Parent = gui
-
-	gui.Parent = playerGui
-
-	-- Smooth count-up: the shown number chases the real number every
-	-- frame instead of teleporting. Cheap and very satisfying.
-	local shown = cashValue.Value
-	RunService.RenderStepped:Connect(function(dt)
-		local target = cashValue.Value
-		if shown ~= target then
-			shown += (target - shown) * math.min(dt * 6, 1)
-			if math.abs(target - shown) < 1 then
-				shown = target
-			end
-			cashLabel.Text = Format.money(shown)
+	local function markModel(model, value)
+		local asset = catalogByName[model:GetAttribute("Asset") or ""]
+		local gx = model:GetAttribute("GX")
+		local gz = model:GetAttribute("GZ")
+		local r = model:GetAttribute("Rot")
+		if not asset or type(gx) ~= "number" or type(gz) ~= "number" or type(r) ~= "number" then
+			return
 		end
-	end)
-
-	local function refreshIncome()
-		local n = inmatesValue.Value
-		local perSec = n * Config.PayoutPerInmate / Config.PayoutInterval
-		incomeLabel.Text = ("%d inmate%s · %s/sec"):format(n, n == 1 and "" or "s", Format.money(perSec))
+		local w, d = GridMath.footprint(asset, r)
+		for x = gx, gx + w - 1 do
+			for z = gz, gz + d - 1 do
+				occupied[x .. ":" .. z] = value
+			end
+		end
 	end
-	refreshIncome()
-	inmatesValue.Changed:Connect(refreshIncome)
 
-	-- Purchase feedback ------------------------------------------------
-	-- Each message bumps this counter; a message only clears itself if a
-	-- newer one hasn't replaced it in the meantime.
-	local messageId = 0
-	local function flashHint(text, color)
-		messageId += 1
-		local id = messageId
-		hint.Text = text
-		hint.TextColor3 = color
-		task.delay(2.5, function()
-			if messageId == id then
-				hint.Text = DEFAULT_HINT
-				hint.TextColor3 = Color3.fromRGB(255, 255, 255)
+	local function regionFree(gx, gz, w, d)
+		for x = gx, gx + w - 1 do
+			for z = gz, gz + d - 1 do
+				if occupied[x .. ":" .. z] then
+					return false
+				end
+			end
+		end
+		return true
+	end
+
+	local function watchZone(zonePart)
+		zone = {
+			part = zonePart,
+			info = GridMath.zoneInfo(zonePart),
+			placed = zonePart:WaitForChild("Placed"),
+		}
+		occupied = {}
+		for _, model in ipairs(zone.placed:GetChildren()) do
+			markModel(model, true)
+		end
+		zone.placed.ChildAdded:Connect(function(model)
+			-- Attributes are set before parenting, so they're readable now.
+			markModel(model, true)
+		end)
+		zone.placed.ChildRemoved:Connect(function(model)
+			markModel(model, nil)
+		end)
+	end
+
+	local zoneMarker = player:WaitForChild("BuildZone", 30)
+	if zoneMarker and zoneMarker.Value then
+		watchZone(zoneMarker.Value)
+	elseif zoneMarker then
+		zoneMarker.Changed:Connect(function(value)
+			if value and not zone then
+				watchZone(value)
 			end
 		end)
 	end
 
-	local purchaseRemote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("PurchaseResult")
-	purchaseRemote.OnClientEvent:Connect(function(success, info)
-		if success then
-			flashHint(
-				("Cell #%d built — a new inmate moved in! 🔒"):format(info.cellIndex),
-				Color3.fromRGB(140, 255, 150)
-			)
-			playBuiltInSound("electronicpingshort.wav", 0.6)
-		elseif info.reason == "poor" then
-			flashHint(
-				("Need %s more for the next cell!"):format(Format.money(info.shortfall)),
-				Color3.fromRGB(255, 120, 110)
-			)
-			playBuiltInSound("uuhhh.mp3", 0.4)
-		elseif info.reason == "full" then
-			flashHint("Your prison is full — max cells reached! 🏆", Color3.fromRGB(255, 215, 120))
+	-- Ghost preview ------------------------------------------------------
+
+	local function destroyGhost()
+		if ghost then
+			ghost:Destroy()
+			ghost = nil
+			ghostHighlight = nil
+		end
+		ghostCell = nil
+	end
+
+	local function makeGhost(asset)
+		destroyGhost()
+		local model = asset.model:Clone()
+		for _, descendant in ipairs(model:GetDescendants()) do
+			if descendant:IsA("BasePart") then
+				descendant.CanCollide = false
+				descendant.CanQuery = false
+				descendant.CanTouch = false
+				descendant.CastShadow = false
+				descendant.Transparency = math.clamp(descendant.Transparency + 0.5, 0.5, 1)
+			elseif descendant:IsA("BillboardGui") then
+				descendant.Enabled = false
+			end
+		end
+		local highlight = Instance.new("Highlight")
+		highlight.FillColor = GREEN
+		highlight.FillTransparency = 0.7
+		highlight.OutlineColor = GREEN
+		highlight.Adornee = model
+		highlight.Parent = model
+		ghost = model
+		ghostHighlight = highlight
+	end
+
+	local function pointerRay()
+		local camera = workspace.CurrentCamera
+		if not camera then
+			return nil
+		end
+		return camera:ViewportPointToRay(lastPointer.X, lastPointer.Y)
+	end
+
+	local function updateGhost()
+		if not (zone and selected and ghost) then
+			return
+		end
+		local ray = pointerRay()
+		if not ray then
+			return
+		end
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Include
+		params.FilterDescendantsInstances = { zone.part }
+		local hit = workspace:Raycast(ray.Origin, ray.Direction * 800, params)
+		if not hit then
+			ghost.Parent = nil -- pointing at the sky / off-plot: hide it
+			ghostCell = nil
+			return
+		end
+
+		local w, d = GridMath.footprint(selected, rot)
+		local gx, gz = GridMath.worldToCell(zone.info, hit.Position, w, d)
+		local pivot = GridMath.placementPivot(zone.info, selected, gx, gz, rot)
+		ghost:PivotTo(pivot)
+		ghost.Parent = workspace
+
+		ghostCell = { gx, gz }
+		ghostValid = regionFree(gx, gz, w, d)
+		local color = ghostValid and GREEN or RED
+		ghostHighlight.FillColor = color
+		ghostHighlight.OutlineColor = color
+	end
+
+	-- UI -----------------------------------------------------------------
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "LockdownBuild"
+	gui.ResetOnSpawn = false
+
+	local toggle = Instance.new("TextButton")
+	toggle.Name = "BuildToggle"
+	toggle.AnchorPoint = Vector2.new(1, 1)
+	toggle.Position = UDim2.new(1, -14, 1, -14)
+	toggle.Size = UDim2.new(0, 120, 0, 48)
+	toggle.BackgroundColor3 = PANEL_BG
+	toggle.BackgroundTransparency = 0.2
+	toggle.Font = Enum.Font.GothamBold
+	toggle.TextSize = 20
+	toggle.TextColor3 = Color3.fromRGB(255, 255, 255)
+	toggle.Text = "🔨 Build"
+	local toggleCorner = Instance.new("UICorner")
+	toggleCorner.CornerRadius = UDim.new(0, 12)
+	toggleCorner.Parent = toggle
+	toggle.Parent = gui
+
+	local panel = Instance.new("Frame")
+	panel.Name = "BuildPanel"
+	panel.AnchorPoint = Vector2.new(0.5, 1)
+	panel.Position = UDim2.new(0.5, 0, 1, -70)
+	panel.Size = UDim2.new(0.94, 0, 0, 150)
+	panel.BackgroundColor3 = PANEL_BG
+	panel.BackgroundTransparency = 0.15
+	panel.Visible = false
+	local panelCorner = Instance.new("UICorner")
+	panelCorner.CornerRadius = UDim.new(0, 14)
+	panelCorner.Parent = panel
+	panel.Parent = gui
+
+	local status = Instance.new("TextLabel")
+	status.Name = "Status"
+	status.AnchorPoint = Vector2.new(0.5, 1)
+	status.Position = UDim2.new(0.5, 0, 0, -6)
+	status.Size = UDim2.new(1, 0, 0, 22)
+	status.BackgroundTransparency = 1
+	status.Font = Enum.Font.GothamBold
+	status.TextScaled = true
+	status.TextColor3 = Color3.fromRGB(255, 255, 255)
+	status.TextStrokeTransparency = 0.4
+	status.Text = ""
+	status.Parent = panel
+
+	local rotateButton = Instance.new("TextButton")
+	rotateButton.Size = UDim2.new(0, 44, 0, 44)
+	rotateButton.Position = UDim2.new(0, 8, 0, 8)
+	rotateButton.BackgroundColor3 = Color3.fromRGB(45, 52, 45)
+	rotateButton.Font = Enum.Font.GothamBold
+	rotateButton.TextSize = 22
+	rotateButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+	rotateButton.Text = "↻"
+	local rotateCorner = Instance.new("UICorner")
+	rotateCorner.CornerRadius = UDim.new(0, 10)
+	rotateCorner.Parent = rotateButton
+	rotateButton.Parent = panel
+
+	local deleteButton = Instance.new("TextButton")
+	deleteButton.Size = UDim2.new(0, 44, 0, 44)
+	deleteButton.Position = UDim2.new(0, 8, 0, 60)
+	deleteButton.BackgroundColor3 = Color3.fromRGB(45, 52, 45)
+	deleteButton.Font = Enum.Font.GothamBold
+	deleteButton.TextSize = 20
+	deleteButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+	deleteButton.Text = "🗑️"
+	local deleteCorner = Instance.new("UICorner")
+	deleteCorner.CornerRadius = UDim.new(0, 10)
+	deleteCorner.Parent = deleteButton
+	deleteButton.Parent = panel
+
+	local list = Instance.new("ScrollingFrame")
+	list.Name = "Assets"
+	list.Position = UDim2.new(0, 60, 0, 8)
+	list.Size = UDim2.new(1, -68, 1, -16)
+	list.BackgroundTransparency = 1
+	list.ScrollBarThickness = 6
+	list.ScrollingDirection = Enum.ScrollingDirection.X
+	list.AutomaticCanvasSize = Enum.AutomaticSize.X
+	list.CanvasSize = UDim2.new(0, 0, 0, 0)
+	local listLayout = Instance.new("UIListLayout")
+	listLayout.FillDirection = Enum.FillDirection.Horizontal
+	listLayout.Padding = UDim.new(0, 8)
+	listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	listLayout.Parent = list
+	list.Parent = panel
+
+	local statusId = 0
+	local function flashStatus(text, color)
+		statusId += 1
+		local id = statusId
+		status.Text = text
+		status.TextColor3 = color or Color3.fromRGB(255, 255, 255)
+		task.delay(2.5, function()
+			if statusId == id then
+				status.Text = ""
+			end
+		end)
+	end
+
+	-- One menu tile per asset, with a live 3D thumbnail.
+	local assetButtons = {}
+	local function refreshSelectionLook()
+		for name, button in pairs(assetButtons) do
+			button.BackgroundColor3 = (selected and selected.name == name)
+				and Color3.fromRGB(60, 110, 60)
+				or Color3.fromRGB(45, 52, 45)
+		end
+	end
+
+	local selectAsset -- declared below; tiles need it
+	for order, asset in ipairs(catalogOrdered) do
+		local tile = Instance.new("TextButton")
+		tile.Name = asset.name
+		tile.LayoutOrder = order
+		tile.Size = UDim2.new(0, 104, 1, 0)
+		tile.BackgroundColor3 = Color3.fromRGB(45, 52, 45)
+		tile.Text = ""
+		local tileCorner = Instance.new("UICorner")
+		tileCorner.CornerRadius = UDim.new(0, 10)
+		tileCorner.Parent = tile
+
+		local viewport = Instance.new("ViewportFrame")
+		viewport.Size = UDim2.new(1, -8, 1, -30)
+		viewport.Position = UDim2.new(0, 4, 0, 4)
+		viewport.BackgroundTransparency = 1
+		local camera = Instance.new("Camera")
+		camera.Parent = viewport
+		viewport.CurrentCamera = camera
+		local preview = asset.model:Clone()
+		preview.Parent = viewport
+		local boxCF, boxSize = preview:GetBoundingBox()
+		local distance = boxSize.Magnitude * 1.1 + 2
+		camera.CFrame = CFrame.lookAt(
+			boxCF.Position + Vector3.new(distance * 0.6, distance * 0.55, distance * 0.6),
+			boxCF.Position
+		)
+		viewport.Parent = tile
+
+		local label = Instance.new("TextLabel")
+		label.AnchorPoint = Vector2.new(0, 1)
+		label.Position = UDim2.new(0, 4, 1, -4)
+		label.Size = UDim2.new(1, -8, 0, 20)
+		label.BackgroundTransparency = 1
+		label.Font = Enum.Font.GothamBold
+		label.TextScaled = true
+		label.TextColor3 = Color3.fromRGB(255, 255, 255)
+		label.Text = asset.name
+		label.Parent = tile
+
+		tile.Activated:Connect(function()
+			selectAsset(asset)
+		end)
+		tile.Parent = list
+		assetButtons[asset.name] = tile
+	end
+
+	gui.Parent = playerGui
+
+	-- Mode switching -----------------------------------------------------
+
+	local function clearHover()
+		if hoverHighlight then
+			hoverHighlight:Destroy()
+			hoverHighlight = nil
+		end
+	end
+
+	local function setMode(newMode)
+		mode = newMode
+		destroyGhost()
+		clearHover()
+		if mode ~= "place" then
+			selected = nil
+		end
+		refreshSelectionLook()
+		panel.Visible = mode ~= "off"
+		toggle.Text = mode == "off" and "🔨 Build" or "✖ Close"
+		deleteButton.BackgroundColor3 = mode == "delete" and Color3.fromRGB(140, 50, 50) or Color3.fromRGB(45, 52, 45)
+		if zoneBox then
+			zoneBox:Destroy()
+			zoneBox = nil
+		end
+		if mode ~= "off" and zone then
+			zoneBox = Instance.new("SelectionBox")
+			zoneBox.Adornee = zone.part
+			zoneBox.Color3 = GREEN
+			zoneBox.LineThickness = 0.06
+			zoneBox.SurfaceTransparency = 1
+			zoneBox.Parent = zone.part
+		end
+	end
+
+	selectAsset = function(asset)
+		if not zone then
+			flashStatus("No build plot assigned yet!", RED)
+			return
+		end
+		mode = "place"
+		selected = asset
+		clearHover()
+		makeGhost(asset)
+		refreshSelectionLook()
+		deleteButton.BackgroundColor3 = Color3.fromRGB(45, 52, 45)
+		flashStatus("Placing: " .. asset.name .. "  (R or ↻ to rotate)", GREEN)
+	end
+
+	toggle.Activated:Connect(function()
+		setMode(mode == "off" and "menu" or "off")
+	end)
+	rotateButton.Activated:Connect(function()
+		rot = (rot + 1) % 4
+	end)
+	deleteButton.Activated:Connect(function()
+		if mode == "delete" then
+			setMode("menu")
+		else
+			setMode("delete")
+			flashStatus("Demolish mode: tap an object to remove it", RED)
+		end
+	end)
+
+	-- Input --------------------------------------------------------------
+
+	local function tryPlace()
+		if not (zone and selected and ghostCell) then
+			return
+		end
+		local ok, result = pcall(function()
+			return placeRequest:InvokeServer(selected.name, ghostCell[1], ghostCell[2], rot)
+		end)
+		if ok and result and result.ok then
+			flashStatus(selected.name .. " placed!", GREEN)
+		elseif ok and result then
+			flashStatus(result.err or "Couldn't place that.", RED)
+		end
+	end
+
+	local function findPlacedModel()
+		if not zone then
+			return nil
+		end
+		local ray = pointerRay()
+		if not ray then
+			return nil
+		end
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Include
+		params.FilterDescendantsInstances = { zone.placed }
+		local hit = workspace:Raycast(ray.Origin, ray.Direction * 800, params)
+		if not hit then
+			return nil
+		end
+		local model = hit.Instance
+		while model and model.Parent ~= zone.placed do
+			model = model.Parent
+		end
+		return model
+	end
+
+	local function tryDelete()
+		local model = findPlacedModel()
+		if not model then
+			return
+		end
+		local ok, result = pcall(function()
+			return deleteRequest:InvokeServer(model)
+		end)
+		if ok and result and result.ok then
+			flashStatus("Demolished!", GREEN)
+		elseif ok and result then
+			flashStatus(result.err or "Couldn't demolish that.", RED)
+		end
+	end
+
+	UserInputService.InputChanged:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseMovement
+			or input.UserInputType == Enum.UserInputType.Touch
+		then
+			lastPointer = Vector2.new(input.Position.X, input.Position.Y)
+		end
+	end)
+
+	UserInputService.InputBegan:Connect(function(input, gameProcessed)
+		if input.UserInputType == Enum.UserInputType.Touch then
+			lastPointer = Vector2.new(input.Position.X, input.Position.Y)
+		end
+		if gameProcessed then
+			return -- the click landed on a button, not the world
+		end
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch
+		then
+			if mode == "place" then
+				updateGhost() -- make sure the ghost matches this exact tap
+				if ghostValid then
+					tryPlace()
+				end
+			elseif mode == "delete" then
+				tryDelete()
+			end
+		elseif input.KeyCode == Enum.KeyCode.B then
+			setMode(mode == "off" and "menu" or "off")
+		elseif input.KeyCode == Enum.KeyCode.R and mode == "place" then
+			rot = (rot + 1) % 4
+		end
+	end)
+
+	RunService.RenderStepped:Connect(function()
+		if mode == "place" then
+			updateGhost()
+		elseif mode == "delete" then
+			local model = findPlacedModel()
+			if model then
+				-- One reusable highlight, just re-aimed — no churn.
+				if not hoverHighlight then
+					hoverHighlight = Instance.new("Highlight")
+					hoverHighlight.FillColor = RED
+					hoverHighlight.FillTransparency = 0.6
+					hoverHighlight.OutlineColor = RED
+					hoverHighlight.Parent = gui
+				end
+				hoverHighlight.Adornee = model
+			elseif hoverHighlight then
+				hoverHighlight.Adornee = nil
+			end
 		end
 	end)
 end
 
-return CashHud
+return BuildMode
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="15">
+        <Item class="ModuleScript" referent="17">
           <Properties>
             <string name="Name">InmateAnimator</string>
             <string name="Source"><![CDATA[-- InmateAnimator: makes the blocky inmates feel alive without costing
@@ -1254,71 +1746,6 @@ function InmateAnimator.start()
 end
 
 return InmateAnimator
-]]></string>
-          </Properties>
-        </Item>
-        <Item class="ModuleScript" referent="16">
-          <Properties>
-            <string name="Name">Popups</string>
-            <string name="Source"><![CDATA[-- Popups: floating "+$40" text in the world whenever your inmates pay
--- up. Each popup is a tiny invisible part with a BillboardGui that
--- drifts upward and fades — created on this player's device only, so it
--- costs the server nothing.
-
-local Debris = game:GetService("Debris")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local TweenService = game:GetService("TweenService")
-
-local Format = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Format"))
-
-local Popups = {}
-
-function Popups.start()
-	local popupRemote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Popup")
-
-	popupRemote.OnClientEvent:Connect(function(worldPosition, amount)
-		local anchor = Instance.new("Part")
-		anchor.Anchored = true
-		anchor.CanCollide = false
-		anchor.CanQuery = false
-		anchor.CanTouch = false
-		anchor.Transparency = 1
-		anchor.Size = Vector3.new(0.2, 0.2, 0.2)
-		anchor.CFrame = CFrame.new(worldPosition)
-
-		local gui = Instance.new("BillboardGui")
-		gui.Size = UDim2.new(0, 130, 0, 40)
-		gui.StudsOffset = Vector3.new(0, 0, 0)
-		gui.AlwaysOnTop = true
-		gui.MaxDistance = 250
-
-		local label = Instance.new("TextLabel")
-		label.Size = UDim2.new(1, 0, 1, 0)
-		label.BackgroundTransparency = 1
-		label.Font = Enum.Font.GothamBlack
-		label.TextScaled = true
-		label.TextColor3 = Color3.fromRGB(140, 255, 150)
-		label.TextStrokeTransparency = 0.3
-		label.Text = "+" .. Format.money(amount)
-		label.Parent = gui
-		gui.Parent = anchor
-		anchor.Parent = workspace
-
-		-- Drift up 4 studs while the text fades out, then self-destruct.
-		local drift = TweenService:Create(gui, TweenInfo.new(1.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-			StudsOffset = Vector3.new(0, 4, 0),
-		})
-		local fade = TweenService:Create(label, TweenInfo.new(1.4, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
-			TextTransparency = 1,
-			TextStrokeTransparency = 1,
-		})
-		drift:Play()
-		fade:Play()
-		Debris:AddItem(anchor, 1.6)
-	end)
-end
-
-return Popups
 ]]></string>
           </Properties>
         </Item>

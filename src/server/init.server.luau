@@ -1,35 +1,35 @@
--- Lockdown server bootstrap. This is the first script the game runs.
--- It creates the RemoteEvents (the "phone lines" the server and each
--- player's screen use to talk), then starts every game system in order.
+-- Lockdown server bootstrap — first thing the game runs.
+-- Creates the RemoteFunctions (the "ask the server" phone lines the
+-- build UI uses), then starts every system in order.
+--
+-- Order matters: saving must exist before plots hand out zones, and the
+-- asset catalog must exist before anything can be placed.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
--- Phone lines to the client:
---   Popup          -> "show a floating +$40 at this spot"
---   PurchaseResult -> "your buy attempt succeeded/failed, react!"
 local remotes = Instance.new("Folder")
 remotes.Name = "Remotes"
 
-local popupRemote = Instance.new("RemoteEvent")
-popupRemote.Name = "Popup"
-popupRemote.Parent = remotes
+-- Client asks "place this asset at grid square X,Z rotated R" and gets
+-- back { ok = true } or { ok = false, err = "reason" }.
+local placeRequest = Instance.new("RemoteFunction")
+placeRequest.Name = "PlaceRequest"
+placeRequest.Parent = remotes
 
-local purchaseRemote = Instance.new("RemoteEvent")
-purchaseRemote.Name = "PurchaseResult"
-purchaseRemote.Parent = remotes
+local deleteRequest = Instance.new("RemoteFunction")
+deleteRequest.Name = "DeleteRequest"
+deleteRequest.Parent = remotes
 
 remotes.Parent = ReplicatedStorage
 
--- Start the systems. Order matters: the world must exist before plots
--- are placed on it, and saving must be ready before players get plots.
-local World = require(script.World)
 local SaveService = require(script.SaveService)
+local Buildables = require(script.Buildables)
+local PlacementService = require(script.PlacementService)
 local PlotService = require(script.PlotService)
-local Economy = require(script.Economy)
 
-World.build()
 SaveService.init()
+Buildables.init()
+PlacementService.init()
 PlotService.init()
-Economy.init()
 
-print("[Lockdown] Server ready — Phase 1 MVP")
+print("[Lockdown] Server ready — placement build")

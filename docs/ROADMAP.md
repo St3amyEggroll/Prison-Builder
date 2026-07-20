@@ -17,21 +17,26 @@ Get comfy in Roblox Studio before building the real thing.
 - [x] Learn how saving works (DataStores) — *handled: Claude built cloud saving in Phase 1*
 - [x] Build a throwaway "hello world" — *skipped ahead: Phase 1 is the real thing*
 
-## Phase 1 — MVP: the core money loop 🚀 *shippable*
+## Phase 1 — MVP: the placement system 🚀 *shippable*
 
-Smallest fun thing: buy cell → inmate → earns cash → buy another. Nothing else yet.
+> 🔄 **Direction pivot (owner's call):** the game is player-built prisons — the owner hand-makes the map and the buildable assets in Studio; players get a placement system, not preset cells. Free building first; money wires back in at the start of Phase 2. The first version (auto-generated prison, walk-on buy pad) was replaced.
 
-- [x] One plot with a baseplate and a "buy" button for a cell — *6 walled plots, walk-on buy pad (works on phones too)*
-- [x] Buying a cell spawns an inmate that pays cash on a timer — *$2/sec each, 22 cells with rising prices*
-- [x] Build the inmate as a **lightweight custom rig** (not a default character) — *6 anchored parts, no Humanoid, client-side idle sway, distance culling*
-- [x] Cash counter UI that goes up; buttons to buy more cells — *smooth count-up HUD, floating +$ popups, income/sec line*
-- [x] Save/load the player's cash and cells — *cloud DataStore save on leave + 60s autosave + shutdown save*
-- [ ] Playtest with a friend. Is expanding fun on its own? Fix until "yes" — **← your move!**
+- [x] Grid placement system: snapping ghost preview, green/red validity, 90° rotation, works on PC + touch
+- [x] Build menu auto-generated from the owner's `Buildables` folder, with live 3D thumbnails
+- [x] Demolish mode (server-validated — players can only touch their own plot)
+- [x] Plot zones read from the owner's map (`PlotZones` folder); flat test map auto-generated until it exists
+- [x] 6 replaceable placeholder assets: Wall, Floor Tile, Fence, Security Door, Prison Cell, Guard Tower
+- [x] `SpawnsInmate` assets house a lightweight custom-rig inmate (no Humanoid — phone-friendly from day one)
+- [x] Layout cloud-saving: rebuilt exactly on rejoin (autosave + save-on-leave + shutdown save)
+- [ ] Owner: first version of the real map (`PlotZones` + SpawnLocation) — **← your move!**
+- [ ] Owner: first custom asset in `Buildables`
+- [ ] Playtest with a friend. Is building fun on its own? Fix until "yes"
 
 ## Phase 2 — Needs & staff foundation
 
 Give inmates simple needs and hire your first guard & cook.
 
+- [ ] Wire money back in: `Price` attribute on assets, income from placed cells, cash HUD
 - [ ] Add Food + Sleep need meters (just two to start)
 - [ ] Build kitchen/canteen & beds that fill those needs
 - [ ] Hire a Cook and a Guard (daily wages come out of your cash)

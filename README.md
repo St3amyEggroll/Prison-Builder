@@ -19,20 +19,21 @@ You build and run a max-security prison from the top-down view… then real play
 
 Prison Architect lets you fight AI escapes alone — Lockdown turns it into a multiplayer game of *"nobody escapes MY prison."*
 
-## 🎮 Play the current build (Phase 1 MVP)
+## 🎮 The current build: grid placement system
 
-1. Download **[Lockdown.rbxlx](Lockdown.rbxlx)** (open the file on GitHub → "Download raw file")
-2. Double-click it — it opens in Roblox Studio
-3. Press ▶ Play, walk to your prison, step on the green pad
+Players build their prison **piece by piece on their own plot**: open the build menu (🔨/B), pick an asset, aim the snapping ghost preview, click to place, R to rotate, 🗑️ to demolish. Layouts cloud-save and rebuild on rejoin.
 
-First time? Follow the click-by-click guide: **[SETUP.md](SETUP.md)** — no coding anywhere, promise.
+The map and the buildable assets are **hand-made in Studio by the owner** — the code finds them by convention (a `PlotZones` folder for build areas, a `Buildables` folder for placeable models, see [docs/BUILDING_ASSETS.md](docs/BUILDING_ASSETS.md)) and auto-generates a flat test map only until the real one exists. Free building for now; prices and income wire back in next.
+
+Get running: **[SETUP.md](SETUP.md)** — no coding anywhere, promise.
 
 ## 📂 What's in this repo
 
 | Doc | What it's for |
 |---|---|
-| [SETUP.md](SETUP.md) | Click-by-click: install Studio, open the game, publish, play with friends |
-| `Lockdown.rbxlx` | **The game itself** — the built place file, updated every phase |
+| [SETUP.md](SETUP.md) | Click-by-click: install, run the demo, sync code into YOUR map, publish |
+| [docs/BUILDING_ASSETS.md](docs/BUILDING_ASSETS.md) | **Your handbook** — how to make the map and buildable assets in Studio |
+| `Lockdown.rbxlx` | Quick demo build (auto test map) — your real game lives in your own place file |
 | `src/` + `default.project.json` | All the game code (Luau, organized by [Rojo](https://rojo.space)) — Claude's department |
 | [docs/WHO_DOES_WHAT.md](docs/WHO_DOES_WHAT.md) | How we build this together — Claude writes all the code, you playtest & publish |
 | [docs/GAME_PLAN.md](docs/GAME_PLAN.md) | The full design doc — core loop, systems, Roblox-only features, themes, monetization |

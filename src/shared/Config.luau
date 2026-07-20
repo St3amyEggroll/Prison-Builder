@@ -1,46 +1,47 @@
--- Config: every "game designer number" lives in this one file.
--- Want cells cheaper, inmates to pay more, or a bigger prison?
--- Change a number here and rebuild — no real code needs touching.
+-- Config: every tunable number and naming convention in one place.
+--
+-- The two IMPORTANT CONVENTIONS the map-maker (you!) uses in Studio:
+--   * Workspace -> a folder named "PlotZones" holding flat, anchored
+--     Parts. Each Part is one player's build area. Your map, your rules —
+--     the code finds them wherever you put them.
+--   * ReplicatedStorage -> a folder named "Buildables" holding Models.
+--     Every Model in it automatically appears in the build menu.
+-- Full guide: docs/BUILDING_ASSETS.md
 
 local Config = {}
 
--- Money -----------------------------------------------------------------
+-- Building ---------------------------------------------------------------
 
--- Cash a brand-new warden starts with. It exactly covers the first cell,
--- so the very first thing a player does is buy something (instant win!).
-Config.StartingCash = 50
+-- Placement grid size in studs. Everything snaps to this. Assets bigger
+-- than one grid square automatically take up more squares.
+Config.GridSize = 4
 
--- Price of each cell, in order. Cell #1 costs 50, cell #2 costs 100, etc.
--- The list length also decides the max prison size for now (22 cells).
-Config.CellCosts = {
-	50, 100, 170, 280, 450, 700, 1100, 1700, 2600, 3900,
-	5800, 8500, 12000, 17000, 24000, 33000, 45000, 60000,
-	80000, 105000, 135000, 170000,
-}
-Config.MaxCells = #Config.CellCosts
+-- Rotation happens in steps of 90 degrees (0, 90, 180, 270).
 
--- Every PayoutInterval seconds, each inmate pays PayoutPerInmate cash.
--- 10 cash every 5 seconds = $2/sec per inmate. With the numbers above, a
--- new player affords cell #2 about 50 seconds in — under the golden-rule
--- 90 seconds for the first real upgrade.
-Config.PayoutInterval = 5
-Config.PayoutPerInmate = 10
+-- Folder names the code looks for (the conventions described up top).
+Config.ZonesFolderName = "PlotZones"
+Config.BuildablesFolderName = "Buildables"
 
--- World -----------------------------------------------------------------
-
--- How many player plots the server builds. Each visitor gets their own.
-Config.PlotCount = 6
+-- Set attribute "NoPlaceholders" = true on your Buildables folder once
+-- you have your own assets and want Claude's placeholder models gone.
 
 -- Saving ----------------------------------------------------------------
 
--- How often (seconds) progress is auto-saved, on top of saving when a
--- player leaves. Roblox limits DataStore writes, so keep this >= 60.
+-- How often (seconds) layouts auto-save, on top of saving when a player
+-- leaves. Roblox limits DataStore writes, so keep this >= 60.
 Config.AutosaveInterval = 60
+
+-- Fallback test map ------------------------------------------------------
+
+-- Only used when Workspace has no PlotZones folder yet: the code builds
+-- a simple flat test map so the game always runs. The moment your real
+-- map (with a PlotZones folder) exists, none of this happens.
+Config.FallbackZoneCount = 4
+Config.FallbackZoneSize = 128
 
 -- Flavor ----------------------------------------------------------------
 
--- Inmate names, assigned by cell number (cell #1 always holds Sneaky
--- Pete). Silly on purpose — this is a cozy prison.
+-- Inmate names for assets that spawn an inmate (SpawnsInmate attribute).
 Config.InmateNames = {
 	"Sneaky Pete", "Tunnel Tim", "Fingers McGee", "Slippery Sam",
 	"Crowbar Carl", "Ladder Larry", "Muddy Marv", "Wall-Eye Wally",

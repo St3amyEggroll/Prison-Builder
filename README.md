@@ -23,6 +23,7 @@ Prison Architect lets you fight AI escapes alone — Lockdown turns it into a mu
 
 | Doc | What it's for |
 |---|---|
+| [docs/WHO_DOES_WHAT.md](docs/WHO_DOES_WHAT.md) | How we build this together — Claude writes all the code, you playtest & publish |
 | [docs/GAME_PLAN.md](docs/GAME_PLAN.md) | The full design doc — core loop, systems, Roblox-only features, themes, monetization |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | The build roadmap (Phases 0–7) as a tickable checklist — the working to-do list |
 | [docs/ESCAPE_IDEAS.md](docs/ESCAPE_IDEAS.md) | Living notes doc of every escape type + its counter, so no idea gets lost |

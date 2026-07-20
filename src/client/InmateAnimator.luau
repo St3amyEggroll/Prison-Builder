@@ -1,40 +1,88 @@
--- InmateAnimator: makes the blocky inmates feel alive without costing
--- anything. Server-side they are frozen statues; on each player's own
--- device this script gives nearby ones a slow idle sway (a little turn
--- of the shoulders, a tiny breathing bob).
+-- InmateAnimator: brings the blocky prisoners to life — entirely on each
+-- player's own device, so a full prison of them costs the server nothing.
 --
--- Performance rules baked in:
---   * Inmates farther than CULL_DISTANCE from the camera don't animate
---     at all — you can't see a 0.1-stud bob from 60 studs away.
---   * Everything is plain CFrame math on anchored parts: no Humanoids,
---     no physics, no animation tracks. A phone shrugs at 100 of these.
+-- Every inmate is in one of three states, driven by attributes the
+-- server stamps on the model:
+--   HANDCUFFED  (Handcuffed = true, no escort running)
+--     Stands still at the gate, hands bound in front, tiny nervous bob.
+--   ESCORTED    (EscortFrom/To/Start/Dur set)
+--     Walks a straight line to their new cell, legs swinging, still cuffed.
+--   HOUSED      (cuffs off)
+--     Free-roams around their home spot: idle a while, amble to a random
+--     nearby point, repeat. This is the "prison feels alive" layer.
+--
+-- Performance rules: no Humanoids, no physics — just CFrame math on
+-- anchored parts, skipped entirely for inmates far from the camera.
 
 local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+
+local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
 
 local InmateAnimator = {}
 
-local CULL_DISTANCE = 160
+local CULL_DISTANCE = 170
+local LIMB_NAMES = { "LeftArm", "RightArm", "LeftLeg", "RightLeg" }
 
 function InmateAnimator.start()
-	-- model -> { base = original pose, seed = personal rhythm offset }
 	local tracked = {}
 
 	local function watch(model)
-		-- The model streams in part-by-part; wait until its PrimaryPart
-		-- (the torso) exists before measuring its resting pose.
 		task.spawn(function()
 			local tries = 0
 			while model.PrimaryPart == nil and model.Parent ~= nil and tries < 100 do
 				tries += 1
 				task.wait(0.1)
 			end
-			if model.PrimaryPart and model.Parent then
-				tracked[model] = {
-					base = model:GetPivot(),
-					seed = model:GetAttribute("Seed") or 0,
-				}
+			if not (model.PrimaryPart and model.Parent) then
+				return
 			end
+
+			-- Work in FEET space: the model's pivot is its torso, 3 studs
+			-- above the ground — everything here is measured from the feet
+			-- so it lines up with the server's floor-level escort positions.
+			local feetCF = model:GetPivot() * CFrame.new(0, -3, 0)
+			local info = {
+				parts = {},
+				offsets = {}, -- part -> resting CFrame relative to the root
+				hips = {}, -- limb part -> pivot point at the TOP of the limb
+				seed = model:GetAttribute("Seed") or 0,
+				pos = feetCF.Position,
+				home = feetCF.Position,
+				yaw = select(2, feetCF:ToEulerAnglesYXZ()),
+				mode = "idle",
+				timer = 1 + math.random() * 4,
+				target = nil,
+				phase = 0,
+				escortTo = nil,
+			}
+			for _, part in ipairs(model:GetChildren()) do
+				if part:IsA("BasePart") and part.Name ~= "Cuffs" then
+					info.parts[part.Name] = part
+					info.offsets[part.Name] = feetCF:ToObjectSpace(part.CFrame)
+				end
+			end
+			for _, limbName in ipairs(LIMB_NAMES) do
+				if info.offsets[limbName] then
+					-- Limbs rotate from their top (the shoulder / hip).
+					info.hips[limbName] = info.offsets[limbName] * CFrame.new(0, 1, 0)
+				end
+			end
+
+			-- When the server finishes an escort it clears EscortStart —
+			-- that's the moment this inmate's home becomes the cell.
+			model:GetAttributeChangedSignal("EscortStart"):Connect(function()
+				if model:GetAttribute("EscortStart") == nil and info.escortTo then
+					info.pos = info.escortTo
+					info.home = info.escortTo
+					info.escortTo = nil
+					info.mode = "idle"
+					info.timer = 1 + math.random() * 3
+				end
+			end)
+
+			tracked[model] = info
 		end)
 	end
 
@@ -46,12 +94,13 @@ function InmateAnimator.start()
 		tracked[model] = nil
 	end)
 
-	RunService.Heartbeat:Connect(function()
+	RunService.Heartbeat:Connect(function(dt)
 		local camera = workspace.CurrentCamera
 		if not camera then
 			return
 		end
 		local camPos = camera.CFrame.Position
+		local now = workspace:GetServerTimeNow()
 		local t = os.clock()
 
 		for model, info in pairs(tracked) do
@@ -59,15 +108,97 @@ function InmateAnimator.start()
 				tracked[model] = nil
 				continue
 			end
-			local distance = (info.base.Position - camPos).Magnitude
-			if distance > CULL_DISTANCE then
+			if (info.pos - camPos).Magnitude > CULL_DISTANCE then
 				continue
 			end
-			-- Slow shoulder sway + faint breathing bob, offset by each
-			-- inmate's personal seed so the cellblock never syncs up.
-			local sway = math.sin(t * 0.9 + info.seed) * 0.25
-			local bob = math.abs(math.sin(t * 1.7 + info.seed)) * 0.08
-			model:PivotTo(info.base * CFrame.new(0, bob, 0) * CFrame.Angles(0, sway, 0))
+
+			local cuffed = model:GetAttribute("Handcuffed") == true
+			local escortStart = model:GetAttribute("EscortStart")
+			local walking = false
+			local bob = 0
+
+			if escortStart then
+				-- ESCORTED: follow the server's straight line on a shared
+				-- clock, so everyone sees the same walk.
+				local from = model:GetAttribute("EscortFrom")
+				local to = model:GetAttribute("EscortTo")
+				local dur = model:GetAttribute("EscortDur") or 1
+				if typeof(from) == "Vector3" and typeof(to) == "Vector3" then
+					info.escortTo = to
+					local alpha = math.clamp((now - escortStart) / dur, 0, 1)
+					info.pos = from:Lerp(to, alpha)
+					local dir = to - from
+					if dir.Magnitude > 0.01 then
+						info.yaw = math.atan2(-dir.X, -dir.Z)
+					end
+					walking = alpha < 1
+				end
+			elseif cuffed then
+				-- HANDCUFFED at the gate: stand still, shift nervously.
+				bob = math.abs(math.sin(t * 1.4 + info.seed)) * 0.05
+			else
+				-- HOUSED: the idle/amble loop.
+				if info.mode == "idle" then
+					bob = math.abs(math.sin(t * 1.7 + info.seed)) * 0.08
+					info.yaw += math.sin(t * 0.5 + info.seed) * 0.003
+					info.timer -= dt
+					if info.timer <= 0 then
+						local angle = math.random() * math.pi * 2
+						local radius = 1 + math.random() * (Config.WanderRadius - 1)
+						info.target = info.home + Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius)
+						info.mode = "walk"
+					end
+				else
+					local dir = info.target - info.pos
+					local flat = Vector3.new(dir.X, 0, dir.Z)
+					if flat.Magnitude < 0.2 then
+						info.mode = "idle"
+						info.timer = 2 + math.random() * 5
+					else
+						local step = math.min(Config.WalkSpeed * dt, flat.Magnitude)
+						info.pos += flat.Unit * step
+						local wantYaw = math.atan2(-flat.X, -flat.Z)
+						local diff = math.atan2(math.sin(wantYaw - info.yaw), math.cos(wantYaw - info.yaw))
+						info.yaw += diff * math.min(dt * 8, 1)
+						walking = true
+					end
+				end
+			end
+
+			if walking then
+				info.phase += dt * 9
+				bob = math.abs(math.sin(info.phase)) * 0.12
+			end
+
+			-- Write the skeleton: root, then each limb with its motion.
+			local root = CFrame.new(info.pos + Vector3.new(0, bob, 0)) * CFrame.Angles(0, info.yaw, 0)
+			local swing = walking and math.sin(info.phase) * 0.5 or 0
+
+			for name, part in pairs(info.parts) do
+				if name == "LeftLeg" or name == "RightLeg" then
+					local legSwing = name == "LeftLeg" and swing or -swing
+					part.CFrame = root * info.hips[name] * CFrame.Angles(legSwing, 0, 0) * CFrame.new(0, -1, 0)
+				elseif name == "LeftArm" or name == "RightArm" then
+					local armCF
+					if cuffed then
+						-- Hands bound in front at the waist.
+						armCF = CFrame.Angles(math.rad(-50), 0, name == "LeftArm" and math.rad(12) or math.rad(-12))
+					elseif walking then
+						armCF = CFrame.Angles(name == "LeftArm" and -swing * 0.7 or swing * 0.7, 0, 0)
+					else
+						armCF = CFrame.Angles(math.sin(t * 1.1 + info.seed) * 0.04, 0, 0)
+					end
+					part.CFrame = root * info.hips[name] * armCF * CFrame.new(0, -1, 0)
+				else
+					part.CFrame = root * info.offsets[name]
+				end
+			end
+
+			-- The cuffs prop rides along in front of the waist.
+			local cuffsPart = model:FindFirstChild("Cuffs")
+			if cuffsPart then
+				cuffsPart.CFrame = root * CFrame.new(0, 2.3, -1.05)
+			end
 		end
 	end)
 end

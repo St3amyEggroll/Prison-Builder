@@ -11,7 +11,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local GridMath = require(ReplicatedStorage.Shared.GridMath)
 local Buildables = require(script.Parent.Buildables)
-local InmateService = require(script.Parent.InmateService)
 
 local PlacementService = {}
 
@@ -65,23 +64,20 @@ local function placeInternal(player, zone, asset, gx, gz, rot)
 	nextId += 1
 	local id = nextId
 
-	local pivot, groundCF = GridMath.placementPivot(zone.info, asset, gx, gz, rot)
+	local pivot = GridMath.placementPivot(zone.info, asset, gx, gz, rot)
 	local model = asset.model:Clone()
 	model:PivotTo(pivot)
 	-- Attributes double as the client's info source (for previews and
 	-- delete-mode) and as debugging breadcrumbs in the Explorer.
+	-- (Housing assets keep their SpawnsInmate attribute — IntakeService
+	-- counts them as capacity; prisoners arrive via intake, not on
+	-- placement.)
 	model:SetAttribute("LayoutId", id)
 	model:SetAttribute("Asset", asset.name)
 	model:SetAttribute("GX", gx)
 	model:SetAttribute("GZ", gz)
 	model:SetAttribute("Rot", rot)
 	model.Parent = zone.placed
-
-	if asset.spawnsInmate then
-		-- Parented to the placed model, so deleting the cell removes its
-		-- resident too.
-		InmateService.spawn(groundCF * CFrame.new(-1.5, 0.4, 1), id, model)
-	end
 
 	setRegion(zone, gx, gz, w, d, true)
 	table.insert(layouts[player], { n = asset.name, x = gx, z = gz, r = rot, id = id, model = model })
@@ -170,6 +166,52 @@ function PlacementService.handlePlace(player, assetName, gx, gz, rot)
 	return { ok = true }
 end
 
+-- Drag-to-build: place a straight line of a 1x1 asset in one request
+-- (walls, fences, floors). Occupied squares along the line are skipped
+-- rather than failing the whole drag.
+function PlacementService.handlePlaceLine(player, assetName, x1, z1, x2, z2)
+	local zone = playerZones[player]
+	if not zone then
+		return { ok = false, err = "You don't have a plot yet." }
+	end
+	if tooFast(player) then
+		return { ok = false, err = "Too fast!" }
+	end
+	if type(assetName) ~= "string" or type(x1) ~= "number" or type(z1) ~= "number"
+		or type(x2) ~= "number" or type(z2) ~= "number"
+	then
+		return { ok = false, err = "Bad request." }
+	end
+	local asset = Buildables.get(assetName)
+	if not asset then
+		return { ok = false, err = "Unknown asset." }
+	end
+	if asset.cellsW ~= 1 or asset.cellsD ~= 1 then
+		return { ok = false, err = "Only 1-square assets can be dragged in lines." }
+	end
+
+	local startX, startZ, axis, count = GridMath.lineCells(
+		math.floor(x1), math.floor(z1), math.floor(x2), math.floor(z2)
+	)
+	count = math.min(count, 64)
+	-- Pieces auto-face along the drag: lengthwise walls form a solid run.
+	local rot = axis == "x" and 0 or 1
+
+	local placed = 0
+	for i = 0, count - 1 do
+		local gx = axis == "x" and startX + i or startX
+		local gz = axis == "z" and startZ + i or startZ
+		local model = placeInternal(player, zone, asset, gx, gz, rot)
+		if model then
+			placed += 1
+		end
+	end
+	if placed == 0 then
+		return { ok = false, err = "Nothing free along that line." }
+	end
+	return { ok = true, placed = placed }
+end
+
 function PlacementService.handleDelete(player, model)
 	local zone = playerZones[player]
 	if not zone then
@@ -203,6 +245,7 @@ end
 function PlacementService.init()
 	local remotes = ReplicatedStorage:WaitForChild("Remotes")
 	remotes.PlaceRequest.OnServerInvoke = PlacementService.handlePlace
+	remotes.PlaceLineRequest.OnServerInvoke = PlacementService.handlePlaceLine
 	remotes.DeleteRequest.OnServerInvoke = PlacementService.handleDelete
 end
 

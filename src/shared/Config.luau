@@ -25,6 +25,36 @@ Config.BuildablesFolderName = "Buildables"
 -- Set attribute "NoPlaceholders" = true on your Buildables folder once
 -- you have your own assets and want Claude's placeholder models gone.
 
+-- Rooms ------------------------------------------------------------------
+
+-- Room types for the room painter (pick one, then drag a rectangle).
+-- Colors are the floor-overlay tint players see.
+Config.RoomTypes = {
+	{ name = "Cell", color = Color3.fromRGB(255, 140, 60) },
+	{ name = "Canteen", color = Color3.fromRGB(255, 220, 90) },
+	{ name = "Kitchen", color = Color3.fromRGB(235, 90, 80) },
+	{ name = "Yard", color = Color3.fromRGB(110, 210, 110) },
+	{ name = "Shower", color = Color3.fromRGB(100, 180, 255) },
+	{ name = "Workshop", color = Color3.fromRGB(190, 140, 90) },
+	{ name = "Office", color = Color3.fromRGB(190, 120, 220) },
+	{ name = "Storage", color = Color3.fromRGB(160, 160, 160) },
+}
+
+-- Intake -----------------------------------------------------------------
+
+-- Prisoners arrive at the FRONT of the plot (the +Z side of the zone
+-- Part — rotate the Part in Studio to choose which side that is),
+-- handcuffed, and wait until an empty housing asset exists. Then they're
+-- escorted in, uncuffed, and start living there.
+Config.MaxWaiting = 6 -- how many can crowd the front gate
+Config.IntakeInterval = 12 -- seconds between auto-intake arrivals
+Config.EscortSpeed = 4.5 -- studs/sec while being walked to a cell
+
+-- Inmate life ------------------------------------------------------------
+
+Config.WanderRadius = 3.5 -- how far a housed inmate roams from home
+Config.WalkSpeed = 3.5 -- studs/sec while wandering
+
 -- Saving ----------------------------------------------------------------
 
 -- How often (seconds) layouts auto-save, on top of saving when a player

@@ -97,6 +97,36 @@ Config.BuildablesFolderName = "Buildables"
 -- Set attribute "NoPlaceholders" = true on your Buildables folder once
 -- you have your own assets and want Claude's placeholder models gone.
 
+-- Rooms ------------------------------------------------------------------
+
+-- Room types for the room painter (pick one, then drag a rectangle).
+-- Colors are the floor-overlay tint players see.
+Config.RoomTypes = {
+	{ name = "Cell", color = Color3.fromRGB(255, 140, 60) },
+	{ name = "Canteen", color = Color3.fromRGB(255, 220, 90) },
+	{ name = "Kitchen", color = Color3.fromRGB(235, 90, 80) },
+	{ name = "Yard", color = Color3.fromRGB(110, 210, 110) },
+	{ name = "Shower", color = Color3.fromRGB(100, 180, 255) },
+	{ name = "Workshop", color = Color3.fromRGB(190, 140, 90) },
+	{ name = "Office", color = Color3.fromRGB(190, 120, 220) },
+	{ name = "Storage", color = Color3.fromRGB(160, 160, 160) },
+}
+
+-- Intake -----------------------------------------------------------------
+
+-- Prisoners arrive at the FRONT of the plot (the +Z side of the zone
+-- Part — rotate the Part in Studio to choose which side that is),
+-- handcuffed, and wait until an empty housing asset exists. Then they're
+-- escorted in, uncuffed, and start living there.
+Config.MaxWaiting = 6 -- how many can crowd the front gate
+Config.IntakeInterval = 12 -- seconds between auto-intake arrivals
+Config.EscortSpeed = 4.5 -- studs/sec while being walked to a cell
+
+-- Inmate life ------------------------------------------------------------
+
+Config.WanderRadius = 3.5 -- how far a housed inmate roams from home
+Config.WalkSpeed = 3.5 -- studs/sec while wandering
+
 -- Saving ----------------------------------------------------------------
 
 -- How often (seconds) layouts auto-save, on top of saving when a player
@@ -222,6 +252,17 @@ function GridMath.inBounds(zoneInfo, gx, gz, w, d)
 	return gx >= 0 and gz >= 0 and gx + w <= zoneInfo.cols and gz + d <= zoneInfo.rows
 end
 
+-- Turn a drag from square (x1,z1) to (x2,z2) into a straight line of
+-- squares along the dominant axis (PA-style wall dragging). Returns the
+-- line's start square, the axis ("x" or "z"), and how many squares.
+function GridMath.lineCells(x1, z1, x2, z2)
+	local dx, dz = x2 - x1, z2 - z1
+	if math.abs(dx) >= math.abs(dz) then
+		return math.min(x1, x2), z1, "x", math.abs(dx) + 1
+	end
+	return x1, math.min(z1, z2), "z", math.abs(dz) + 1
+end
+
 -- The final world CFrame for a placed asset: footprint center, raised by
 -- half the asset's height, spun by the rotation, then adjusted by the
 -- asset's own pivot offset so ANY model lands resting on the ground.
@@ -250,7 +291,7 @@ return GridMath
         <token name="RunContext">0</token>
         <string name="Source"><![CDATA[-- Lockdown server bootstrap — first thing the game runs.
 -- Creates the RemoteFunctions (the "ask the server" phone lines the
--- build UI uses), then starts every system in order.
+-- client UIs use), then starts every system in order.
 --
 -- Order matters: saving must exist before plots hand out zones, and the
 -- asset catalog must exist before anything can be placed.
@@ -260,29 +301,30 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local remotes = Instance.new("Folder")
 remotes.Name = "Remotes"
 
--- Client asks "place this asset at grid square X,Z rotated R" and gets
--- back { ok = true } or { ok = false, err = "reason" }.
-local placeRequest = Instance.new("RemoteFunction")
-placeRequest.Name = "PlaceRequest"
-placeRequest.Parent = remotes
-
-local deleteRequest = Instance.new("RemoteFunction")
-deleteRequest.Name = "DeleteRequest"
-deleteRequest.Parent = remotes
+-- Every request returns { ok = true, ... } or { ok = false, err = "why" }.
+for _, name in ipairs({ "PlaceRequest", "PlaceLineRequest", "DeleteRequest", "RoomPaintRequest", "IntakeRequest" }) do
+	local remote = Instance.new("RemoteFunction")
+	remote.Name = name
+	remote.Parent = remotes
+end
 
 remotes.Parent = ReplicatedStorage
 
 local SaveService = require(script.SaveService)
 local Buildables = require(script.Buildables)
 local PlacementService = require(script.PlacementService)
+local RoomService = require(script.RoomService)
+local IntakeService = require(script.IntakeService)
 local PlotService = require(script.PlotService)
 
 SaveService.init()
 Buildables.init()
 PlacementService.init()
+RoomService.init()
+IntakeService.init()
 PlotService.init()
 
-print("[Lockdown] Server ready — placement build")
+print("[Lockdown] Server ready — rooms, intake & drag-build")
 ]]></string>
       </Properties>
       <Item class="ModuleScript" referent="8">
@@ -328,9 +370,11 @@ end
 -- so these are just "build it roughly right and it works".
 local PLACEHOLDERS = {
 	{
+		-- A full grid square of solid wall, Prison Architect style — wall
+		-- runs tile with no gaps, corners just work.
 		name = "Wall",
 		build = function(model)
-			part({ Size = Vector3.new(4, 8, 1), CFrame = CFrame.new(0, 4, 0) }, model)
+			part({ Size = Vector3.new(4, 8, 4), CFrame = CFrame.new(0, 4, 0) }, model)
 		end,
 	},
 	{
@@ -359,13 +403,15 @@ local PLACEHOLDERS = {
 		end,
 	},
 	{
+		-- Same width and thinness as the Fence, so a door drops cleanly
+		-- into a fence run.
 		name = "Security Door",
 		build = function(model)
-			part({ Size = Vector3.new(0.5, 8, 1), CFrame = CFrame.new(-1.75, 4, 0) }, model)
-			part({ Size = Vector3.new(0.5, 8, 1), CFrame = CFrame.new(1.75, 4, 0) }, model)
-			part({ Size = Vector3.new(4, 1, 1), CFrame = CFrame.new(0, 7.5, 0) }, model)
+			part({ Size = Vector3.new(0.4, 8, 0.4), CFrame = CFrame.new(-1.8, 4, 0) }, model)
+			part({ Size = Vector3.new(0.4, 8, 0.4), CFrame = CFrame.new(1.8, 4, 0) }, model)
+			part({ Size = Vector3.new(4, 0.5, 0.4), CFrame = CFrame.new(0, 7.75, 0) }, model)
 			part({
-				Size = Vector3.new(3, 7, 0.6),
+				Size = Vector3.new(3.2, 7, 0.4),
 				CFrame = CFrame.new(0, 3.5, 0),
 				Material = Enum.Material.DiamondPlate,
 				Color = Color3.fromRGB(91, 105, 117),
@@ -578,6 +624,336 @@ return InmateService
       </Item>
       <Item class="ModuleScript" referent="10">
         <Properties>
+          <string name="Name">IntakeService</string>
+          <string name="Source"><![CDATA[-- IntakeService: how prisoners actually arrive (Prison Architect's
+-- intake report, Roblox-ified).
+--
+-- The flow:
+--   1. The warden accepts a prisoner (or has auto-intake ON).
+--   2. The prisoner appears at the FRONT of the plot — handcuffed,
+--      standing still. They cannot move on their own.
+--   3. The moment an empty housing asset exists (any placed model with
+--      the SpawnsInmate attribute), they're escorted to it: they walk
+--      over, the cuffs come off, and they live there — wandering about.
+--   4. No room? They wait at the gate, cuffed. A crowd at your gate IS
+--      the "build more cells" warning light.
+--
+-- The escort walk is animated on each player's device (InmateAnimator):
+-- the server just stamps attributes (from, to, start time, duration) and
+-- does ONE authoritative move at the end — no per-frame replication.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+local Config = require(ReplicatedStorage.Shared.Config)
+local InmateService = require(script.Parent.InmateService)
+
+local IntakeService = {}
+
+-- The rig's pivot is its torso, exactly 3 studs above the feet (2-stud
+-- legs + half the torso). All escort math works in floor positions, so
+-- moves add this back to keep feet on the ground.
+local PIVOT_HEIGHT = 3
+
+-- player -> {
+--   zone, arrivalsFolder, auto, spawnCounter, nextGateSlot,
+--   prisoners = array of { model, status = "waiting"|"escorting"|"housed", house },
+--   connections = {...},
+-- }
+local records = {}
+
+local function housingAssets(zone)
+	local houses = {}
+	for _, model in ipairs(zone.placed:GetChildren()) do
+		if model:IsA("Model") and model:GetAttribute("SpawnsInmate") == true then
+			table.insert(houses, model)
+		end
+	end
+	return houses
+end
+
+local function houseFloorCF(house)
+	local boxCF, boxSize = house:GetBoundingBox()
+	-- Bottom-center of the asset, nudged off-center so they don't stand
+	-- inside the bed.
+	return (boxCF * CFrame.new(-1.5, -boxSize.Y / 2, 1))
+end
+
+local function gateCF(zone, slot)
+	-- The front of the plot is the zone Part's +Z side (rotate the Part
+	-- in Studio to choose which side that is). Slots spread arrivals out
+	-- so they queue instead of stacking.
+	local size = zone.part.Size
+	local offsetX = (slot - (Config.MaxWaiting - 1) / 2) * 3
+	return zone.part.CFrame * CFrame.new(offsetX, size.Y / 2, size.Z / 2 - 3)
+end
+
+local function addCuffs(model)
+	local torso = model.PrimaryPart
+	if not torso then
+		return
+	end
+	local cuffs = Instance.new("Part")
+	cuffs.Name = "Cuffs"
+	cuffs.Anchored = true
+	cuffs.CanCollide = false
+	cuffs.CanQuery = false
+	cuffs.CanTouch = false
+	cuffs.CastShadow = false
+	cuffs.Material = Enum.Material.Metal
+	cuffs.Color = Color3.fromRGB(60, 60, 65)
+	cuffs.Size = Vector3.new(1.4, 0.35, 0.35)
+	-- In front of the waist, where the client-side pose holds the hands.
+	cuffs.CFrame = torso.CFrame * CFrame.new(0, -0.7, -1.05)
+	cuffs.Parent = model
+end
+
+local function refresh(player)
+	local rec = records[player]
+	if not rec then
+		return
+	end
+
+	-- Prune prisoners whose model is gone (e.g. their cell was demolished
+	-- with them inside — that's a transfer, not an escape).
+	for i = #rec.prisoners, 1, -1 do
+		local prisoner = rec.prisoners[i]
+		if prisoner.model.Parent == nil then
+			table.remove(rec.prisoners, i)
+		elseif prisoner.status ~= "waiting" and (not prisoner.house or prisoner.house.Parent == nil) then
+			if prisoner.status == "escorting" then
+				-- Their destination was demolished mid-walk; back to waiting.
+				prisoner.status = "waiting"
+				prisoner.house = nil
+				prisoner.model:SetAttribute("EscortStart", nil)
+				prisoner.model:SetAttribute("EscortDur", nil)
+				prisoner.model:SetAttribute("EscortFrom", nil)
+				prisoner.model:SetAttribute("EscortTo", nil)
+			else
+				table.remove(rec.prisoners, i)
+			end
+		end
+	end
+
+	-- Try to escort waiting prisoners into empty houses.
+	local houses = housingAssets(rec.zone)
+	local occupied = {}
+	for _, prisoner in ipairs(rec.prisoners) do
+		if prisoner.house then
+			occupied[prisoner.house] = true
+		end
+	end
+
+	for _, prisoner in ipairs(rec.prisoners) do
+		if prisoner.status == "waiting" then
+			local target = nil
+			for _, house in ipairs(houses) do
+				if not occupied[house] then
+					target = house
+					break
+				end
+			end
+			if not target then
+				break
+			end
+			occupied[target] = true
+			prisoner.status = "escorting"
+			prisoner.house = target
+
+			local model = prisoner.model
+			local from = model:GetPivot().Position - Vector3.new(0, PIVOT_HEIGHT, 0)
+			local to = houseFloorCF(target).Position
+			local duration = math.max(1, (to - from).Magnitude / Config.EscortSpeed)
+			model:SetAttribute("EscortFrom", from)
+			model:SetAttribute("EscortTo", to)
+			model:SetAttribute("EscortDur", duration)
+			model:SetAttribute("EscortStart", workspace:GetServerTimeNow())
+
+			task.delay(duration, function()
+				if prisoner.status ~= "escorting" or model.Parent == nil then
+					return
+				end
+				if not prisoner.house or prisoner.house.Parent == nil then
+					return -- refresh() already handled the demolition
+				end
+				-- The one authoritative move: they now live here.
+				model:PivotTo(houseFloorCF(prisoner.house) * CFrame.new(0, PIVOT_HEIGHT, 0))
+				model.Parent = prisoner.house -- demolishing the house removes them too
+				local cuffs = model:FindFirstChild("Cuffs")
+				if cuffs then
+					cuffs:Destroy()
+				end
+				model:SetAttribute("Handcuffed", false)
+				model:SetAttribute("EscortStart", nil)
+				prisoner.status = "housed"
+				refresh(player)
+			end)
+		end
+	end
+
+	-- Publish the numbers the Intake panel shows.
+	local housed, waiting = 0, 0
+	for _, prisoner in ipairs(rec.prisoners) do
+		if prisoner.status == "waiting" then
+			waiting += 1
+		else
+			housed += 1
+		end
+	end
+	player:SetAttribute("PrisonCapacity", #houses)
+	player:SetAttribute("PrisonHoused", housed)
+	player:SetAttribute("PrisonWaiting", waiting)
+	player:SetAttribute("AutoIntake", rec.auto)
+end
+
+local function arrive(player, skipGate)
+	local rec = records[player]
+	if not rec then
+		return false, "No plot yet."
+	end
+	local waiting = 0
+	for _, prisoner in ipairs(rec.prisoners) do
+		if prisoner.status == "waiting" then
+			waiting += 1
+		end
+	end
+	if not skipGate and waiting >= Config.MaxWaiting then
+		return false, "The front gate is crowded — house some prisoners first!"
+	end
+
+	rec.spawnCounter += 1
+	rec.nextGateSlot = (rec.nextGateSlot % Config.MaxWaiting) + 1
+	local model = InmateService.spawn(gateCF(rec.zone, rec.nextGateSlot - 1), rec.spawnCounter, rec.arrivalsFolder)
+	model:SetAttribute("Handcuffed", true)
+	addCuffs(model)
+	table.insert(rec.prisoners, { model = model, status = "waiting", house = nil })
+	refresh(player)
+	return true
+end
+
+-- Wiring (called by PlotService) ------------------------------------------
+
+function IntakeService.assignPlayer(player, zone, savedIntake)
+	local arrivalsFolder = Instance.new("Folder")
+	arrivalsFolder.Name = "Arrivals"
+	arrivalsFolder.Parent = zone.part
+
+	local rec = {
+		zone = zone,
+		arrivalsFolder = arrivalsFolder,
+		auto = true,
+		spawnCounter = 0,
+		nextGateSlot = 0,
+		prisoners = {},
+		connections = {},
+	}
+	records[player] = rec
+
+	if type(savedIntake) == "table" then
+		rec.auto = savedIntake.auto ~= false
+		-- Restore the population: housed prisoners reappear directly in
+		-- their homes (no escort theater on rejoin), waiting ones at the gate.
+		local houses = housingAssets(zone)
+		local housedCount = math.min(tonumber(savedIntake.housed) or 0, #houses)
+		for i = 1, housedCount do
+			rec.spawnCounter += 1
+			local house = houses[i]
+			local model = InmateService.spawn(houseFloorCF(house), rec.spawnCounter, house)
+			model:SetAttribute("Handcuffed", false)
+			table.insert(rec.prisoners, { model = model, status = "housed", house = house })
+		end
+		local waitingCount = math.min(tonumber(savedIntake.waiting) or 0, Config.MaxWaiting)
+		for _ = 1, waitingCount do
+			arrive(player, true)
+		end
+	end
+
+	-- Anything placed or demolished can change capacity — re-check.
+	table.insert(rec.connections, zone.placed.ChildAdded:Connect(function()
+		task.defer(refresh, player)
+	end))
+	table.insert(rec.connections, zone.placed.ChildRemoved:Connect(function()
+		task.defer(refresh, player)
+	end))
+
+	refresh(player)
+end
+
+function IntakeService.releasePlayer(player)
+	local rec = records[player]
+	records[player] = nil
+	if rec then
+		for _, connection in ipairs(rec.connections) do
+			connection:Disconnect()
+		end
+		rec.arrivalsFolder:Destroy()
+	end
+end
+
+function IntakeService.snapshotIntake(player)
+	local rec = records[player]
+	if not rec then
+		return { housed = 0, waiting = 0, auto = true }
+	end
+	local housed, waiting = 0, 0
+	for _, prisoner in ipairs(rec.prisoners) do
+		if prisoner.status == "waiting" then
+			waiting += 1
+		else
+			housed += 1
+		end
+	end
+	return { housed = housed, waiting = waiting, auto = rec.auto }
+end
+
+-- Player requests ---------------------------------------------------------
+
+function IntakeService.handleRequest(player, action)
+	local rec = records[player]
+	if not rec then
+		return { ok = false, err = "You don't have a plot yet." }
+	end
+	if action == "accept" then
+		local ok, err = arrive(player)
+		if not ok then
+			return { ok = false, err = err }
+		end
+		return { ok = true }
+	elseif action == "toggleAuto" then
+		rec.auto = not rec.auto
+		refresh(player)
+		return { ok = true }
+	end
+	return { ok = false, err = "Bad request." }
+end
+
+function IntakeService.init()
+	local remotes = ReplicatedStorage:WaitForChild("Remotes")
+	remotes.IntakeRequest.OnServerInvoke = IntakeService.handleRequest
+
+	-- Auto-intake: a new prisoner arrives every IntakeInterval seconds
+	-- while there's room to house them (Prison Architect's "Fill Capacity").
+	task.spawn(function()
+		while true do
+			task.wait(Config.IntakeInterval)
+			for player, rec in pairs(records) do
+				if rec.auto and player:IsDescendantOf(Players) then
+					local total = #rec.prisoners
+					if total < #housingAssets(rec.zone) then
+						arrive(player)
+					end
+				end
+			end
+		end
+	end)
+end
+
+return IntakeService
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="11">
+        <Properties>
           <string name="Name">PlacementService</string>
           <string name="Source"><![CDATA[-- PlacementService: the server half of the building system. The client
 -- may PREVIEW anything, but nothing exists until this file approves it.
@@ -592,7 +968,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local GridMath = require(ReplicatedStorage.Shared.GridMath)
 local Buildables = require(script.Parent.Buildables)
-local InmateService = require(script.Parent.InmateService)
 
 local PlacementService = {}
 
@@ -646,23 +1021,20 @@ local function placeInternal(player, zone, asset, gx, gz, rot)
 	nextId += 1
 	local id = nextId
 
-	local pivot, groundCF = GridMath.placementPivot(zone.info, asset, gx, gz, rot)
+	local pivot = GridMath.placementPivot(zone.info, asset, gx, gz, rot)
 	local model = asset.model:Clone()
 	model:PivotTo(pivot)
 	-- Attributes double as the client's info source (for previews and
 	-- delete-mode) and as debugging breadcrumbs in the Explorer.
+	-- (Housing assets keep their SpawnsInmate attribute — IntakeService
+	-- counts them as capacity; prisoners arrive via intake, not on
+	-- placement.)
 	model:SetAttribute("LayoutId", id)
 	model:SetAttribute("Asset", asset.name)
 	model:SetAttribute("GX", gx)
 	model:SetAttribute("GZ", gz)
 	model:SetAttribute("Rot", rot)
 	model.Parent = zone.placed
-
-	if asset.spawnsInmate then
-		-- Parented to the placed model, so deleting the cell removes its
-		-- resident too.
-		InmateService.spawn(groundCF * CFrame.new(-1.5, 0.4, 1), id, model)
-	end
 
 	setRegion(zone, gx, gz, w, d, true)
 	table.insert(layouts[player], { n = asset.name, x = gx, z = gz, r = rot, id = id, model = model })
@@ -751,6 +1123,52 @@ function PlacementService.handlePlace(player, assetName, gx, gz, rot)
 	return { ok = true }
 end
 
+-- Drag-to-build: place a straight line of a 1x1 asset in one request
+-- (walls, fences, floors). Occupied squares along the line are skipped
+-- rather than failing the whole drag.
+function PlacementService.handlePlaceLine(player, assetName, x1, z1, x2, z2)
+	local zone = playerZones[player]
+	if not zone then
+		return { ok = false, err = "You don't have a plot yet." }
+	end
+	if tooFast(player) then
+		return { ok = false, err = "Too fast!" }
+	end
+	if type(assetName) ~= "string" or type(x1) ~= "number" or type(z1) ~= "number"
+		or type(x2) ~= "number" or type(z2) ~= "number"
+	then
+		return { ok = false, err = "Bad request." }
+	end
+	local asset = Buildables.get(assetName)
+	if not asset then
+		return { ok = false, err = "Unknown asset." }
+	end
+	if asset.cellsW ~= 1 or asset.cellsD ~= 1 then
+		return { ok = false, err = "Only 1-square assets can be dragged in lines." }
+	end
+
+	local startX, startZ, axis, count = GridMath.lineCells(
+		math.floor(x1), math.floor(z1), math.floor(x2), math.floor(z2)
+	)
+	count = math.min(count, 64)
+	-- Pieces auto-face along the drag: lengthwise walls form a solid run.
+	local rot = axis == "x" and 0 or 1
+
+	local placed = 0
+	for i = 0, count - 1 do
+		local gx = axis == "x" and startX + i or startX
+		local gz = axis == "z" and startZ + i or startZ
+		local model = placeInternal(player, zone, asset, gx, gz, rot)
+		if model then
+			placed += 1
+		end
+	end
+	if placed == 0 then
+		return { ok = false, err = "Nothing free along that line." }
+	end
+	return { ok = true, placed = placed }
+end
+
 function PlacementService.handleDelete(player, model)
 	local zone = playerZones[player]
 	if not zone then
@@ -784,6 +1202,7 @@ end
 function PlacementService.init()
 	local remotes = ReplicatedStorage:WaitForChild("Remotes")
 	remotes.PlaceRequest.OnServerInvoke = PlacementService.handlePlace
+	remotes.PlaceLineRequest.OnServerInvoke = PlacementService.handlePlaceLine
 	remotes.DeleteRequest.OnServerInvoke = PlacementService.handleDelete
 end
 
@@ -791,7 +1210,7 @@ return PlacementService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="11">
+      <Item class="ModuleScript" referent="12">
         <Properties>
           <string name="Name">PlotService</string>
           <string name="Source"><![CDATA[-- PlotService: finds the build zones in YOUR hand-made map and assigns
@@ -814,6 +1233,8 @@ local Config = require(ReplicatedStorage.Shared.Config)
 local GridMath = require(ReplicatedStorage.Shared.GridMath)
 local SaveService = require(script.Parent.SaveService)
 local PlacementService = require(script.Parent.PlacementService)
+local RoomService = require(script.Parent.RoomService)
+local IntakeService = require(script.Parent.IntakeService)
 
 local PlotService = {}
 
@@ -913,7 +1334,11 @@ local function assignZone(player)
 
 	zone.owner = player
 	PlacementService.assignZone(player, zone, data.layout)
-	SaveService.attachLayoutSource(player, PlacementService.snapshotLayout)
+	RoomService.assignZone(player, zone, data.rooms)
+	IntakeService.assignPlayer(player, zone, data.intake)
+	SaveService.attachSource(player, "layout", PlacementService.snapshotLayout)
+	SaveService.attachSource(player, "rooms", RoomService.snapshotRooms)
+	SaveService.attachSource(player, "intake", IntakeService.snapshotIntake)
 
 	-- Tell this player's client which zone is theirs (the build UI needs
 	-- it for grid math and aiming).
@@ -941,6 +1366,8 @@ local function assignZone(player)
 end
 
 local function releaseZone(player)
+	IntakeService.releasePlayer(player)
+	RoomService.releasePlayer(player)
 	PlacementService.releasePlayer(player)
 	local marker = player:FindFirstChild("BuildZone")
 	if marker then
@@ -969,7 +1396,194 @@ return PlotService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="12">
+      <Item class="ModuleScript" referent="13">
+        <Properties>
+          <string name="Name">RoomService</string>
+          <string name="Source"><![CDATA[-- RoomService: Prison Architect-style room designation. The player picks
+-- a room type FIRST, then drags a rectangle on their plot; the floor
+-- tints with that room's color. Painting is per grid square underneath
+-- everything else, so walls and objects sit on top of it naturally.
+--
+-- For now rooms are paint — the meaning (a Cell needs a bed, inmates eat
+-- in the Canteen) arrives with the needs/economy phases, and this data
+-- is already saved per square so nothing will need repainting.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Config = require(ReplicatedStorage.Shared.Config)
+
+local RoomService = {}
+
+local GRID = Config.GridSize
+
+local playerZones = {} -- player -> zone record
+local zoneRooms = {} -- zone -> { map = {["x:z"] = typeId], tilesFolder, rowParts = {[z] = {parts}} }
+
+local function cellKey(x, z)
+	return x .. ":" .. z
+end
+
+-- Rendering: one thin colored strip per run of same-type squares in a
+-- row — a 10x10 room is ~10 parts, not 100.
+local function renderRow(zone, z)
+	local state = zoneRooms[zone]
+	if state.rowParts[z] then
+		for _, p in ipairs(state.rowParts[z]) do
+			p:Destroy()
+		end
+	end
+	state.rowParts[z] = {}
+
+	local cols = zone.info.cols
+	local x = 0
+	while x < cols do
+		local t = state.map[cellKey(x, z)]
+		if t then
+			local runStart = x
+			while x < cols and state.map[cellKey(x, z)] == t do
+				x += 1
+			end
+			local len = x - runStart
+			local strip = Instance.new("Part")
+			strip.Anchored = true
+			strip.CanCollide = false
+			strip.CanQuery = false
+			strip.CanTouch = false
+			strip.CastShadow = false
+			strip.Material = Enum.Material.SmoothPlastic
+			strip.Transparency = 0.35
+			strip.Color = Config.RoomTypes[t].color
+			strip.Size = Vector3.new(len * GRID, 0.12, GRID)
+			strip.CFrame = zone.info.corner * CFrame.new((runStart + len / 2) * GRID, 0.07, (z + 0.5) * GRID)
+			strip.Name = "RoomStrip"
+			strip.Parent = state.tilesFolder
+			table.insert(state.rowParts[z], strip)
+		else
+			x += 1
+		end
+	end
+end
+
+local function paintRect(zone, typeId, x1, z1, x2, z2)
+	local state = zoneRooms[zone]
+	for z = z1, z2 do
+		for x = x1, x2 do
+			state.map[cellKey(x, z)] = typeId ~= 0 and typeId or nil
+		end
+	end
+	for z = z1, z2 do
+		renderRow(zone, z)
+	end
+end
+
+-- Wiring (called by PlotService) ------------------------------------------
+
+function RoomService.assignZone(player, zone, savedRooms)
+	playerZones[player] = zone
+
+	local tilesFolder = Instance.new("Folder")
+	tilesFolder.Name = "RoomTiles"
+	tilesFolder.Parent = zone.part
+	zoneRooms[zone] = { map = {}, tilesFolder = tilesFolder, rowParts = {} }
+
+	-- Rebuild the paint from the save (stored as horizontal runs).
+	if type(savedRooms) == "table" then
+		local state = zoneRooms[zone]
+		local touchedRows = {}
+		for _, run in ipairs(savedRooms) do
+			if type(run) == "table"
+				and type(run.t) == "number" and Config.RoomTypes[run.t]
+				and type(run.x) == "number" and type(run.z) == "number" and type(run.l) == "number"
+			then
+				local z = math.floor(run.z)
+				for x = math.floor(run.x), math.floor(run.x) + math.floor(run.l) - 1 do
+					if x >= 0 and x < zone.info.cols and z >= 0 and z < zone.info.rows then
+						state.map[cellKey(x, z)] = math.floor(run.t)
+					end
+				end
+				touchedRows[z] = true
+			end
+		end
+		for z in pairs(touchedRows) do
+			renderRow(zone, z)
+		end
+	end
+end
+
+function RoomService.releasePlayer(player)
+	local zone = playerZones[player]
+	playerZones[player] = nil
+	if zone and zoneRooms[zone] then
+		zoneRooms[zone].tilesFolder:Destroy()
+		zoneRooms[zone] = nil
+	end
+end
+
+-- What SaveService writes: the paint compressed into horizontal runs.
+function RoomService.snapshotRooms(player)
+	local zone = playerZones[player]
+	local state = zone and zoneRooms[zone]
+	if not state then
+		return {}
+	end
+	local runs = {}
+	for z = 0, zone.info.rows - 1 do
+		local x = 0
+		while x < zone.info.cols do
+			local t = state.map[cellKey(x, z)]
+			if t then
+				local runStart = x
+				while x < zone.info.cols and state.map[cellKey(x, z)] == t do
+					x += 1
+				end
+				table.insert(runs, { t = t, x = runStart, z = z, l = x - runStart })
+			else
+				x += 1
+			end
+		end
+	end
+	return runs
+end
+
+-- Player requests ---------------------------------------------------------
+
+function RoomService.handlePaint(player, typeId, x1, z1, x2, z2)
+	local zone = playerZones[player]
+	if not zone then
+		return { ok = false, err = "You don't have a plot yet." }
+	end
+	if type(typeId) ~= "number" or type(x1) ~= "number" or type(z1) ~= "number"
+		or type(x2) ~= "number" or type(z2) ~= "number"
+	then
+		return { ok = false, err = "Bad request." }
+	end
+	typeId = math.floor(typeId)
+	if typeId ~= 0 and not Config.RoomTypes[typeId] then
+		return { ok = false, err = "Unknown room type." }
+	end
+
+	-- Normalize and clamp the rectangle to the zone.
+	x1, x2 = math.min(x1, x2), math.max(x1, x2)
+	z1, z2 = math.min(z1, z2), math.max(z1, z2)
+	x1 = math.clamp(math.floor(x1), 0, zone.info.cols - 1)
+	x2 = math.clamp(math.floor(x2), 0, zone.info.cols - 1)
+	z1 = math.clamp(math.floor(z1), 0, zone.info.rows - 1)
+	z2 = math.clamp(math.floor(z2), 0, zone.info.rows - 1)
+
+	paintRect(zone, typeId, x1, z1, x2, z2)
+	return { ok = true }
+end
+
+function RoomService.init()
+	local remotes = ReplicatedStorage:WaitForChild("Remotes")
+	remotes.RoomPaintRequest.OnServerInvoke = RoomService.handlePaint
+end
+
+return RoomService
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="14">
         <Properties>
           <string name="Name">SaveService</string>
           <string name="Source"><![CDATA[-- SaveService: cloud-saves each player's prison layout so it's rebuilt
@@ -1041,11 +1655,14 @@ local function onPlayerAdded(player)
 
 	state[player] = {
 		layout = saved and saved.layout or {},
+		rooms = saved and saved.rooms or {},
+		intake = saved and saved.intake or nil,
 		cash = saved and saved.cash or 0,
 		-- Only allowed to write to the cloud if the read worked. A failed
 		-- read must never let empty data overwrite a real save.
 		canSave = store ~= nil and loadOk,
-		layoutSource = nil,
+		-- key -> function(player) returning fresh data at save time.
+		sources = {},
 	}
 end
 
@@ -1055,7 +1672,9 @@ local function saveNow(player)
 		return
 	end
 	local snapshot = {
-		layout = st.layoutSource and st.layoutSource(player) or st.layout,
+		layout = st.sources.layout and st.sources.layout(player) or st.layout,
+		rooms = st.sources.rooms and st.sources.rooms(player) or st.rooms,
+		intake = st.sources.intake and st.sources.intake(player) or st.intake,
 		cash = st.cash,
 	}
 	local ok, err = pcall(function()
@@ -1078,12 +1697,13 @@ function SaveService.waitForData(player)
 	return state[player]
 end
 
--- PlacementService knows the live layout; hand us the function that
--- snapshots it, and every save pulls fresh data through it.
-function SaveService.attachLayoutSource(player, sourceFn)
+-- The live game systems know the current layout/rooms/intake; each hands
+-- us the function that snapshots its slice, and every save pulls fresh
+-- data through them.
+function SaveService.attachSource(player, key, sourceFn)
 	local st = state[player]
 	if st then
-		st.layoutSource = sourceFn
+		st.sources[key] = sourceFn
 	end
 end
 
@@ -1120,40 +1740,262 @@ return SaveService
       </Item>
     </Item>
   </Item>
-  <Item class="StarterPlayer" referent="13">
+  <Item class="StarterPlayer" referent="15">
     <Properties>
       <string name="Name">StarterPlayer</string>
     </Properties>
-    <Item class="StarterPlayerScripts" referent="14">
+    <Item class="StarterPlayerScripts" referent="16">
       <Properties>
         <string name="Name">StarterPlayerScripts</string>
       </Properties>
-      <Item class="LocalScript" referent="15">
+      <Item class="LocalScript" referent="17">
         <Properties>
           <string name="Name">Client</string>
           <string name="Source"><![CDATA[-- Lockdown client bootstrap. Runs on each player's own device and starts
--- what they personally see: the build mode UI and the idle sway that
--- brings placed inmates to life.
+-- what they personally see: build mode (with the top-down camera), the
+-- intake panel, and the inmate life animation.
 
 require(script.BuildMode).start()
+require(script.IntakePanel).start()
 require(script.InmateAnimator).start()
 ]]></string>
         </Properties>
-        <Item class="ModuleScript" referent="16">
+        <Item class="ModuleScript" referent="18">
+          <Properties>
+            <string name="Name">BuildCamera</string>
+            <string name="Source"><![CDATA[-- BuildCamera: the Prison Architect view. While build mode is open the
+-- camera detaches from your character and hovers above your plot,
+-- looking down at a tilt (the 2.5D feel), and you fly it:
+--
+--   PC:     WASD / arrows pan · scroll wheel zooms · Q / E rotate 45°
+--   Phone:  two-finger drag pans · pinch zooms
+--
+-- Your character is gently frozen in place meanwhile (so WASD pans the
+-- camera instead of walking you off a roof), and everything is restored
+-- the moment build mode closes.
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local BuildCamera = {}
+
+local PITCH = math.rad(-58) -- the 2.5D tilt: steep, but not straight down
+local MIN_DIST, MAX_DIST = 30, 170
+
+local active = false
+local focus = Vector3.new()
+local yaw = 0
+local targetYaw = 0
+local dist = 90
+local zonePart = nil
+local connections = {}
+local touches = {} -- active touch inputs (for two-finger pan/pinch)
+local characterConn = nil
+
+local function setCharacterFrozen(frozen)
+	local player = Players.LocalPlayer
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if root then
+		root.Anchored = frozen
+	end
+end
+
+local function clampFocus(pos)
+	if not zonePart then
+		return pos
+	end
+	-- Keep the camera's attention near the plot (a bit of overshoot is
+	-- allowed so the gate area is visible).
+	local localPos = zonePart.CFrame:PointToObjectSpace(pos)
+	local halfX = zonePart.Size.X / 2 + 25
+	local halfZ = zonePart.Size.Z / 2 + 25
+	return zonePart.CFrame:PointToWorldSpace(Vector3.new(
+		math.clamp(localPos.X, -halfX, halfX),
+		localPos.Y,
+		math.clamp(localPos.Z, -halfZ, halfZ)
+	))
+end
+
+local function disconnectAll()
+	for _, connection in ipairs(connections) do
+		connection:Disconnect()
+	end
+	connections = {}
+end
+
+function BuildCamera.enter(part)
+	if active then
+		return
+	end
+	active = true
+	zonePart = part
+	touches = {}
+
+	local camera = workspace.CurrentCamera
+	camera.CameraType = Enum.CameraType.Scriptable
+
+	local zoneCF = part.CFrame
+	focus = zoneCF.Position + Vector3.new(0, part.Size.Y / 2, 0)
+	local _, ry, _ = zoneCF:ToEulerAnglesYXZ()
+	yaw, targetYaw = ry, ry
+	dist = math.clamp(math.max(part.Size.X, part.Size.Z) * 0.9, MIN_DIST, MAX_DIST)
+
+	setCharacterFrozen(true)
+	-- Respawns mid-build-mode need re-freezing.
+	characterConn = Players.LocalPlayer.CharacterAdded:Connect(function(character)
+		if active then
+			local root = character:WaitForChild("HumanoidRootPart", 10)
+			if root and active then
+				root.Anchored = true
+			end
+		end
+	end)
+
+	table.insert(connections, RunService.RenderStepped:Connect(function(dt)
+		-- Keyboard panning, aligned to the camera's current rotation.
+		local pan = Vector3.new()
+		if UserInputService:IsKeyDown(Enum.KeyCode.W) or UserInputService:IsKeyDown(Enum.KeyCode.Up) then
+			pan += Vector3.new(0, 0, -1)
+		end
+		if UserInputService:IsKeyDown(Enum.KeyCode.S) or UserInputService:IsKeyDown(Enum.KeyCode.Down) then
+			pan += Vector3.new(0, 0, 1)
+		end
+		if UserInputService:IsKeyDown(Enum.KeyCode.A) or UserInputService:IsKeyDown(Enum.KeyCode.Left) then
+			pan += Vector3.new(-1, 0, 0)
+		end
+		if UserInputService:IsKeyDown(Enum.KeyCode.D) or UserInputService:IsKeyDown(Enum.KeyCode.Right) then
+			pan += Vector3.new(1, 0, 0)
+		end
+		if pan.Magnitude > 0 then
+			local speed = dist * 0.9 * dt
+			focus = clampFocus(focus + CFrame.Angles(0, yaw, 0):VectorToWorldSpace(pan.Unit * speed))
+		end
+
+		yaw += (targetYaw - yaw) * math.min(dt * 10, 1)
+
+		local offset = CFrame.Angles(0, yaw, 0) * CFrame.Angles(PITCH, 0, 0)
+		local camPos = focus - offset.LookVector * dist
+		camera.CFrame = CFrame.lookAt(camPos, focus)
+	end))
+
+	table.insert(connections, UserInputService.InputChanged:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseWheel then
+			dist = math.clamp(dist - input.Position.Z * 14, MIN_DIST, MAX_DIST)
+		elseif input.UserInputType == Enum.UserInputType.Touch and touches[input] then
+			local before = {}
+			local count = 0
+			for touch, pos in pairs(touches) do
+				count += 1
+				before[touch] = pos
+			end
+			if count == 2 then
+				-- Two fingers: pan by how the midpoint moved, zoom by how
+				-- the finger gap changed.
+				local other = nil
+				for touch in pairs(touches) do
+					if touch ~= input then
+						other = touch
+					end
+				end
+				local oldA = before[input]
+				local newA = Vector2.new(input.Position.X, input.Position.Y)
+				local posB = before[other]
+				local oldMid = (oldA + posB) / 2
+				local newMid = (newA + posB) / 2
+				local delta = newMid - oldMid
+				local scale = dist / 400
+				focus = clampFocus(focus + CFrame.Angles(0, yaw, 0):VectorToWorldSpace(
+					Vector3.new(-delta.X * scale, 0, -delta.Y * scale)
+				))
+				local oldGap = (oldA - posB).Magnitude
+				local newGap = (newA - posB).Magnitude
+				if newGap > 1 and oldGap > 1 then
+					dist = math.clamp(dist * (oldGap / newGap), MIN_DIST, MAX_DIST)
+				end
+			end
+			touches[input] = Vector2.new(input.Position.X, input.Position.Y)
+		end
+	end))
+
+	table.insert(connections, UserInputService.InputBegan:Connect(function(input, gameProcessed)
+		if input.UserInputType == Enum.UserInputType.Touch then
+			touches[input] = Vector2.new(input.Position.X, input.Position.Y)
+		end
+		if gameProcessed then
+			return
+		end
+		if input.KeyCode == Enum.KeyCode.Q then
+			targetYaw += math.rad(45)
+		elseif input.KeyCode == Enum.KeyCode.E then
+			targetYaw -= math.rad(45)
+		end
+	end))
+
+	table.insert(connections, UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Touch then
+			touches[input] = nil
+		end
+	end))
+end
+
+-- How many fingers are currently down — BuildMode uses this so a
+-- two-finger camera gesture never places an object.
+function BuildCamera.touchCount()
+	local count = 0
+	for _ in pairs(touches) do
+		count += 1
+	end
+	return count
+end
+
+function BuildCamera.exit()
+	if not active then
+		return
+	end
+	active = false
+	zonePart = nil
+	disconnectAll()
+	if characterConn then
+		characterConn:Disconnect()
+		characterConn = nil
+	end
+	touches = {}
+
+	setCharacterFrozen(false)
+	local camera = workspace.CurrentCamera
+	camera.CameraType = Enum.CameraType.Custom
+	local character = Players.LocalPlayer.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		camera.CameraSubject = humanoid
+	end
+end
+
+return BuildCamera
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="19">
           <Properties>
             <string name="Name">BuildMode</string>
             <string name="Source"><![CDATA[-- BuildMode: the whole building experience on the player's screen.
 --
---   🔨 Build button (or B key)  ->  opens the asset menu
---   pick an asset               ->  ghost preview follows your pointer,
---                                   snapped to your plot's grid
---   click / tap                 ->  asks the server to place it
---   R key or ↻ button           ->  rotate 90 degrees
---   🗑️ mode                     ->  click placed objects to demolish
+--   🔨 Build (or B)      ->  top-down build camera + the build panel
+--   🧱 Objects tab       ->  pick an asset, ghost preview snaps to your
+--                            grid; click/tap places. 1-square assets
+--                            (walls, fences, floors) support PRESS-DRAG
+--                            to build a whole line at once, auto-rotated
+--                            along the drag.
+--   🎨 Rooms tab         ->  pick the room type FIRST, then drag a
+--                            rectangle to paint it (eraser included).
+--   ↻ / R                ->  rotate the ghost 90°
+--   🗑️                   ->  demolish mode
 --
--- The menu builds itself from whatever is in ReplicatedStorage/
--- Buildables — including little live 3D thumbnails — so new assets the
--- map-maker drops in show up automatically, no code changes ever.
+-- The menu builds itself from ReplicatedStorage/Buildables (live 3D
+-- thumbnails included), so new assets appear automatically. The server
+-- re-validates everything — this file is just the friendly face.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -1163,42 +2005,48 @@ local UserInputService = game:GetService("UserInputService")
 local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
 local GridMath = require(ReplicatedStorage.Shared:WaitForChild("GridMath"))
 local AssetCatalog = require(ReplicatedStorage.Shared:WaitForChild("AssetCatalog"))
+local BuildCamera = require(script.Parent.BuildCamera)
 
 local BuildMode = {}
 
+local GRID = Config.GridSize
 local GREEN = Color3.fromRGB(80, 255, 120)
 local RED = Color3.fromRGB(255, 80, 80)
 local PANEL_BG = Color3.fromRGB(20, 24, 20)
+local BUTTON_BG = Color3.fromRGB(45, 52, 45)
+local SELECTED_BG = Color3.fromRGB(60, 110, 60)
 
 function BuildMode.start()
 	local player = Players.LocalPlayer
 	local playerGui = player:WaitForChild("PlayerGui")
 	local remotes = ReplicatedStorage:WaitForChild("Remotes")
 	local placeRequest = remotes:WaitForChild("PlaceRequest")
+	local placeLineRequest = remotes:WaitForChild("PlaceLineRequest")
 	local deleteRequest = remotes:WaitForChild("DeleteRequest")
+	local roomPaintRequest = remotes:WaitForChild("RoomPaintRequest")
 
 	local buildablesFolder = ReplicatedStorage:WaitForChild(Config.BuildablesFolderName)
 	local catalogByName, catalogOrdered = AssetCatalog.load(buildablesFolder)
 
 	-- My zone (the server drops a "BuildZone" pointer into the Player).
 	local zone = nil -- { part, info, placed }
-	local occupied = {} -- local mirror of taken grid squares, for preview colors
+	local occupied = {} -- local mirror of taken squares, for preview colors
 
-	-- Build-mode state.
-	local mode = "off" -- "off" | "place" | "delete"
-	local selected = nil -- asset currently being placed
+	-- State.
+	local mode = "off" -- "off" | "objects" | "rooms" | "delete"
+	local selected = nil -- asset being placed (objects tab)
+	local selectedRoom = nil -- room type id being painted (rooms tab; 0 = eraser)
 	local rot = 0
-	local ghost = nil -- the preview model
-	local ghostHighlight = nil
+	local ghost, ghostHighlight = nil, nil
+	local ghostCell, ghostValid = nil, false
 	local lastPointer = Vector2.new(0, 0)
-	local ghostCell = nil -- {gx, gz} of the current preview spot
-	local ghostValid = false
-	local hoverHighlight = nil -- delete-mode red glow
-	local zoneBox = nil -- outline of my plot while building
+	local pressing = false -- a press that started on the world, not UI
+	local pressStartCell = nil
+	local stretchBox = nil -- the drag preview (lines & room rects)
+	local hoverHighlight = nil
+	local zoneBox = nil
 
 	-- Occupancy mirror ---------------------------------------------------
-	-- The server stamps every placed model with its grid info, so the
-	-- client can tell "that square is taken" without asking.
 
 	local function markModel(model, value)
 		local asset = catalogByName[model:GetAttribute("Asset") or ""]
@@ -1238,7 +2086,6 @@ function BuildMode.start()
 			markModel(model, true)
 		end
 		zone.placed.ChildAdded:Connect(function(model)
-			-- Attributes are set before parenting, so they're readable now.
 			markModel(model, true)
 		end)
 		zone.placed.ChildRemoved:Connect(function(model)
@@ -1246,24 +2093,53 @@ function BuildMode.start()
 		end)
 	end
 
-	local zoneMarker = player:WaitForChild("BuildZone", 30)
-	if zoneMarker and zoneMarker.Value then
-		watchZone(zoneMarker.Value)
-	elseif zoneMarker then
-		zoneMarker.Changed:Connect(function(value)
-			if value and not zone then
-				watchZone(value)
+	task.spawn(function()
+		local zoneMarker = player:WaitForChild("BuildZone", 60)
+		if zoneMarker then
+			if zoneMarker.Value then
+				watchZone(zoneMarker.Value)
+			else
+				zoneMarker.Changed:Connect(function(value)
+					if value and not zone then
+						watchZone(value)
+					end
+				end)
 			end
-		end)
+		end
+	end)
+
+	-- Pointer & preview helpers -------------------------------------------
+
+	local function pointerRay()
+		local camera = workspace.CurrentCamera
+		if not camera then
+			return nil
+		end
+		return camera:ViewportPointToRay(lastPointer.X, lastPointer.Y)
 	end
 
-	-- Ghost preview ------------------------------------------------------
+	local function cellUnderPointer(w, d)
+		if not zone then
+			return nil
+		end
+		local ray = pointerRay()
+		if not ray then
+			return nil
+		end
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Include
+		params.FilterDescendantsInstances = { zone.part }
+		local hit = workspace:Raycast(ray.Origin, ray.Direction * 1000, params)
+		if not hit then
+			return nil
+		end
+		return GridMath.worldToCell(zone.info, hit.Position, w, d)
+	end
 
 	local function destroyGhost()
 		if ghost then
 			ghost:Destroy()
-			ghost = nil
-			ghostHighlight = nil
+			ghost, ghostHighlight = nil, nil
 		end
 		ghostCell = nil
 	end
@@ -1292,38 +2168,46 @@ function BuildMode.start()
 		ghostHighlight = highlight
 	end
 
-	local function pointerRay()
-		local camera = workspace.CurrentCamera
-		if not camera then
-			return nil
+	local function hideStretchBox()
+		if stretchBox then
+			stretchBox:Destroy()
+			stretchBox = nil
 		end
-		return camera:ViewportPointToRay(lastPointer.X, lastPointer.Y)
+	end
+
+	-- The translucent slab shown while dragging a line or a room rect.
+	local function showStretchBox(x1, z1, x2, z2, color)
+		if not stretchBox then
+			stretchBox = Instance.new("Part")
+			stretchBox.Anchored = true
+			stretchBox.CanCollide = false
+			stretchBox.CanQuery = false
+			stretchBox.CanTouch = false
+			stretchBox.Material = Enum.Material.Neon
+			stretchBox.Transparency = 0.55
+			stretchBox.Parent = workspace
+		end
+		local minX, maxX = math.min(x1, x2), math.max(x1, x2)
+		local minZ, maxZ = math.min(z1, z2), math.max(z1, z2)
+		local w, d = maxX - minX + 1, maxZ - minZ + 1
+		stretchBox.Color = color
+		stretchBox.Size = Vector3.new(w * GRID, 0.4, d * GRID)
+		stretchBox.CFrame = GridMath.regionCenter(zone.info, minX, minZ, w, d) * CFrame.new(0, 0.25, 0)
 	end
 
 	local function updateGhost()
 		if not (zone and selected and ghost) then
 			return
 		end
-		local ray = pointerRay()
-		if not ray then
-			return
-		end
-		local params = RaycastParams.new()
-		params.FilterType = Enum.RaycastFilterType.Include
-		params.FilterDescendantsInstances = { zone.part }
-		local hit = workspace:Raycast(ray.Origin, ray.Direction * 800, params)
-		if not hit then
-			ghost.Parent = nil -- pointing at the sky / off-plot: hide it
+		local w, d = GridMath.footprint(selected, rot)
+		local gx, gz = cellUnderPointer(w, d)
+		if gx == nil then
+			ghost.Parent = nil
 			ghostCell = nil
 			return
 		end
-
-		local w, d = GridMath.footprint(selected, rot)
-		local gx, gz = GridMath.worldToCell(zone.info, hit.Position, w, d)
-		local pivot = GridMath.placementPivot(zone.info, selected, gx, gz, rot)
-		ghost:PivotTo(pivot)
+		ghost:PivotTo(GridMath.placementPivot(zone.info, selected, gx, gz, rot))
 		ghost.Parent = workspace
-
 		ghostCell = { gx, gz }
 		ghostValid = regionFree(gx, gz, w, d)
 		local color = ghostValid and GREEN or RED
@@ -1338,7 +2222,6 @@ function BuildMode.start()
 	gui.ResetOnSpawn = false
 
 	local toggle = Instance.new("TextButton")
-	toggle.Name = "BuildToggle"
 	toggle.AnchorPoint = Vector2.new(1, 1)
 	toggle.Position = UDim2.new(1, -14, 1, -14)
 	toggle.Size = UDim2.new(0, 120, 0, 48)
@@ -1354,7 +2237,6 @@ function BuildMode.start()
 	toggle.Parent = gui
 
 	local panel = Instance.new("Frame")
-	panel.Name = "BuildPanel"
 	panel.AnchorPoint = Vector2.new(0.5, 1)
 	panel.Position = UDim2.new(0.5, 0, 1, -70)
 	panel.Size = UDim2.new(0.94, 0, 0, 150)
@@ -1367,7 +2249,6 @@ function BuildMode.start()
 	panel.Parent = gui
 
 	local status = Instance.new("TextLabel")
-	status.Name = "Status"
 	status.AnchorPoint = Vector2.new(0.5, 1)
 	status.Position = UDim2.new(0.5, 0, 0, -6)
 	status.Size = UDim2.new(1, 0, 0, 22)
@@ -1379,47 +2260,48 @@ function BuildMode.start()
 	status.Text = ""
 	status.Parent = panel
 
-	local rotateButton = Instance.new("TextButton")
-	rotateButton.Size = UDim2.new(0, 44, 0, 44)
-	rotateButton.Position = UDim2.new(0, 8, 0, 8)
-	rotateButton.BackgroundColor3 = Color3.fromRGB(45, 52, 45)
-	rotateButton.Font = Enum.Font.GothamBold
-	rotateButton.TextSize = 22
-	rotateButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-	rotateButton.Text = "↻"
-	local rotateCorner = Instance.new("UICorner")
-	rotateCorner.CornerRadius = UDim.new(0, 10)
-	rotateCorner.Parent = rotateButton
-	rotateButton.Parent = panel
+	local function sideButton(text, x, y)
+		local button = Instance.new("TextButton")
+		button.Size = UDim2.new(0, 44, 0, 44)
+		button.Position = UDim2.new(0, x, 0, y)
+		button.BackgroundColor3 = BUTTON_BG
+		button.Font = Enum.Font.GothamBold
+		button.TextSize = 20
+		button.TextColor3 = Color3.fromRGB(255, 255, 255)
+		button.Text = text
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(0, 10)
+		corner.Parent = button
+		button.Parent = panel
+		return button
+	end
 
-	local deleteButton = Instance.new("TextButton")
-	deleteButton.Size = UDim2.new(0, 44, 0, 44)
-	deleteButton.Position = UDim2.new(0, 8, 0, 60)
-	deleteButton.BackgroundColor3 = Color3.fromRGB(45, 52, 45)
-	deleteButton.Font = Enum.Font.GothamBold
-	deleteButton.TextSize = 20
-	deleteButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-	deleteButton.Text = "🗑️"
-	local deleteCorner = Instance.new("UICorner")
-	deleteCorner.CornerRadius = UDim.new(0, 10)
-	deleteCorner.Parent = deleteButton
-	deleteButton.Parent = panel
+	local objectsTab = sideButton("🧱", 8, 8)
+	local roomsTab = sideButton("🎨", 8, 60)
+	local rotateButton = sideButton("↻", 58, 8)
+	local deleteButton = sideButton("🗑️", 58, 60)
 
-	local list = Instance.new("ScrollingFrame")
-	list.Name = "Assets"
-	list.Position = UDim2.new(0, 60, 0, 8)
-	list.Size = UDim2.new(1, -68, 1, -16)
-	list.BackgroundTransparency = 1
-	list.ScrollBarThickness = 6
-	list.ScrollingDirection = Enum.ScrollingDirection.X
-	list.AutomaticCanvasSize = Enum.AutomaticSize.X
-	list.CanvasSize = UDim2.new(0, 0, 0, 0)
-	local listLayout = Instance.new("UIListLayout")
-	listLayout.FillDirection = Enum.FillDirection.Horizontal
-	listLayout.Padding = UDim.new(0, 8)
-	listLayout.SortOrder = Enum.SortOrder.LayoutOrder
-	listLayout.Parent = list
-	list.Parent = panel
+	local function makeList()
+		local list = Instance.new("ScrollingFrame")
+		list.Position = UDim2.new(0, 110, 0, 8)
+		list.Size = UDim2.new(1, -118, 1, -16)
+		list.BackgroundTransparency = 1
+		list.ScrollBarThickness = 6
+		list.ScrollingDirection = Enum.ScrollingDirection.X
+		list.AutomaticCanvasSize = Enum.AutomaticSize.X
+		list.CanvasSize = UDim2.new(0, 0, 0, 0)
+		local layout = Instance.new("UIListLayout")
+		layout.FillDirection = Enum.FillDirection.Horizontal
+		layout.Padding = UDim.new(0, 8)
+		layout.SortOrder = Enum.SortOrder.LayoutOrder
+		layout.Parent = list
+		list.Parent = panel
+		return list
+	end
+
+	local objectsList = makeList()
+	local roomsList = makeList()
+	roomsList.Visible = false
 
 	local statusId = 0
 	local function flashStatus(text, color)
@@ -1434,23 +2316,31 @@ function BuildMode.start()
 		end)
 	end
 
-	-- One menu tile per asset, with a live 3D thumbnail.
+	-- Objects tab tiles (3D thumbnails).
 	local assetButtons = {}
+	local roomButtons = {}
 	local function refreshSelectionLook()
 		for name, button in pairs(assetButtons) do
-			button.BackgroundColor3 = (selected and selected.name == name)
-				and Color3.fromRGB(60, 110, 60)
-				or Color3.fromRGB(45, 52, 45)
+			button.BackgroundColor3 = (selected and selected.name == name) and SELECTED_BG or BUTTON_BG
 		end
+		for id, button in pairs(roomButtons) do
+			local stroke = button:FindFirstChildOfClass("UIStroke")
+			if stroke then
+				stroke.Transparency = (selectedRoom == id) and 0 or 1
+			end
+		end
+		objectsTab.BackgroundColor3 = (mode == "objects") and SELECTED_BG or BUTTON_BG
+		roomsTab.BackgroundColor3 = (mode == "rooms") and SELECTED_BG or BUTTON_BG
+		deleteButton.BackgroundColor3 = (mode == "delete") and Color3.fromRGB(140, 50, 50) or BUTTON_BG
 	end
 
-	local selectAsset -- declared below; tiles need it
+	local selectAsset, selectRoom
+
 	for order, asset in ipairs(catalogOrdered) do
 		local tile = Instance.new("TextButton")
-		tile.Name = asset.name
 		tile.LayoutOrder = order
 		tile.Size = UDim2.new(0, 104, 1, 0)
-		tile.BackgroundColor3 = Color3.fromRGB(45, 52, 45)
+		tile.BackgroundColor3 = BUTTON_BG
 		tile.Text = ""
 		local tileCorner = Instance.new("UICorner")
 		tileCorner.CornerRadius = UDim.new(0, 10)
@@ -1487,9 +2377,51 @@ function BuildMode.start()
 		tile.Activated:Connect(function()
 			selectAsset(asset)
 		end)
-		tile.Parent = list
+		tile.Parent = objectsList
 		assetButtons[asset.name] = tile
 	end
+
+	-- Rooms tab tiles (color chips). Index 0 = the eraser.
+	local function roomTile(id, name, color, order)
+		local tile = Instance.new("TextButton")
+		tile.LayoutOrder = order
+		tile.Size = UDim2.new(0, 104, 1, 0)
+		tile.BackgroundColor3 = color
+		tile.Text = ""
+		local tileCorner = Instance.new("UICorner")
+		tileCorner.CornerRadius = UDim.new(0, 10)
+		tileCorner.Parent = tile
+		local stroke = Instance.new("UIStroke")
+		stroke.Thickness = 3
+		stroke.Color = Color3.fromRGB(255, 255, 255)
+		stroke.Transparency = 1
+		stroke.Parent = tile
+
+		local label = Instance.new("TextLabel")
+		label.AnchorPoint = Vector2.new(0, 1)
+		label.Position = UDim2.new(0, 4, 1, -4)
+		label.Size = UDim2.new(1, -8, 0, 22)
+		label.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+		label.BackgroundTransparency = 0.35
+		label.Font = Enum.Font.GothamBold
+		label.TextScaled = true
+		label.TextColor3 = Color3.fromRGB(255, 255, 255)
+		label.Text = name
+		local labelCorner = Instance.new("UICorner")
+		labelCorner.CornerRadius = UDim.new(0, 6)
+		labelCorner.Parent = label
+		label.Parent = tile
+
+		tile.Activated:Connect(function()
+			selectRoom(id)
+		end)
+		tile.Parent = roomsList
+		roomButtons[id] = tile
+	end
+	for id, roomType in ipairs(Config.RoomTypes) do
+		roomTile(id, roomType.name, roomType.color, id)
+	end
+	roomTile(0, "✖ Eraser", Color3.fromRGB(80, 80, 85), #Config.RoomTypes + 1)
 
 	gui.Parent = playerGui
 
@@ -1497,22 +2429,29 @@ function BuildMode.start()
 
 	local function clearHover()
 		if hoverHighlight then
-			hoverHighlight:Destroy()
-			hoverHighlight = nil
+			hoverHighlight.Adornee = nil
 		end
 	end
 
 	local function setMode(newMode)
+		local wasOff = mode == "off"
 		mode = newMode
+		pressing = false
 		destroyGhost()
+		hideStretchBox()
 		clearHover()
-		if mode ~= "place" then
+		if mode ~= "objects" then
 			selected = nil
 		end
-		refreshSelectionLook()
+		if mode ~= "rooms" then
+			selectedRoom = nil
+		end
 		panel.Visible = mode ~= "off"
+		objectsList.Visible = mode ~= "rooms"
+		roomsList.Visible = mode == "rooms"
 		toggle.Text = mode == "off" and "🔨 Build" or "✖ Close"
-		deleteButton.BackgroundColor3 = mode == "delete" and Color3.fromRGB(140, 50, 50) or Color3.fromRGB(45, 52, 45)
+		refreshSelectionLook()
+
 		if zoneBox then
 			zoneBox:Destroy()
 			zoneBox = nil
@@ -1525,6 +2464,13 @@ function BuildMode.start()
 			zoneBox.SurfaceTransparency = 1
 			zoneBox.Parent = zone.part
 		end
+
+		-- The Prison Architect camera comes with build mode.
+		if mode ~= "off" and wasOff and zone then
+			BuildCamera.enter(zone.part)
+		elseif mode == "off" and not wasOff then
+			BuildCamera.exit()
+		end
 	end
 
 	selectAsset = function(asset)
@@ -1532,43 +2478,100 @@ function BuildMode.start()
 			flashStatus("No build plot assigned yet!", RED)
 			return
 		end
-		mode = "place"
+		mode = "objects"
 		selected = asset
+		selectedRoom = nil
 		clearHover()
+		hideStretchBox()
 		makeGhost(asset)
+		objectsList.Visible = true
+		roomsList.Visible = false
 		refreshSelectionLook()
-		deleteButton.BackgroundColor3 = Color3.fromRGB(45, 52, 45)
-		flashStatus("Placing: " .. asset.name .. "  (R or ↻ to rotate)", GREEN)
+		if asset.cellsW == 1 and asset.cellsD == 1 then
+			flashStatus("Placing " .. asset.name .. " — drag for a whole line! (R rotates)", GREEN)
+		else
+			flashStatus("Placing " .. asset.name .. " (R or ↻ rotates)", GREEN)
+		end
+	end
+
+	selectRoom = function(id)
+		if not zone then
+			flashStatus("No build plot assigned yet!", RED)
+			return
+		end
+		mode = "rooms"
+		selectedRoom = id
+		selected = nil
+		destroyGhost()
+		clearHover()
+		refreshSelectionLook()
+		if id == 0 then
+			flashStatus("Eraser — drag a rectangle to clear room paint", Color3.fromRGB(220, 220, 220))
+		else
+			flashStatus("Drag a rectangle to paint: " .. Config.RoomTypes[id].name, Config.RoomTypes[id].color)
+		end
 	end
 
 	toggle.Activated:Connect(function()
-		setMode(mode == "off" and "menu" or "off")
+		setMode(mode == "off" and "objects" or "off")
+	end)
+	objectsTab.Activated:Connect(function()
+		setMode("objects")
+	end)
+	roomsTab.Activated:Connect(function()
+		setMode("rooms")
 	end)
 	rotateButton.Activated:Connect(function()
 		rot = (rot + 1) % 4
 	end)
 	deleteButton.Activated:Connect(function()
 		if mode == "delete" then
-			setMode("menu")
+			setMode("objects")
 		else
 			setMode("delete")
 			flashStatus("Demolish mode: tap an object to remove it", RED)
 		end
 	end)
 
-	-- Input --------------------------------------------------------------
+	-- Requests -----------------------------------------------------------
 
-	local function tryPlace()
-		if not (zone and selected and ghostCell) then
+	local function tryPlaceSingle(gx, gz)
+		if not (zone and selected) then
 			return
 		end
 		local ok, result = pcall(function()
-			return placeRequest:InvokeServer(selected.name, ghostCell[1], ghostCell[2], rot)
+			return placeRequest:InvokeServer(selected.name, gx, gz, rot)
 		end)
 		if ok and result and result.ok then
 			flashStatus(selected.name .. " placed!", GREEN)
 		elseif ok and result then
 			flashStatus(result.err or "Couldn't place that.", RED)
+		end
+	end
+
+	local function tryPlaceLine(x1, z1, x2, z2)
+		local ok, result = pcall(function()
+			return placeLineRequest:InvokeServer(selected.name, x1, z1, x2, z2)
+		end)
+		if ok and result and result.ok then
+			flashStatus(("%d × %s placed!"):format(result.placed, selected.name), GREEN)
+		elseif ok and result then
+			flashStatus(result.err or "Couldn't build that line.", RED)
+		end
+	end
+
+	local function tryPaintRoom(x1, z1, x2, z2)
+		local ok, result = pcall(function()
+			return roomPaintRequest:InvokeServer(selectedRoom, x1, z1, x2, z2)
+		end)
+		if ok and result and result.ok then
+			if selectedRoom == 0 then
+				flashStatus("Room paint cleared", Color3.fromRGB(220, 220, 220))
+			else
+				flashStatus(Config.RoomTypes[selectedRoom].name .. " painted!", Config.RoomTypes[selectedRoom].color)
+			end
+		elseif ok and result then
+			flashStatus(result.err or "Couldn't paint that.", RED)
 		end
 	end
 
@@ -1583,7 +2586,7 @@ function BuildMode.start()
 		local params = RaycastParams.new()
 		params.FilterType = Enum.RaycastFilterType.Include
 		params.FilterDescendantsInstances = { zone.placed }
-		local hit = workspace:Raycast(ray.Origin, ray.Direction * 800, params)
+		local hit = workspace:Raycast(ray.Origin, ray.Direction * 1000, params)
 		if not hit then
 			return nil
 		end
@@ -1609,6 +2612,8 @@ function BuildMode.start()
 		end
 	end
 
+	-- Input --------------------------------------------------------------
+
 	UserInputService.InputChanged:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseMovement
 			or input.UserInputType == Enum.UserInputType.Touch
@@ -1622,33 +2627,102 @@ function BuildMode.start()
 			lastPointer = Vector2.new(input.Position.X, input.Position.Y)
 		end
 		if gameProcessed then
-			return -- the click landed on a button, not the world
+			return
 		end
+
 		if input.UserInputType == Enum.UserInputType.MouseButton1
 			or input.UserInputType == Enum.UserInputType.Touch
 		then
-			if mode == "place" then
-				updateGhost() -- make sure the ghost matches this exact tap
-				if ghostValid then
-					tryPlace()
+			-- A second finger means a camera gesture — cancel the press.
+			if input.UserInputType == Enum.UserInputType.Touch and BuildCamera.touchCount() > 1 then
+				pressing = false
+				hideStretchBox()
+				return
+			end
+			if mode == "objects" and selected then
+				local cell = ghostCell
+				if cell then
+					pressing = true
+					pressStartCell = { cell[1], cell[2] }
+				end
+			elseif mode == "rooms" and selectedRoom ~= nil then
+				local gx, gz = cellUnderPointer(1, 1)
+				if gx then
+					pressing = true
+					pressStartCell = { gx, gz }
 				end
 			elseif mode == "delete" then
 				tryDelete()
 			end
 		elseif input.KeyCode == Enum.KeyCode.B then
-			setMode(mode == "off" and "menu" or "off")
-		elseif input.KeyCode == Enum.KeyCode.R and mode == "place" then
+			setMode(mode == "off" and "objects" or "off")
+		elseif input.KeyCode == Enum.KeyCode.R and mode == "objects" then
 			rot = (rot + 1) % 4
 		end
 	end)
 
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType ~= Enum.UserInputType.MouseButton1
+			and input.UserInputType ~= Enum.UserInputType.Touch
+		then
+			return
+		end
+		if not pressing then
+			return
+		end
+		pressing = false
+		hideStretchBox()
+
+		if mode == "objects" and selected and pressStartCell then
+			local isOneSquare = selected.cellsW == 1 and selected.cellsD == 1
+			local endCell = ghostCell
+			if isOneSquare and endCell
+				and (endCell[1] ~= pressStartCell[1] or endCell[2] ~= pressStartCell[2])
+			then
+				tryPlaceLine(pressStartCell[1], pressStartCell[2], endCell[1], endCell[2])
+			elseif endCell and ghostValid then
+				tryPlaceSingle(endCell[1], endCell[2])
+			end
+		elseif mode == "rooms" and selectedRoom ~= nil and pressStartCell then
+			local gx, gz = cellUnderPointer(1, 1)
+			if gx then
+				tryPaintRoom(pressStartCell[1], pressStartCell[2], gx, gz)
+			end
+		end
+		pressStartCell = nil
+	end)
+
 	RunService.RenderStepped:Connect(function()
-		if mode == "place" then
+		if mode == "objects" then
 			updateGhost()
+			-- Dragging a 1-square asset: show the line preview instead.
+			if pressing and pressStartCell and selected
+				and selected.cellsW == 1 and selected.cellsD == 1 and ghostCell
+			then
+				local sx, sz, axis, count = GridMath.lineCells(
+					pressStartCell[1], pressStartCell[2], ghostCell[1], ghostCell[2]
+				)
+				local ex = axis == "x" and sx + count - 1 or sx
+				local ez = axis == "z" and sz + count - 1 or sz
+				if count > 1 then
+					ghost.Parent = nil
+					showStretchBox(sx, sz, ex, ez, GREEN)
+				else
+					hideStretchBox()
+				end
+			end
+		elseif mode == "rooms" then
+			if pressing and pressStartCell then
+				local gx, gz = cellUnderPointer(1, 1)
+				if gx then
+					local color = selectedRoom == 0 and Color3.fromRGB(230, 230, 230)
+						or Config.RoomTypes[selectedRoom].color
+					showStretchBox(pressStartCell[1], pressStartCell[2], gx, gz, color)
+				end
+			end
 		elseif mode == "delete" then
 			local model = findPlacedModel()
 			if model then
-				-- One reusable highlight, just re-aimed — no churn.
 				if not hoverHighlight then
 					hoverHighlight = Instance.new("Highlight")
 					hoverHighlight.FillColor = RED
@@ -1668,46 +2742,94 @@ return BuildMode
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="17">
+        <Item class="ModuleScript" referent="20">
           <Properties>
             <string name="Name">InmateAnimator</string>
-            <string name="Source"><![CDATA[-- InmateAnimator: makes the blocky inmates feel alive without costing
--- anything. Server-side they are frozen statues; on each player's own
--- device this script gives nearby ones a slow idle sway (a little turn
--- of the shoulders, a tiny breathing bob).
+            <string name="Source"><![CDATA[-- InmateAnimator: brings the blocky prisoners to life — entirely on each
+-- player's own device, so a full prison of them costs the server nothing.
 --
--- Performance rules baked in:
---   * Inmates farther than CULL_DISTANCE from the camera don't animate
---     at all — you can't see a 0.1-stud bob from 60 studs away.
---   * Everything is plain CFrame math on anchored parts: no Humanoids,
---     no physics, no animation tracks. A phone shrugs at 100 of these.
+-- Every inmate is in one of three states, driven by attributes the
+-- server stamps on the model:
+--   HANDCUFFED  (Handcuffed = true, no escort running)
+--     Stands still at the gate, hands bound in front, tiny nervous bob.
+--   ESCORTED    (EscortFrom/To/Start/Dur set)
+--     Walks a straight line to their new cell, legs swinging, still cuffed.
+--   HOUSED      (cuffs off)
+--     Free-roams around their home spot: idle a while, amble to a random
+--     nearby point, repeat. This is the "prison feels alive" layer.
+--
+-- Performance rules: no Humanoids, no physics — just CFrame math on
+-- anchored parts, skipped entirely for inmates far from the camera.
 
 local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+
+local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
 
 local InmateAnimator = {}
 
-local CULL_DISTANCE = 160
+local CULL_DISTANCE = 170
+local LIMB_NAMES = { "LeftArm", "RightArm", "LeftLeg", "RightLeg" }
 
 function InmateAnimator.start()
-	-- model -> { base = original pose, seed = personal rhythm offset }
 	local tracked = {}
 
 	local function watch(model)
-		-- The model streams in part-by-part; wait until its PrimaryPart
-		-- (the torso) exists before measuring its resting pose.
 		task.spawn(function()
 			local tries = 0
 			while model.PrimaryPart == nil and model.Parent ~= nil and tries < 100 do
 				tries += 1
 				task.wait(0.1)
 			end
-			if model.PrimaryPart and model.Parent then
-				tracked[model] = {
-					base = model:GetPivot(),
-					seed = model:GetAttribute("Seed") or 0,
-				}
+			if not (model.PrimaryPart and model.Parent) then
+				return
 			end
+
+			-- Work in FEET space: the model's pivot is its torso, 3 studs
+			-- above the ground — everything here is measured from the feet
+			-- so it lines up with the server's floor-level escort positions.
+			local feetCF = model:GetPivot() * CFrame.new(0, -3, 0)
+			local info = {
+				parts = {},
+				offsets = {}, -- part -> resting CFrame relative to the root
+				hips = {}, -- limb part -> pivot point at the TOP of the limb
+				seed = model:GetAttribute("Seed") or 0,
+				pos = feetCF.Position,
+				home = feetCF.Position,
+				yaw = select(2, feetCF:ToEulerAnglesYXZ()),
+				mode = "idle",
+				timer = 1 + math.random() * 4,
+				target = nil,
+				phase = 0,
+				escortTo = nil,
+			}
+			for _, part in ipairs(model:GetChildren()) do
+				if part:IsA("BasePart") and part.Name ~= "Cuffs" then
+					info.parts[part.Name] = part
+					info.offsets[part.Name] = feetCF:ToObjectSpace(part.CFrame)
+				end
+			end
+			for _, limbName in ipairs(LIMB_NAMES) do
+				if info.offsets[limbName] then
+					-- Limbs rotate from their top (the shoulder / hip).
+					info.hips[limbName] = info.offsets[limbName] * CFrame.new(0, 1, 0)
+				end
+			end
+
+			-- When the server finishes an escort it clears EscortStart —
+			-- that's the moment this inmate's home becomes the cell.
+			model:GetAttributeChangedSignal("EscortStart"):Connect(function()
+				if model:GetAttribute("EscortStart") == nil and info.escortTo then
+					info.pos = info.escortTo
+					info.home = info.escortTo
+					info.escortTo = nil
+					info.mode = "idle"
+					info.timer = 1 + math.random() * 3
+				end
+			end)
+
+			tracked[model] = info
 		end)
 	end
 
@@ -1719,12 +2841,13 @@ function InmateAnimator.start()
 		tracked[model] = nil
 	end)
 
-	RunService.Heartbeat:Connect(function()
+	RunService.Heartbeat:Connect(function(dt)
 		local camera = workspace.CurrentCamera
 		if not camera then
 			return
 		end
 		local camPos = camera.CFrame.Position
+		local now = workspace:GetServerTimeNow()
 		local t = os.clock()
 
 		for model, info in pairs(tracked) do
@@ -1732,20 +2855,257 @@ function InmateAnimator.start()
 				tracked[model] = nil
 				continue
 			end
-			local distance = (info.base.Position - camPos).Magnitude
-			if distance > CULL_DISTANCE then
+			if (info.pos - camPos).Magnitude > CULL_DISTANCE then
 				continue
 			end
-			-- Slow shoulder sway + faint breathing bob, offset by each
-			-- inmate's personal seed so the cellblock never syncs up.
-			local sway = math.sin(t * 0.9 + info.seed) * 0.25
-			local bob = math.abs(math.sin(t * 1.7 + info.seed)) * 0.08
-			model:PivotTo(info.base * CFrame.new(0, bob, 0) * CFrame.Angles(0, sway, 0))
+
+			local cuffed = model:GetAttribute("Handcuffed") == true
+			local escortStart = model:GetAttribute("EscortStart")
+			local walking = false
+			local bob = 0
+
+			if escortStart then
+				-- ESCORTED: follow the server's straight line on a shared
+				-- clock, so everyone sees the same walk.
+				local from = model:GetAttribute("EscortFrom")
+				local to = model:GetAttribute("EscortTo")
+				local dur = model:GetAttribute("EscortDur") or 1
+				if typeof(from) == "Vector3" and typeof(to) == "Vector3" then
+					info.escortTo = to
+					local alpha = math.clamp((now - escortStart) / dur, 0, 1)
+					info.pos = from:Lerp(to, alpha)
+					local dir = to - from
+					if dir.Magnitude > 0.01 then
+						info.yaw = math.atan2(-dir.X, -dir.Z)
+					end
+					walking = alpha < 1
+				end
+			elseif cuffed then
+				-- HANDCUFFED at the gate: stand still, shift nervously.
+				bob = math.abs(math.sin(t * 1.4 + info.seed)) * 0.05
+			else
+				-- HOUSED: the idle/amble loop.
+				if info.mode == "idle" then
+					bob = math.abs(math.sin(t * 1.7 + info.seed)) * 0.08
+					info.yaw += math.sin(t * 0.5 + info.seed) * 0.003
+					info.timer -= dt
+					if info.timer <= 0 then
+						local angle = math.random() * math.pi * 2
+						local radius = 1 + math.random() * (Config.WanderRadius - 1)
+						info.target = info.home + Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius)
+						info.mode = "walk"
+					end
+				else
+					local dir = info.target - info.pos
+					local flat = Vector3.new(dir.X, 0, dir.Z)
+					if flat.Magnitude < 0.2 then
+						info.mode = "idle"
+						info.timer = 2 + math.random() * 5
+					else
+						local step = math.min(Config.WalkSpeed * dt, flat.Magnitude)
+						info.pos += flat.Unit * step
+						local wantYaw = math.atan2(-flat.X, -flat.Z)
+						local diff = math.atan2(math.sin(wantYaw - info.yaw), math.cos(wantYaw - info.yaw))
+						info.yaw += diff * math.min(dt * 8, 1)
+						walking = true
+					end
+				end
+			end
+
+			if walking then
+				info.phase += dt * 9
+				bob = math.abs(math.sin(info.phase)) * 0.12
+			end
+
+			-- Write the skeleton: root, then each limb with its motion.
+			local root = CFrame.new(info.pos + Vector3.new(0, bob, 0)) * CFrame.Angles(0, info.yaw, 0)
+			local swing = walking and math.sin(info.phase) * 0.5 or 0
+
+			for name, part in pairs(info.parts) do
+				if name == "LeftLeg" or name == "RightLeg" then
+					local legSwing = name == "LeftLeg" and swing or -swing
+					part.CFrame = root * info.hips[name] * CFrame.Angles(legSwing, 0, 0) * CFrame.new(0, -1, 0)
+				elseif name == "LeftArm" or name == "RightArm" then
+					local armCF
+					if cuffed then
+						-- Hands bound in front at the waist.
+						armCF = CFrame.Angles(math.rad(-50), 0, name == "LeftArm" and math.rad(12) or math.rad(-12))
+					elseif walking then
+						armCF = CFrame.Angles(name == "LeftArm" and -swing * 0.7 or swing * 0.7, 0, 0)
+					else
+						armCF = CFrame.Angles(math.sin(t * 1.1 + info.seed) * 0.04, 0, 0)
+					end
+					part.CFrame = root * info.hips[name] * armCF * CFrame.new(0, -1, 0)
+				else
+					part.CFrame = root * info.offsets[name]
+				end
+			end
+
+			-- The cuffs prop rides along in front of the waist.
+			local cuffsPart = model:FindFirstChild("Cuffs")
+			if cuffsPart then
+				cuffsPart.CFrame = root * CFrame.new(0, 2.3, -1.05)
+			end
 		end
 	end)
 end
 
 return InmateAnimator
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="21">
+          <Properties>
+            <string name="Name">IntakePanel</string>
+            <string name="Source"><![CDATA[-- IntakePanel: the warden's version of Prison Architect's Intake report.
+-- A 🚔 button opens a small panel showing the population, with a button
+-- to accept one prisoner and a toggle for auto-intake (fill capacity).
+-- The numbers update live from attributes the server sets on the Player.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local IntakePanel = {}
+
+local PANEL_BG = Color3.fromRGB(20, 24, 20)
+local GREEN = Color3.fromRGB(140, 255, 150)
+local RED = Color3.fromRGB(255, 120, 110)
+
+function IntakePanel.start()
+	local player = Players.LocalPlayer
+	local playerGui = player:WaitForChild("PlayerGui")
+	local intakeRequest = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("IntakeRequest")
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "LockdownIntake"
+	gui.ResetOnSpawn = false
+
+	local toggle = Instance.new("TextButton")
+	toggle.AnchorPoint = Vector2.new(1, 1)
+	toggle.Position = UDim2.new(1, -14, 1, -70)
+	toggle.Size = UDim2.new(0, 120, 0, 48)
+	toggle.BackgroundColor3 = PANEL_BG
+	toggle.BackgroundTransparency = 0.2
+	toggle.Font = Enum.Font.GothamBold
+	toggle.TextSize = 20
+	toggle.TextColor3 = Color3.fromRGB(255, 255, 255)
+	toggle.Text = "🚔 Intake"
+	local toggleCorner = Instance.new("UICorner")
+	toggleCorner.CornerRadius = UDim.new(0, 12)
+	toggleCorner.Parent = toggle
+	toggle.Parent = gui
+
+	local panel = Instance.new("Frame")
+	panel.AnchorPoint = Vector2.new(1, 1)
+	panel.Position = UDim2.new(1, -14, 1, -126)
+	panel.Size = UDim2.new(0, 230, 0, 170)
+	panel.BackgroundColor3 = PANEL_BG
+	panel.BackgroundTransparency = 0.15
+	panel.Visible = false
+	local panelCorner = Instance.new("UICorner")
+	panelCorner.CornerRadius = UDim.new(0, 14)
+	panelCorner.Parent = panel
+	panel.Parent = gui
+
+	local function makeLabel(y)
+		local label = Instance.new("TextLabel")
+		label.Position = UDim2.new(0, 12, 0, y)
+		label.Size = UDim2.new(1, -24, 0, 22)
+		label.BackgroundTransparency = 1
+		label.Font = Enum.Font.GothamBold
+		label.TextScaled = true
+		label.TextXAlignment = Enum.TextXAlignment.Left
+		label.TextColor3 = Color3.fromRGB(255, 255, 255)
+		label.Parent = panel
+		return label
+	end
+
+	local housedLabel = makeLabel(10)
+	local waitingLabel = makeLabel(36)
+	local statusLabel = makeLabel(62)
+	statusLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+
+	local acceptButton = Instance.new("TextButton")
+	acceptButton.Position = UDim2.new(0, 12, 0, 90)
+	acceptButton.Size = UDim2.new(1, -24, 0, 34)
+	acceptButton.BackgroundColor3 = Color3.fromRGB(60, 110, 60)
+	acceptButton.Font = Enum.Font.GothamBold
+	acceptButton.TextSize = 17
+	acceptButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+	acceptButton.Text = "➕ Accept prisoner"
+	local acceptCorner = Instance.new("UICorner")
+	acceptCorner.CornerRadius = UDim.new(0, 10)
+	acceptCorner.Parent = acceptButton
+	acceptButton.Parent = panel
+
+	local autoButton = Instance.new("TextButton")
+	autoButton.Position = UDim2.new(0, 12, 0, 130)
+	autoButton.Size = UDim2.new(1, -24, 0, 30)
+	autoButton.BackgroundColor3 = Color3.fromRGB(45, 52, 45)
+	autoButton.Font = Enum.Font.GothamBold
+	autoButton.TextSize = 15
+	autoButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+	autoButton.Text = "Auto-intake: …"
+	local autoCorner = Instance.new("UICorner")
+	autoCorner.CornerRadius = UDim.new(0, 10)
+	autoCorner.Parent = autoButton
+	autoButton.Parent = panel
+
+	gui.Parent = playerGui
+
+	local statusId = 0
+	local function flashStatus(text, color)
+		statusId += 1
+		local id = statusId
+		statusLabel.Text = text
+		statusLabel.TextColor3 = color
+		task.delay(3, function()
+			if statusId == id then
+				statusLabel.Text = ""
+			end
+		end)
+	end
+
+	local function refresh()
+		local housed = player:GetAttribute("PrisonHoused") or 0
+		local capacity = player:GetAttribute("PrisonCapacity") or 0
+		local waiting = player:GetAttribute("PrisonWaiting") or 0
+		local auto = player:GetAttribute("AutoIntake")
+		housedLabel.Text = ("🔒 Housed: %d / %d"):format(housed, capacity)
+		waitingLabel.Text = ("⛓️ At the gate: %d"):format(waiting)
+		waitingLabel.TextColor3 = waiting > 0 and Color3.fromRGB(255, 200, 120) or Color3.fromRGB(255, 255, 255)
+		autoButton.Text = auto and "Auto-intake: ON" or "Auto-intake: OFF"
+		autoButton.BackgroundColor3 = auto and Color3.fromRGB(60, 110, 60) or Color3.fromRGB(45, 52, 45)
+	end
+
+	for _, attr in ipairs({ "PrisonHoused", "PrisonCapacity", "PrisonWaiting", "AutoIntake" }) do
+		player:GetAttributeChangedSignal(attr):Connect(refresh)
+	end
+	refresh()
+
+	toggle.Activated:Connect(function()
+		panel.Visible = not panel.Visible
+	end)
+
+	acceptButton.Activated:Connect(function()
+		local ok, result = pcall(function()
+			return intakeRequest:InvokeServer("accept")
+		end)
+		if ok and result and result.ok then
+			flashStatus("New prisoner at the gate!", GREEN)
+		elseif ok and result then
+			flashStatus(result.err or "Couldn't accept.", RED)
+		end
+	end)
+
+	autoButton.Activated:Connect(function()
+		pcall(function()
+			return intakeRequest:InvokeServer("toggleAuto")
+		end)
+	end)
+end
+
+return IntakePanel
 ]]></string>
           </Properties>
         </Item>

@@ -18,6 +18,8 @@ local Config = require(ReplicatedStorage.Shared.Config)
 local GridMath = require(ReplicatedStorage.Shared.GridMath)
 local SaveService = require(script.Parent.SaveService)
 local PlacementService = require(script.Parent.PlacementService)
+local RoomService = require(script.Parent.RoomService)
+local IntakeService = require(script.Parent.IntakeService)
 
 local PlotService = {}
 
@@ -117,7 +119,11 @@ local function assignZone(player)
 
 	zone.owner = player
 	PlacementService.assignZone(player, zone, data.layout)
-	SaveService.attachLayoutSource(player, PlacementService.snapshotLayout)
+	RoomService.assignZone(player, zone, data.rooms)
+	IntakeService.assignPlayer(player, zone, data.intake)
+	SaveService.attachSource(player, "layout", PlacementService.snapshotLayout)
+	SaveService.attachSource(player, "rooms", RoomService.snapshotRooms)
+	SaveService.attachSource(player, "intake", IntakeService.snapshotIntake)
 
 	-- Tell this player's client which zone is theirs (the build UI needs
 	-- it for grid math and aiming).
@@ -145,6 +151,8 @@ local function assignZone(player)
 end
 
 local function releaseZone(player)
+	IntakeService.releasePlayer(player)
+	RoomService.releasePlayer(player)
 	PlacementService.releasePlayer(player)
 	local marker = player:FindFirstChild("BuildZone")
 	if marker then

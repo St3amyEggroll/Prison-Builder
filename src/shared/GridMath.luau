@@ -60,6 +60,17 @@ function GridMath.inBounds(zoneInfo, gx, gz, w, d)
 	return gx >= 0 and gz >= 0 and gx + w <= zoneInfo.cols and gz + d <= zoneInfo.rows
 end
 
+-- Turn a drag from square (x1,z1) to (x2,z2) into a straight line of
+-- squares along the dominant axis (PA-style wall dragging). Returns the
+-- line's start square, the axis ("x" or "z"), and how many squares.
+function GridMath.lineCells(x1, z1, x2, z2)
+	local dx, dz = x2 - x1, z2 - z1
+	if math.abs(dx) >= math.abs(dz) then
+		return math.min(x1, x2), z1, "x", math.abs(dx) + 1
+	end
+	return x1, math.min(z1, z2), "z", math.abs(dz) + 1
+end
+
 -- The final world CFrame for a placed asset: footprint center, raised by
 -- half the asset's height, spun by the rotation, then adjusted by the
 -- asset's own pivot offset so ANY model lands resting on the ground.

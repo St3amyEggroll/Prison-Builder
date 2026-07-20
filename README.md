@@ -19,9 +19,9 @@ You build and run a max-security prison from the top-down view… then real play
 
 Prison Architect lets you fight AI escapes alone — Lockdown turns it into a multiplayer game of *"nobody escapes MY prison."*
 
-## 🎮 The current build: grid placement system
+## 🎮 The current build: placement, rooms & intake
 
-Players build their prison **piece by piece on their own plot**: open the build menu (🔨/B), pick an asset, aim the snapping ghost preview, click to place, R to rotate, 🗑️ to demolish. Layouts cloud-save and rebuild on rejoin.
+Players build their prison **Prison Architect-style on their own plot**: build mode flies a tilted top-down camera; walls, fences and floors **drag into whole lines**; rooms are **painted by rectangle** (pick the type first — Cell, Canteen, Kitchen, Yard…); 🗑️ demolishes. Prisoners arrive via the 🚔 **Intake menu** — they wait handcuffed at your gate until a cell is free, get escorted in, then live there and wander about. Everything cloud-saves and rebuilds on rejoin.
 
 The map and the buildable assets are **hand-made in Studio by the owner** — the code finds them by convention (a `PlotZones` folder for build areas, a `Buildables` folder for placeable models, see [docs/BUILDING_ASSETS.md](docs/BUILDING_ASSETS.md)) and auto-generates a flat test map only until the real one exists. Free building for now; prices and income wire back in next.
 

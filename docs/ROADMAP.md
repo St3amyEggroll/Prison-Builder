@@ -28,6 +28,11 @@ Get comfy in Roblox Studio before building the real thing.
 - [x] 6 replaceable placeholder assets: Wall, Floor Tile, Fence, Security Door, Prison Cell, Guard Tower
 - [x] `SpawnsInmate` assets house a lightweight custom-rig inmate (no Humanoid — phone-friendly from day one)
 - [x] Layout cloud-saving: rebuilt exactly on rejoin (autosave + save-on-leave + shutdown save)
+- [x] **Room maker** (PA-style): pick a type (Cell, Canteen, Kitchen, Yard…) then drag a rectangle; colored floor paint + eraser; saved. Requirements/meaning arrive with Phase 2
+- [x] **Top-down build camera**: tilted 2.5D fly-cam while building — WASD/two-finger pan, scroll/pinch zoom, Q/E rotate
+- [x] **Drag-to-build lines** for 1-square assets (walls, fences, floors), auto-rotated along the drag
+- [x] **Intake system**: 🚔 menu with accept + auto-intake; arrivals wait handcuffed at the plot's front, get escorted to an empty cell, then wander their home (inmate life!)
+- [x] PA-style sizing: walls fill a whole grid square; doors are fence-thin at full width
 - [ ] Owner: first version of the real map (`PlotZones` + SpawnLocation) — **← your move!**
 - [ ] Owner: first custom asset in `Buildables`
 - [ ] Playtest with a friend. Is building fun on its own? Fix until "yes"

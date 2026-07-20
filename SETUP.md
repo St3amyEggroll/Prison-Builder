@@ -40,14 +40,23 @@ Press ▶ Play. This uses an auto-generated flat test map with 4 plots and the p
 
 ## 🎛️ The controls (in Play mode)
 
+Opening build mode switches to the **top-down Prison Architect camera** (slightly tilted for the 2.5D feel). Closing it returns to your character.
+
 | Action | PC | Phone |
 |---|---|---|
-| Open/close build menu | **B** or the 🔨 button | 🔨 button |
-| Pick an asset | click its tile | tap its tile |
+| Open/close build mode | **B** or the 🔨 button | 🔨 button |
+| Pan the camera | **WASD** / arrows | two-finger drag |
+| Zoom | scroll wheel | pinch |
+| Rotate camera 45° | **Q** / **E** | — |
+| Tabs: objects / rooms | 🧱 / 🎨 buttons | same |
+| Pick an asset or room type | click its tile | tap its tile |
 | Aim the ghost preview | move mouse | drag finger |
 | Place (when ghost is green) | click | tap |
-| Rotate 90° | **R** or ↻ | ↻ button |
+| **Drag-to-build a line** (walls, fences, floors) | press, drag, release | press, drag, release |
+| **Paint a room** (pick type first!) | press, drag a rectangle, release | same |
+| Rotate object 90° | **R** or ↻ | ↻ button |
 | Demolish mode | 🗑️ button, then click objects | 🗑️ button, then tap |
+| Prisoner intake | 🚔 button → accept / auto-intake | same |
 
 ## C. One-time: make saving work (~2 minutes)
 

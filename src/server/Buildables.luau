@@ -38,9 +38,11 @@ end
 -- so these are just "build it roughly right and it works".
 local PLACEHOLDERS = {
 	{
+		-- A full grid square of solid wall, Prison Architect style — wall
+		-- runs tile with no gaps, corners just work.
 		name = "Wall",
 		build = function(model)
-			part({ Size = Vector3.new(4, 8, 1), CFrame = CFrame.new(0, 4, 0) }, model)
+			part({ Size = Vector3.new(4, 8, 4), CFrame = CFrame.new(0, 4, 0) }, model)
 		end,
 	},
 	{
@@ -69,13 +71,15 @@ local PLACEHOLDERS = {
 		end,
 	},
 	{
+		-- Same width and thinness as the Fence, so a door drops cleanly
+		-- into a fence run.
 		name = "Security Door",
 		build = function(model)
-			part({ Size = Vector3.new(0.5, 8, 1), CFrame = CFrame.new(-1.75, 4, 0) }, model)
-			part({ Size = Vector3.new(0.5, 8, 1), CFrame = CFrame.new(1.75, 4, 0) }, model)
-			part({ Size = Vector3.new(4, 1, 1), CFrame = CFrame.new(0, 7.5, 0) }, model)
+			part({ Size = Vector3.new(0.4, 8, 0.4), CFrame = CFrame.new(-1.8, 4, 0) }, model)
+			part({ Size = Vector3.new(0.4, 8, 0.4), CFrame = CFrame.new(1.8, 4, 0) }, model)
+			part({ Size = Vector3.new(4, 0.5, 0.4), CFrame = CFrame.new(0, 7.75, 0) }, model)
 			part({
-				Size = Vector3.new(3, 7, 0.6),
+				Size = Vector3.new(3.2, 7, 0.4),
 				CFrame = CFrame.new(0, 3.5, 0),
 				Material = Enum.Material.DiamondPlate,
 				Color = Color3.fromRGB(91, 105, 117),

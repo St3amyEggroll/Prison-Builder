@@ -67,11 +67,14 @@ local function onPlayerAdded(player)
 
 	state[player] = {
 		layout = saved and saved.layout or {},
+		rooms = saved and saved.rooms or {},
+		intake = saved and saved.intake or nil,
 		cash = saved and saved.cash or 0,
 		-- Only allowed to write to the cloud if the read worked. A failed
 		-- read must never let empty data overwrite a real save.
 		canSave = store ~= nil and loadOk,
-		layoutSource = nil,
+		-- key -> function(player) returning fresh data at save time.
+		sources = {},
 	}
 end
 
@@ -81,7 +84,9 @@ local function saveNow(player)
 		return
 	end
 	local snapshot = {
-		layout = st.layoutSource and st.layoutSource(player) or st.layout,
+		layout = st.sources.layout and st.sources.layout(player) or st.layout,
+		rooms = st.sources.rooms and st.sources.rooms(player) or st.rooms,
+		intake = st.sources.intake and st.sources.intake(player) or st.intake,
 		cash = st.cash,
 	}
 	local ok, err = pcall(function()
@@ -104,12 +109,13 @@ function SaveService.waitForData(player)
 	return state[player]
 end
 
--- PlacementService knows the live layout; hand us the function that
--- snapshots it, and every save pulls fresh data through it.
-function SaveService.attachLayoutSource(player, sourceFn)
+-- The live game systems know the current layout/rooms/intake; each hands
+-- us the function that snapshots its slice, and every save pulls fresh
+-- data through them.
+function SaveService.attachSource(player, key, sourceFn)
 	local st = state[player]
 	if st then
-		st.layoutSource = sourceFn
+		st.sources[key] = sourceFn
 	end
 end
 

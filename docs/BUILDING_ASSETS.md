@@ -20,6 +20,7 @@ That's the whole contract. No code edits, no naming lists, nothing to register.
    - **Anchor it** (Properties → Anchored ✓). Very important — unanchored zones fall through the world!
    - Any position and any rotation is fine; the build grid adapts to each zone automatically.
    - Keep the space **above** it clear — that's where players build.
+   - **The Part's +Z side is the plot's FRONT** — handcuffed new prisoners appear there waiting for intake. Rotate the Part so its front faces your road/entrance. (Quick check: in Studio, select the Part and press Play — arrivals gather on the front side.)
 4. Add a **SpawnLocation** (Home tab → Part dropdown, or search the toolbox) wherever players should first appear. When a player claims a zone, they're automatically walked to its edge.
 
 > **No PlotZones folder yet?** The game builds a simple flat test map by itself so it always runs. The moment your folder exists with at least one Part, your map takes over completely.
@@ -39,8 +40,10 @@ That's the whole contract. No code edits, no naming lists, nothing to register.
 
 | Attribute | Type | What it does |
 |---|---|---|
-| `SpawnsInmate` | boolean, ticked | An inmate (with a silly name) stands inside when placed. Put it on cell-type assets. |
+| `SpawnsInmate` | boolean, ticked | Marks the asset as **housing for one prisoner**. Prisoners arrive via the 🚔 Intake menu, wait handcuffed at your gate, and get escorted into an empty one of these. Put it on cell-type assets. |
 | `Price` | number | *Coming with the economy phase* — what it'll cost to place. Safe to add now. |
+
+**Sizing conventions worth copying from the placeholders:** the Wall fills a *whole* 4-stud grid square (so wall runs tile solid, Prison Architect style), and the Fence/Security Door are thin panels spanning the full 4-stud width (so doors drop cleanly into fence lines). Matching those shapes keeps your assets mixing well with drag-to-build.
 
 ## 🔄 Replacing the placeholders
 

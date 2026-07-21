@@ -14,9 +14,11 @@ remotes.Name = "Remotes"
 for _, name in ipairs({
 	"PlaceRequest",
 	"PlaceLineRequest",
+	"PlaceRectRequest",
 	"FoundationRequest",
 	"DeleteRequest",
 	"DeleteManyRequest",
+	"DeleteRectRequest",
 	"RoomPaintRequest",
 	"IntakeRequest",
 }) do

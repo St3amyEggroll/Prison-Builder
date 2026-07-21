@@ -372,9 +372,11 @@ remotes.Name = "Remotes"
 for _, name in ipairs({
 	"PlaceRequest",
 	"PlaceLineRequest",
+	"PlaceRectRequest",
 	"FoundationRequest",
 	"DeleteRequest",
 	"DeleteManyRequest",
+	"DeleteRectRequest",
 	"RoomPaintRequest",
 	"IntakeRequest",
 }) do
@@ -1338,21 +1340,26 @@ function PlacementService.handlePlaceLine(player, assetName, x1, z1, x2, z2)
 	if not asset then
 		return { ok = false, err = "Unknown asset." }
 	end
-	if asset.cellsW ~= 1 or asset.cellsD ~= 1 then
-		return { ok = false, err = "Only 1-square assets can be dragged in lines." }
-	end
 
-	local startX, startZ, axis, count = GridMath.lineCells(
+	local startX, startZ, axis, rawCount = GridMath.lineCells(
 		math.floor(x1), math.floor(z1), math.floor(x2), math.floor(z2)
 	)
-	count = math.min(count, 64)
-	-- Pieces auto-face along the drag: lengthwise walls form a solid run.
-	local rot = axis == "x" and 0 or 1
+	-- Pieces auto-face along the drag (long side follows it), and pieces
+	-- bigger than one square step by their own length so runs stay solid.
+	local rot
+	if axis == "x" then
+		rot = asset.cellsW >= asset.cellsD and 0 or 1
+	else
+		rot = asset.cellsW >= asset.cellsD and 1 or 0
+	end
+	local w, d = GridMath.footprint(asset, rot)
+	local step = math.max(1, axis == "x" and w or d)
+	local pieces = math.min(math.floor((rawCount - 1) / step) + 1, 64)
 
 	local models = {}
-	for i = 0, count - 1 do
-		local gx = axis == "x" and startX + i or startX
-		local gz = axis == "z" and startZ + i or startZ
+	for i = 0, pieces - 1 do
+		local gx = axis == "x" and startX + i * step or startX
+		local gz = axis == "z" and startZ + i * step or startZ
 		local model = placeInternal(player, zone, asset, gx, gz, rot)
 		if model then
 			table.insert(models, model)
@@ -1360,6 +1367,51 @@ function PlacementService.handlePlaceLine(player, assetName, x1, z1, x2, z2)
 	end
 	if #models == 0 then
 		return { ok = false, err = "Nothing free along that line." }
+	end
+	return { ok = true, placed = #models, models = models }
+end
+
+-- Rectangle FILL (Prison Architect flooring): tile the whole dragged
+-- rectangle with the asset, stepping by its footprint.
+function PlacementService.handlePlaceRect(player, assetName, x1, z1, x2, z2, rot)
+	local zone = playerZones[player]
+	if not zone then
+		return { ok = false, err = "You don't have a plot yet." }
+	end
+	if tooFast(player) then
+		return { ok = false, err = "Too fast!" }
+	end
+	if type(assetName) ~= "string" or type(x1) ~= "number" or type(z1) ~= "number"
+		or type(x2) ~= "number" or type(z2) ~= "number"
+	then
+		return { ok = false, err = "Bad request." }
+	end
+	local asset = Buildables.get(assetName)
+	if not asset then
+		return { ok = false, err = "Unknown asset." }
+	end
+	rot = math.floor(tonumber(rot) or 0) % 4
+	local w, d = GridMath.footprint(asset, rot)
+
+	local minX = math.max(0, math.floor(math.min(x1, x2)))
+	local maxX = math.min(zone.info.cols - 1, math.floor(math.max(x1, x2)))
+	local minZ = math.max(0, math.floor(math.min(z1, z2)))
+	local maxZ = math.min(zone.info.rows - 1, math.floor(math.max(z1, z2)))
+
+	local models = {}
+	for gz = minZ, maxZ, d do
+		for gx = minX, maxX, w do
+			if #models >= 512 then
+				break
+			end
+			local model = placeInternal(player, zone, asset, gx, gz, rot)
+			if model then
+				table.insert(models, model)
+			end
+		end
+	end
+	if #models == 0 then
+		return { ok = false, err = "No room in that rectangle." }
 	end
 	return { ok = true, placed = #models, models = models }
 end
@@ -1478,13 +1530,58 @@ function PlacementService.handleDeleteMany(player, models)
 	return { ok = true, deleted = deleted }
 end
 
+-- Rectangle BULLDOZE: demolish everything whose footprint touches the
+-- dragged rectangle. Returns the identities so Undo can rebuild them.
+function PlacementService.handleDeleteRect(player, x1, z1, x2, z2)
+	local zone = playerZones[player]
+	if not zone then
+		return { ok = false, err = "You don't have a plot yet." }
+	end
+	if tooFast(player) then
+		return { ok = false, err = "Too fast!" }
+	end
+	if type(x1) ~= "number" or type(z1) ~= "number" or type(x2) ~= "number" or type(z2) ~= "number" then
+		return { ok = false, err = "Bad request." }
+	end
+	local minX, maxX = math.floor(math.min(x1, x2)), math.floor(math.max(x1, x2))
+	local minZ, maxZ = math.floor(math.min(z1, z2)), math.floor(math.max(z1, z2))
+
+	-- Collect first (deleteOne edits the layout list while we scan it).
+	local victims = {}
+	for _, entry in ipairs(layouts[player]) do
+		local asset = Buildables.get(entry.n)
+		if asset and #victims < 512 then
+			local w, d = GridMath.footprint(asset, entry.r)
+			if entry.x <= maxX and entry.x + w - 1 >= minX
+				and entry.z <= maxZ and entry.z + d - 1 >= minZ
+			then
+				table.insert(victims, entry)
+			end
+		end
+	end
+
+	local items = {}
+	for _, entry in ipairs(victims) do
+		local params = { n = entry.n, x = entry.x, z = entry.z, r = entry.r }
+		if deleteOne(player, zone, entry.model) then
+			table.insert(items, params)
+		end
+	end
+	if #items == 0 then
+		return { ok = false, err = "Nothing there to bulldoze." }
+	end
+	return { ok = true, deleted = #items, items = items }
+end
+
 function PlacementService.init()
 	local remotes = ReplicatedStorage:WaitForChild("Remotes")
 	remotes.PlaceRequest.OnServerInvoke = PlacementService.handlePlace
 	remotes.PlaceLineRequest.OnServerInvoke = PlacementService.handlePlaceLine
 	remotes.FoundationRequest.OnServerInvoke = PlacementService.handleFoundation
+	remotes.PlaceRectRequest.OnServerInvoke = PlacementService.handlePlaceRect
 	remotes.DeleteRequest.OnServerInvoke = PlacementService.handleDelete
 	remotes.DeleteManyRequest.OnServerInvoke = PlacementService.handleDeleteMany
+	remotes.DeleteRectRequest.OnServerInvoke = PlacementService.handleDeleteRect
 end
 
 return PlacementService
@@ -2523,6 +2620,8 @@ function BuildMode.start()
 	local deleteRequest = remotes:WaitForChild("DeleteRequest")
 	local deleteManyRequest = remotes:WaitForChild("DeleteManyRequest")
 	local foundationRequest = remotes:WaitForChild("FoundationRequest")
+	local placeRectRequest = remotes:WaitForChild("PlaceRectRequest")
+	local deleteRectRequest = remotes:WaitForChild("DeleteRectRequest")
 	local roomPaintRequest = remotes:WaitForChild("RoomPaintRequest")
 
 	local buildablesFolder = ReplicatedStorage:WaitForChild(Config.BuildablesFolderName)
@@ -2582,6 +2681,28 @@ function BuildMode.start()
 		if #undoStack > 20 then
 			table.remove(undoStack, 1)
 		end
+	end
+
+	-- Every category drags except single-placement ones: walls & doors
+	-- (and custom categories) drag straight LINES, flooring FILLS the
+	-- rectangle, objects place one at a time.
+	local function dragStyleOf(asset)
+		if asset.category == "Flooring" then
+			return "rect"
+		elseif asset.category == "Objects" then
+			return "single"
+		end
+		return "line"
+	end
+
+	local SoundService = game:GetService("SoundService")
+	local function playSound(fileName, volume)
+		-- Engine-bundled sounds: nothing to download, can't go missing.
+		local sound = Instance.new("Sound")
+		sound.SoundId = "rbxasset://sounds/" .. fileName
+		sound.Volume = volume
+		SoundService:PlayLocalSound(sound)
+		sound:Destroy()
 	end
 
 	-- Occupancy mirror ---------------------------------------------------
@@ -2653,7 +2774,10 @@ function BuildMode.start()
 		if not camera then
 			return nil
 		end
-		return camera:ViewportPointToRay(lastPointer.X, lastPointer.Y)
+		-- InputObject positions are GUI-inset-adjusted, so the matching
+		-- ray function is ScreenPointToRay (ViewportPointToRay aims ~58px
+		-- high — the classic Roblox top-bar offset bug).
+		return camera:ScreenPointToRay(lastPointer.X, lastPointer.Y)
 	end
 
 	local function cellUnderPointer(w, d)
@@ -2750,6 +2874,51 @@ function BuildMode.start()
 		local color = ghostValid and GREEN or RED
 		ghostHighlight.FillColor = color
 		ghostHighlight.OutlineColor = color
+	end
+
+	-- Grid overlay: faint lines over the plot while building, so the
+	-- snapping reads at a glance. Client-side only — nobody else sees it.
+	local gridFolder = nil
+	local function showGrid()
+		if gridFolder or not zone then
+			return
+		end
+		gridFolder = Instance.new("Folder")
+		gridFolder.Name = "BuildGrid"
+		local info = zone.info
+		local function gridLine(size, cf)
+			local p = Instance.new("Part")
+			p.Anchored = true
+			p.CanCollide = false
+			p.CanQuery = false
+			p.CanTouch = false
+			p.CastShadow = false
+			p.Material = Enum.Material.Neon
+			p.Color = Color3.fromRGB(210, 255, 225)
+			p.Transparency = 0.85
+			p.Size = size
+			p.CFrame = cf
+			p.Parent = gridFolder
+		end
+		for i = 0, info.cols do
+			gridLine(
+				Vector3.new(0.1, 0.04, info.rows * GRID),
+				info.corner * CFrame.new(i * GRID, 0.1, info.rows * GRID / 2)
+			)
+		end
+		for j = 0, info.rows do
+			gridLine(
+				Vector3.new(info.cols * GRID, 0.04, 0.1),
+				info.corner * CFrame.new(info.cols * GRID / 2, 0.1, j * GRID)
+			)
+		end
+		gridFolder.Parent = workspace
+	end
+	local function hideGrid()
+		if gridFolder then
+			gridFolder:Destroy()
+			gridFolder = nil
+		end
 	end
 
 	-- UI: build toggle, PA-style bottom toolbar, item panel ----------------
@@ -3062,6 +3231,12 @@ function BuildMode.start()
 		refreshSelectionLook()
 		refreshTileVisibility()
 
+		if mode ~= "off" then
+			showGrid()
+		else
+			hideGrid()
+		end
+
 		if zoneBox then
 			zoneBox:Destroy()
 			zoneBox = nil
@@ -3201,6 +3376,7 @@ function BuildMode.start()
 			if result.model then
 				pushUndo({ kind = "place", models = { result.model } })
 			end
+			playSound("electronicpingshort.wav", 0.5)
 			flashStatus(selected.name .. " placed!", GREEN)
 		elseif ok and result then
 			flashStatus(result.err or "Couldn't place that.", RED)
@@ -3215,9 +3391,25 @@ function BuildMode.start()
 			if result.models then
 				pushUndo({ kind = "place", models = result.models })
 			end
+			playSound("electronicpingshort.wav", 0.5)
 			flashStatus(("%d × %s placed!"):format(result.placed, selected.name), GREEN)
 		elseif ok and result then
 			flashStatus(result.err or "Couldn't build that line.", RED)
+		end
+	end
+
+	local function tryPlaceRect(x1, z1, x2, z2)
+		local ok, result = pcall(function()
+			return placeRectRequest:InvokeServer(selected.name, x1, z1, x2, z2, rot)
+		end)
+		if ok and result and result.ok then
+			if result.models then
+				pushUndo({ kind = "place", models = result.models })
+			end
+			playSound("electronicpingshort.wav", 0.5)
+			flashStatus(("%d × %s placed!"):format(result.placed, selected.name), GREEN)
+		elseif ok and result then
+			flashStatus(result.err or "Couldn't fill that area.", RED)
 		end
 	end
 
@@ -3229,6 +3421,7 @@ function BuildMode.start()
 			if result.models then
 				pushUndo({ kind = "place", models = result.models })
 			end
+			playSound("electronicpingshort.wav", 0.5)
 			flashStatus(("Foundation built — %d pieces. Now add a door!"):format(result.built), GREEN)
 		elseif ok and result then
 			flashStatus(result.err or "Couldn't build that foundation.", RED)
@@ -3298,9 +3491,25 @@ function BuildMode.start()
 			if params then
 				pushUndo({ kind = "delete", items = { params } })
 			end
+			playSound("snap.mp3", 0.5)
 			flashStatus("Demolished!", GREEN)
 		elseif ok and result then
 			flashStatus(result.err or "Couldn't demolish that.", RED)
+		end
+	end
+
+	local function tryDeleteRect(x1, z1, x2, z2)
+		local ok, result = pcall(function()
+			return deleteRectRequest:InvokeServer(x1, z1, x2, z2)
+		end)
+		if ok and result and result.ok then
+			if result.items then
+				pushUndo({ kind = "delete", items = result.items })
+			end
+			playSound("snap.mp3", 0.5)
+			flashStatus(("Bulldozed %d object%s"):format(result.deleted, result.deleted == 1 and "" or "s"), GREEN)
+		elseif ok and result then
+			flashStatus(result.err or "Nothing there to bulldoze.", RED)
 		end
 	end
 
@@ -3408,9 +3617,25 @@ function BuildMode.start()
 					pressStartCell = { gx, gz }
 				end
 			elseif mode == "delete" then
-				tryDelete()
+				local gx, gz = cellUnderPointer(1, 1)
+				if gx then
+					pressing = true
+					pressStartCell = { gx, gz }
+				else
+					tryDelete()
+				end
 			elseif mode == "move" then
 				tryMove()
+			end
+		elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
+			-- Right-click clears the current selection (PA habit).
+			if mode == "objects" and selected then
+				selected = nil
+				destroyGhost()
+				refreshSelectionLook()
+			elseif mode == "rooms" and selectedRoom ~= nil then
+				selectedRoom = nil
+				refreshSelectionLook()
 			end
 		elseif input.KeyCode == Enum.KeyCode.B then
 			setMode(mode == "off" and "objects" or "off")
@@ -3437,14 +3662,23 @@ function BuildMode.start()
 		hideStretchBox()
 
 		if mode == "objects" and selected and pressStartCell then
-			local isOneSquare = selected.cellsW == 1 and selected.cellsD == 1
+			local style = dragStyleOf(selected)
 			local endCell = ghostCell
-			if isOneSquare and endCell
+			local moved = endCell
 				and (endCell[1] ~= pressStartCell[1] or endCell[2] ~= pressStartCell[2])
-			then
+			if moved and style == "line" then
 				tryPlaceLine(pressStartCell[1], pressStartCell[2], endCell[1], endCell[2])
+			elseif moved and style == "rect" then
+				tryPlaceRect(pressStartCell[1], pressStartCell[2], endCell[1], endCell[2])
 			elseif endCell and ghostValid then
 				tryPlaceSingle(endCell[1], endCell[2])
+			end
+		elseif mode == "delete" and pressStartCell then
+			local gx, gz = cellUnderPointer(1, 1)
+			if gx and (gx ~= pressStartCell[1] or gz ~= pressStartCell[2]) then
+				tryDeleteRect(pressStartCell[1], pressStartCell[2], gx, gz)
+			else
+				tryDelete()
 			end
 		elseif mode == "rooms" and selectedRoom ~= nil and pressStartCell then
 			local gx, gz = cellUnderPointer(1, 1)
@@ -3463,17 +3697,20 @@ function BuildMode.start()
 	RunService.RenderStepped:Connect(function()
 		if mode == "objects" then
 			updateGhost()
-			if pressing and pressStartCell and selected
-				and selected.cellsW == 1 and selected.cellsD == 1 and ghostCell
-			then
-				local sx, sz, axis, count = GridMath.lineCells(
-					pressStartCell[1], pressStartCell[2], ghostCell[1], ghostCell[2]
-				)
-				local ex = axis == "x" and sx + count - 1 or sx
-				local ez = axis == "z" and sz + count - 1 or sz
-				if count > 1 then
+			if pressing and pressStartCell and selected and ghostCell then
+				local style = dragStyleOf(selected)
+				local moved = ghostCell[1] ~= pressStartCell[1] or ghostCell[2] ~= pressStartCell[2]
+				if style == "line" and moved then
+					local sx, sz, axis, count = GridMath.lineCells(
+						pressStartCell[1], pressStartCell[2], ghostCell[1], ghostCell[2]
+					)
+					local ex = axis == "x" and sx + count - 1 or sx
+					local ez = axis == "z" and sz + count - 1 or sz
 					ghost.Parent = nil
 					showStretchBox(sx, sz, ex, ez, GREEN)
+				elseif style == "rect" and moved then
+					ghost.Parent = nil
+					showStretchBox(pressStartCell[1], pressStartCell[2], ghostCell[1], ghostCell[2], GREEN)
 				else
 					hideStretchBox()
 				end
@@ -3493,6 +3730,12 @@ function BuildMode.start()
 				if gx then
 					showStretchBox(pressStartCell[1], pressStartCell[2], gx, gz, Color3.fromRGB(120, 180, 255))
 				end
+			end
+		elseif mode == "delete" and pressing and pressStartCell then
+			clearHover()
+			local gx, gz = cellUnderPointer(1, 1)
+			if gx then
+				showStretchBox(pressStartCell[1], pressStartCell[2], gx, gz, RED)
 			end
 		elseif mode == "delete" or mode == "move" then
 			local model = findPlacedModel()

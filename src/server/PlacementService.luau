@@ -199,21 +199,26 @@ function PlacementService.handlePlaceLine(player, assetName, x1, z1, x2, z2)
 	if not asset then
 		return { ok = false, err = "Unknown asset." }
 	end
-	if asset.cellsW ~= 1 or asset.cellsD ~= 1 then
-		return { ok = false, err = "Only 1-square assets can be dragged in lines." }
-	end
 
-	local startX, startZ, axis, count = GridMath.lineCells(
+	local startX, startZ, axis, rawCount = GridMath.lineCells(
 		math.floor(x1), math.floor(z1), math.floor(x2), math.floor(z2)
 	)
-	count = math.min(count, 64)
-	-- Pieces auto-face along the drag: lengthwise walls form a solid run.
-	local rot = axis == "x" and 0 or 1
+	-- Pieces auto-face along the drag (long side follows it), and pieces
+	-- bigger than one square step by their own length so runs stay solid.
+	local rot
+	if axis == "x" then
+		rot = asset.cellsW >= asset.cellsD and 0 or 1
+	else
+		rot = asset.cellsW >= asset.cellsD and 1 or 0
+	end
+	local w, d = GridMath.footprint(asset, rot)
+	local step = math.max(1, axis == "x" and w or d)
+	local pieces = math.min(math.floor((rawCount - 1) / step) + 1, 64)
 
 	local models = {}
-	for i = 0, count - 1 do
-		local gx = axis == "x" and startX + i or startX
-		local gz = axis == "z" and startZ + i or startZ
+	for i = 0, pieces - 1 do
+		local gx = axis == "x" and startX + i * step or startX
+		local gz = axis == "z" and startZ + i * step or startZ
 		local model = placeInternal(player, zone, asset, gx, gz, rot)
 		if model then
 			table.insert(models, model)
@@ -221,6 +226,51 @@ function PlacementService.handlePlaceLine(player, assetName, x1, z1, x2, z2)
 	end
 	if #models == 0 then
 		return { ok = false, err = "Nothing free along that line." }
+	end
+	return { ok = true, placed = #models, models = models }
+end
+
+-- Rectangle FILL (Prison Architect flooring): tile the whole dragged
+-- rectangle with the asset, stepping by its footprint.
+function PlacementService.handlePlaceRect(player, assetName, x1, z1, x2, z2, rot)
+	local zone = playerZones[player]
+	if not zone then
+		return { ok = false, err = "You don't have a plot yet." }
+	end
+	if tooFast(player) then
+		return { ok = false, err = "Too fast!" }
+	end
+	if type(assetName) ~= "string" or type(x1) ~= "number" or type(z1) ~= "number"
+		or type(x2) ~= "number" or type(z2) ~= "number"
+	then
+		return { ok = false, err = "Bad request." }
+	end
+	local asset = Buildables.get(assetName)
+	if not asset then
+		return { ok = false, err = "Unknown asset." }
+	end
+	rot = math.floor(tonumber(rot) or 0) % 4
+	local w, d = GridMath.footprint(asset, rot)
+
+	local minX = math.max(0, math.floor(math.min(x1, x2)))
+	local maxX = math.min(zone.info.cols - 1, math.floor(math.max(x1, x2)))
+	local minZ = math.max(0, math.floor(math.min(z1, z2)))
+	local maxZ = math.min(zone.info.rows - 1, math.floor(math.max(z1, z2)))
+
+	local models = {}
+	for gz = minZ, maxZ, d do
+		for gx = minX, maxX, w do
+			if #models >= 512 then
+				break
+			end
+			local model = placeInternal(player, zone, asset, gx, gz, rot)
+			if model then
+				table.insert(models, model)
+			end
+		end
+	end
+	if #models == 0 then
+		return { ok = false, err = "No room in that rectangle." }
 	end
 	return { ok = true, placed = #models, models = models }
 end
@@ -339,13 +389,58 @@ function PlacementService.handleDeleteMany(player, models)
 	return { ok = true, deleted = deleted }
 end
 
+-- Rectangle BULLDOZE: demolish everything whose footprint touches the
+-- dragged rectangle. Returns the identities so Undo can rebuild them.
+function PlacementService.handleDeleteRect(player, x1, z1, x2, z2)
+	local zone = playerZones[player]
+	if not zone then
+		return { ok = false, err = "You don't have a plot yet." }
+	end
+	if tooFast(player) then
+		return { ok = false, err = "Too fast!" }
+	end
+	if type(x1) ~= "number" or type(z1) ~= "number" or type(x2) ~= "number" or type(z2) ~= "number" then
+		return { ok = false, err = "Bad request." }
+	end
+	local minX, maxX = math.floor(math.min(x1, x2)), math.floor(math.max(x1, x2))
+	local minZ, maxZ = math.floor(math.min(z1, z2)), math.floor(math.max(z1, z2))
+
+	-- Collect first (deleteOne edits the layout list while we scan it).
+	local victims = {}
+	for _, entry in ipairs(layouts[player]) do
+		local asset = Buildables.get(entry.n)
+		if asset and #victims < 512 then
+			local w, d = GridMath.footprint(asset, entry.r)
+			if entry.x <= maxX and entry.x + w - 1 >= minX
+				and entry.z <= maxZ and entry.z + d - 1 >= minZ
+			then
+				table.insert(victims, entry)
+			end
+		end
+	end
+
+	local items = {}
+	for _, entry in ipairs(victims) do
+		local params = { n = entry.n, x = entry.x, z = entry.z, r = entry.r }
+		if deleteOne(player, zone, entry.model) then
+			table.insert(items, params)
+		end
+	end
+	if #items == 0 then
+		return { ok = false, err = "Nothing there to bulldoze." }
+	end
+	return { ok = true, deleted = #items, items = items }
+end
+
 function PlacementService.init()
 	local remotes = ReplicatedStorage:WaitForChild("Remotes")
 	remotes.PlaceRequest.OnServerInvoke = PlacementService.handlePlace
 	remotes.PlaceLineRequest.OnServerInvoke = PlacementService.handlePlaceLine
 	remotes.FoundationRequest.OnServerInvoke = PlacementService.handleFoundation
+	remotes.PlaceRectRequest.OnServerInvoke = PlacementService.handlePlaceRect
 	remotes.DeleteRequest.OnServerInvoke = PlacementService.handleDelete
 	remotes.DeleteManyRequest.OnServerInvoke = PlacementService.handleDeleteMany
+	remotes.DeleteRectRequest.OnServerInvoke = PlacementService.handleDeleteRect
 end
 
 return PlacementService

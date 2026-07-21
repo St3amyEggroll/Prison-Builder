@@ -34,6 +34,9 @@ Make structures real, not decorative. Unlocks the Foundations tab.
 - [x] Room requirements, PA-style: the floor label shows "needs: surround with walls + a door, 1× housing" until satisfied, then "✓ ready" — re-checked live as you build
 - [x] Undo (Ctrl+Z / ↩) for placements, lines, foundations, and bulldozes
 - [x] Move tool (✋): pick up a placed object and re-place it (Ctrl+Z puts it back)
+- [x] Mouse aim fix: ghost/bulldoze now lands exactly under the cursor (GUI-inset ray bug)
+- [x] Category drag styles: walls & doors (and custom categories) drag **lines**, flooring **fills rectangles**, objects stay click-to-place; bulldoze drags a delete-rectangle
+- [x] Build-mode grid overlay, place/demolish sounds, right-click cancels selection
 - [ ] Owner playtest: build a real enclosed cell block with a door and watch the labels go green — **← your move!**
 
 ## Phase 3 — Money & construction crews 💰

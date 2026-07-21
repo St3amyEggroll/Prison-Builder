@@ -55,7 +55,9 @@ Opening build mode switches to the **top-down Prison Architect camera** (slightl
 | **Undo** | **Ctrl+Z** or ↩ | ↩ button |
 | Aim the ghost preview | move mouse | drag finger |
 | Place (when ghost is green) | click | tap |
-| **Drag-to-build a line** (walls, fences, floors) | press, drag, release | press, drag, release |
+| **Drag-to-build**: walls/doors/fences drag in **lines**, flooring **fills the rectangle** | press, drag, release | press, drag, release |
+| **Drag-to-bulldoze** a whole area | 🗑️, then drag a rectangle | same |
+| Cancel current selection | right-click | pick another tile |
 | **Paint a room** (pick type first!) | press, drag a rectangle, release | same |
 | Rotate object 90° | **R** or ↻ | ↻ button |
 | Demolish mode | 🗑️ button, then click objects | 🗑️ button, then tap |

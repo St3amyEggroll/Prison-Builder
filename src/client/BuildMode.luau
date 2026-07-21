@@ -49,6 +49,8 @@ function BuildMode.start()
 	local deleteRequest = remotes:WaitForChild("DeleteRequest")
 	local deleteManyRequest = remotes:WaitForChild("DeleteManyRequest")
 	local foundationRequest = remotes:WaitForChild("FoundationRequest")
+	local placeRectRequest = remotes:WaitForChild("PlaceRectRequest")
+	local deleteRectRequest = remotes:WaitForChild("DeleteRectRequest")
 	local roomPaintRequest = remotes:WaitForChild("RoomPaintRequest")
 
 	local buildablesFolder = ReplicatedStorage:WaitForChild(Config.BuildablesFolderName)
@@ -108,6 +110,28 @@ function BuildMode.start()
 		if #undoStack > 20 then
 			table.remove(undoStack, 1)
 		end
+	end
+
+	-- Every category drags except single-placement ones: walls & doors
+	-- (and custom categories) drag straight LINES, flooring FILLS the
+	-- rectangle, objects place one at a time.
+	local function dragStyleOf(asset)
+		if asset.category == "Flooring" then
+			return "rect"
+		elseif asset.category == "Objects" then
+			return "single"
+		end
+		return "line"
+	end
+
+	local SoundService = game:GetService("SoundService")
+	local function playSound(fileName, volume)
+		-- Engine-bundled sounds: nothing to download, can't go missing.
+		local sound = Instance.new("Sound")
+		sound.SoundId = "rbxasset://sounds/" .. fileName
+		sound.Volume = volume
+		SoundService:PlayLocalSound(sound)
+		sound:Destroy()
 	end
 
 	-- Occupancy mirror ---------------------------------------------------
@@ -179,7 +203,10 @@ function BuildMode.start()
 		if not camera then
 			return nil
 		end
-		return camera:ViewportPointToRay(lastPointer.X, lastPointer.Y)
+		-- InputObject positions are GUI-inset-adjusted, so the matching
+		-- ray function is ScreenPointToRay (ViewportPointToRay aims ~58px
+		-- high — the classic Roblox top-bar offset bug).
+		return camera:ScreenPointToRay(lastPointer.X, lastPointer.Y)
 	end
 
 	local function cellUnderPointer(w, d)
@@ -276,6 +303,51 @@ function BuildMode.start()
 		local color = ghostValid and GREEN or RED
 		ghostHighlight.FillColor = color
 		ghostHighlight.OutlineColor = color
+	end
+
+	-- Grid overlay: faint lines over the plot while building, so the
+	-- snapping reads at a glance. Client-side only — nobody else sees it.
+	local gridFolder = nil
+	local function showGrid()
+		if gridFolder or not zone then
+			return
+		end
+		gridFolder = Instance.new("Folder")
+		gridFolder.Name = "BuildGrid"
+		local info = zone.info
+		local function gridLine(size, cf)
+			local p = Instance.new("Part")
+			p.Anchored = true
+			p.CanCollide = false
+			p.CanQuery = false
+			p.CanTouch = false
+			p.CastShadow = false
+			p.Material = Enum.Material.Neon
+			p.Color = Color3.fromRGB(210, 255, 225)
+			p.Transparency = 0.85
+			p.Size = size
+			p.CFrame = cf
+			p.Parent = gridFolder
+		end
+		for i = 0, info.cols do
+			gridLine(
+				Vector3.new(0.1, 0.04, info.rows * GRID),
+				info.corner * CFrame.new(i * GRID, 0.1, info.rows * GRID / 2)
+			)
+		end
+		for j = 0, info.rows do
+			gridLine(
+				Vector3.new(info.cols * GRID, 0.04, 0.1),
+				info.corner * CFrame.new(info.cols * GRID / 2, 0.1, j * GRID)
+			)
+		end
+		gridFolder.Parent = workspace
+	end
+	local function hideGrid()
+		if gridFolder then
+			gridFolder:Destroy()
+			gridFolder = nil
+		end
 	end
 
 	-- UI: build toggle, PA-style bottom toolbar, item panel ----------------
@@ -588,6 +660,12 @@ function BuildMode.start()
 		refreshSelectionLook()
 		refreshTileVisibility()
 
+		if mode ~= "off" then
+			showGrid()
+		else
+			hideGrid()
+		end
+
 		if zoneBox then
 			zoneBox:Destroy()
 			zoneBox = nil
@@ -727,6 +805,7 @@ function BuildMode.start()
 			if result.model then
 				pushUndo({ kind = "place", models = { result.model } })
 			end
+			playSound("electronicpingshort.wav", 0.5)
 			flashStatus(selected.name .. " placed!", GREEN)
 		elseif ok and result then
 			flashStatus(result.err or "Couldn't place that.", RED)
@@ -741,9 +820,25 @@ function BuildMode.start()
 			if result.models then
 				pushUndo({ kind = "place", models = result.models })
 			end
+			playSound("electronicpingshort.wav", 0.5)
 			flashStatus(("%d × %s placed!"):format(result.placed, selected.name), GREEN)
 		elseif ok and result then
 			flashStatus(result.err or "Couldn't build that line.", RED)
+		end
+	end
+
+	local function tryPlaceRect(x1, z1, x2, z2)
+		local ok, result = pcall(function()
+			return placeRectRequest:InvokeServer(selected.name, x1, z1, x2, z2, rot)
+		end)
+		if ok and result and result.ok then
+			if result.models then
+				pushUndo({ kind = "place", models = result.models })
+			end
+			playSound("electronicpingshort.wav", 0.5)
+			flashStatus(("%d × %s placed!"):format(result.placed, selected.name), GREEN)
+		elseif ok and result then
+			flashStatus(result.err or "Couldn't fill that area.", RED)
 		end
 	end
 
@@ -755,6 +850,7 @@ function BuildMode.start()
 			if result.models then
 				pushUndo({ kind = "place", models = result.models })
 			end
+			playSound("electronicpingshort.wav", 0.5)
 			flashStatus(("Foundation built — %d pieces. Now add a door!"):format(result.built), GREEN)
 		elseif ok and result then
 			flashStatus(result.err or "Couldn't build that foundation.", RED)
@@ -824,9 +920,25 @@ function BuildMode.start()
 			if params then
 				pushUndo({ kind = "delete", items = { params } })
 			end
+			playSound("snap.mp3", 0.5)
 			flashStatus("Demolished!", GREEN)
 		elseif ok and result then
 			flashStatus(result.err or "Couldn't demolish that.", RED)
+		end
+	end
+
+	local function tryDeleteRect(x1, z1, x2, z2)
+		local ok, result = pcall(function()
+			return deleteRectRequest:InvokeServer(x1, z1, x2, z2)
+		end)
+		if ok and result and result.ok then
+			if result.items then
+				pushUndo({ kind = "delete", items = result.items })
+			end
+			playSound("snap.mp3", 0.5)
+			flashStatus(("Bulldozed %d object%s"):format(result.deleted, result.deleted == 1 and "" or "s"), GREEN)
+		elseif ok and result then
+			flashStatus(result.err or "Nothing there to bulldoze.", RED)
 		end
 	end
 
@@ -934,9 +1046,25 @@ function BuildMode.start()
 					pressStartCell = { gx, gz }
 				end
 			elseif mode == "delete" then
-				tryDelete()
+				local gx, gz = cellUnderPointer(1, 1)
+				if gx then
+					pressing = true
+					pressStartCell = { gx, gz }
+				else
+					tryDelete()
+				end
 			elseif mode == "move" then
 				tryMove()
+			end
+		elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
+			-- Right-click clears the current selection (PA habit).
+			if mode == "objects" and selected then
+				selected = nil
+				destroyGhost()
+				refreshSelectionLook()
+			elseif mode == "rooms" and selectedRoom ~= nil then
+				selectedRoom = nil
+				refreshSelectionLook()
 			end
 		elseif input.KeyCode == Enum.KeyCode.B then
 			setMode(mode == "off" and "objects" or "off")
@@ -963,14 +1091,23 @@ function BuildMode.start()
 		hideStretchBox()
 
 		if mode == "objects" and selected and pressStartCell then
-			local isOneSquare = selected.cellsW == 1 and selected.cellsD == 1
+			local style = dragStyleOf(selected)
 			local endCell = ghostCell
-			if isOneSquare and endCell
+			local moved = endCell
 				and (endCell[1] ~= pressStartCell[1] or endCell[2] ~= pressStartCell[2])
-			then
+			if moved and style == "line" then
 				tryPlaceLine(pressStartCell[1], pressStartCell[2], endCell[1], endCell[2])
+			elseif moved and style == "rect" then
+				tryPlaceRect(pressStartCell[1], pressStartCell[2], endCell[1], endCell[2])
 			elseif endCell and ghostValid then
 				tryPlaceSingle(endCell[1], endCell[2])
+			end
+		elseif mode == "delete" and pressStartCell then
+			local gx, gz = cellUnderPointer(1, 1)
+			if gx and (gx ~= pressStartCell[1] or gz ~= pressStartCell[2]) then
+				tryDeleteRect(pressStartCell[1], pressStartCell[2], gx, gz)
+			else
+				tryDelete()
 			end
 		elseif mode == "rooms" and selectedRoom ~= nil and pressStartCell then
 			local gx, gz = cellUnderPointer(1, 1)
@@ -989,17 +1126,20 @@ function BuildMode.start()
 	RunService.RenderStepped:Connect(function()
 		if mode == "objects" then
 			updateGhost()
-			if pressing and pressStartCell and selected
-				and selected.cellsW == 1 and selected.cellsD == 1 and ghostCell
-			then
-				local sx, sz, axis, count = GridMath.lineCells(
-					pressStartCell[1], pressStartCell[2], ghostCell[1], ghostCell[2]
-				)
-				local ex = axis == "x" and sx + count - 1 or sx
-				local ez = axis == "z" and sz + count - 1 or sz
-				if count > 1 then
+			if pressing and pressStartCell and selected and ghostCell then
+				local style = dragStyleOf(selected)
+				local moved = ghostCell[1] ~= pressStartCell[1] or ghostCell[2] ~= pressStartCell[2]
+				if style == "line" and moved then
+					local sx, sz, axis, count = GridMath.lineCells(
+						pressStartCell[1], pressStartCell[2], ghostCell[1], ghostCell[2]
+					)
+					local ex = axis == "x" and sx + count - 1 or sx
+					local ez = axis == "z" and sz + count - 1 or sz
 					ghost.Parent = nil
 					showStretchBox(sx, sz, ex, ez, GREEN)
+				elseif style == "rect" and moved then
+					ghost.Parent = nil
+					showStretchBox(pressStartCell[1], pressStartCell[2], ghostCell[1], ghostCell[2], GREEN)
 				else
 					hideStretchBox()
 				end
@@ -1019,6 +1159,12 @@ function BuildMode.start()
 				if gx then
 					showStretchBox(pressStartCell[1], pressStartCell[2], gx, gz, Color3.fromRGB(120, 180, 255))
 				end
+			end
+		elseif mode == "delete" and pressing and pressStartCell then
+			clearHover()
+			local gx, gz = cellUnderPointer(1, 1)
+			if gx then
+				showStretchBox(pressStartCell[1], pressStartCell[2], gx, gz, RED)
 			end
 		elseif mode == "delete" or mode == "move" then
 			local model = findPlacedModel()

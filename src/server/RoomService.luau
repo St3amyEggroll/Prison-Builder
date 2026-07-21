@@ -210,8 +210,11 @@ local function rebuildLabels(zone)
 				labelPart.CastShadow = false
 				labelPart.Transparency = 1
 				labelPart.Size = Vector3.new(math.min(widthStuds, 28), 0.05, math.clamp(depthStuds, 3, 7))
+				-- Rotated 180 so the text reads correctly from the plot's
+				-- front (+Z side), where the build camera starts.
 				labelPart.CFrame = zone.info.corner
 					* CFrame.new((minX + maxX + 1) / 2 * GRID, 0.22, (minZ + maxZ + 1) / 2 * GRID)
+					* CFrame.Angles(0, math.pi, 0)
 
 				local met, statusText = evaluateRegion(zone, Config.RoomTypes[t].name, regionCells, placedInfos)
 

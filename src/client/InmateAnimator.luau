@@ -28,14 +28,26 @@ local LIMB_NAMES = { "LeftArm", "RightArm", "LeftLeg", "RightLeg" }
 function InmateAnimator.start()
 	local tracked = {}
 
+	local REQUIRED_PARTS = { "Torso", "Head", "LeftArm", "RightArm", "LeftLeg", "RightLeg" }
+	local function rigComplete(model)
+		for _, partName in ipairs(REQUIRED_PARTS) do
+			if not model:FindFirstChild(partName) then
+				return false
+			end
+		end
+		return model.PrimaryPart ~= nil
+	end
+
 	local function watch(model)
 		task.spawn(function()
+			-- Wait for the WHOLE rig to replicate. Animating a half-arrived
+			-- inmate leaves the late parts behind — instant body horror.
 			local tries = 0
-			while model.PrimaryPart == nil and model.Parent ~= nil and tries < 100 do
+			while not rigComplete(model) and model.Parent ~= nil and tries < 100 do
 				tries += 1
 				task.wait(0.1)
 			end
-			if not (model.PrimaryPart and model.Parent) then
+			if not (rigComplete(model) and model.Parent) then
 				return
 			end
 

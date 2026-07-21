@@ -542,6 +542,24 @@ function BuildMode.start()
 		end
 	end
 
+	-- Size the item panel to its contents — a three-tile category gets a
+	-- compact panel, not a screen-wide empty bar.
+	local function refreshPanelSize()
+		local count
+		if mode == "rooms" then
+			count = #Config.RoomTypes + 1
+		else
+			count = 0
+			for _, asset in ipairs(catalogOrdered) do
+				if asset.category == currentCategory then
+					count += 1
+				end
+			end
+		end
+		local width = math.clamp(68 + count * 112 + 16, 250, 940)
+		panel.Size = UDim2.new(0, width, 0, 150)
+	end
+
 	local selectAsset, selectRoom, tryMove, doUndo
 
 	for order, asset in ipairs(catalogOrdered) do
@@ -659,6 +677,7 @@ function BuildMode.start()
 		toggle.Text = mode == "off" and "🔨 Build" or "✖ Close"
 		refreshSelectionLook()
 		refreshTileVisibility()
+		refreshPanelSize()
 
 		if mode ~= "off" then
 			showGrid()

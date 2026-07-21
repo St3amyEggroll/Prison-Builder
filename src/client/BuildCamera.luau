@@ -15,8 +15,12 @@ local UserInputService = game:GetService("UserInputService")
 
 local BuildCamera = {}
 
-local PITCH = math.rad(-58) -- the 2.5D tilt: steep, but not straight down
-local MIN_DIST, MAX_DIST = 30, 170
+local PITCH = math.rad(-68) -- the 2.5D tilt: steep, but not straight down
+-- The Prison Architect look is mostly LENS: a narrow field of view makes
+-- the world near-orthographic (walls stay upright instead of splaying
+-- outward). Distances are larger to compensate.
+local FOV = 28
+local MIN_DIST, MAX_DIST = 60, 420
 
 local active = false
 local focus = Vector3.new()
@@ -24,6 +28,7 @@ local yaw = 0
 local targetYaw = 0
 local dist = 90
 local zonePart = nil
+local savedFov = 70
 local connections = {}
 local touches = {} -- active touch inputs (for two-finger pan/pinch)
 local characterConn = nil
@@ -70,12 +75,14 @@ function BuildCamera.enter(part)
 
 	local camera = workspace.CurrentCamera
 	camera.CameraType = Enum.CameraType.Scriptable
+	savedFov = camera.FieldOfView
+	camera.FieldOfView = FOV
 
 	local zoneCF = part.CFrame
 	focus = zoneCF.Position + Vector3.new(0, part.Size.Y / 2, 0)
 	local _, ry, _ = zoneCF:ToEulerAnglesYXZ()
 	yaw, targetYaw = ry, ry
-	dist = math.clamp(math.max(part.Size.X, part.Size.Z) * 0.9, MIN_DIST, MAX_DIST)
+	dist = math.clamp(math.max(part.Size.X, part.Size.Z) * 1.6, MIN_DIST, MAX_DIST)
 
 	setCharacterFrozen(true)
 	-- Respawns mid-build-mode need re-freezing.
@@ -117,7 +124,7 @@ function BuildCamera.enter(part)
 
 	table.insert(connections, UserInputService.InputChanged:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseWheel then
-			dist = math.clamp(dist - input.Position.Z * 14, MIN_DIST, MAX_DIST)
+			dist = math.clamp(dist - input.Position.Z * 28, MIN_DIST, MAX_DIST)
 		elseif input.UserInputType == Enum.UserInputType.Touch and touches[input] then
 			local before = {}
 			local count = 0
@@ -200,6 +207,7 @@ function BuildCamera.exit()
 
 	setCharacterFrozen(false)
 	local camera = workspace.CurrentCamera
+	camera.FieldOfView = savedFov
 	camera.CameraType = Enum.CameraType.Custom
 	local character = Players.LocalPlayer.Character
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")

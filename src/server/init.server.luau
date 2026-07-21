@@ -11,7 +11,15 @@ local remotes = Instance.new("Folder")
 remotes.Name = "Remotes"
 
 -- Every request returns { ok = true, ... } or { ok = false, err = "why" }.
-for _, name in ipairs({ "PlaceRequest", "PlaceLineRequest", "DeleteRequest", "RoomPaintRequest", "IntakeRequest" }) do
+for _, name in ipairs({
+	"PlaceRequest",
+	"PlaceLineRequest",
+	"FoundationRequest",
+	"DeleteRequest",
+	"DeleteManyRequest",
+	"RoomPaintRequest",
+	"IntakeRequest",
+}) do
 	local remote = Instance.new("RemoteFunction")
 	remote.Name = name
 	remote.Parent = remotes

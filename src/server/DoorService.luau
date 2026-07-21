@@ -9,6 +9,7 @@
 -- has no DoorPanel parts, the whole model fades open instead — ugly but
 -- functional, so any door the map-maker builds works on day one.
 
+local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 
@@ -50,6 +51,19 @@ function DoorService.register(model, player)
 	end)
 end
 
+-- Re-measure after the Move tool relocates a door.
+function DoorService.updatePosition(model)
+	local door = doors[model]
+	if door then
+		door.position = model:GetPivot().Position
+		for part in pairs(door.panels) do
+			door.panels[part] = door.open
+				and part.CFrame * CFrame.new(0, part.Size.Y * 0.92, 0)
+				or part.CFrame
+		end
+	end
+end
+
 local function setOpen(model, door, shouldOpen)
 	door.open = shouldOpen
 	model:SetAttribute("DoorOpen", shouldOpen)
@@ -73,11 +87,69 @@ function DoorService.init()
 	task.spawn(function()
 		while true do
 			task.wait(Config.DoorCheckInterval)
+			-- NPCs mid-walk (escorted prisoners, workmen on the way to a
+			-- job) also open doors — a guard is implied. Their live position
+			-- must be computed from the walk attributes: the client animates
+			-- the walk, so server-side part positions are stale until it ends.
+			local now = workspace:GetServerTimeNow()
+			local walkers = {}
+			for _, npc in ipairs(CollectionService:GetTagged("Inmate")) do
+				local start = npc:GetAttribute("EscortStart")
+				if start ~= nil then
+					local duration = npc:GetAttribute("EscortDur") or 1
+					local alpha = math.clamp((now - start) / duration, 0, 1)
+					local pathString = npc:GetAttribute("EscortPath")
+					if type(pathString) == "string" then
+						-- Decode the waypoints and find the point at `alpha`
+						-- along the path's total length.
+						local y = npc:GetAttribute("EscortY") or 0
+						local points = {}
+						for pair in string.gmatch(pathString, "[^|]+") do
+							local xs, zs = string.match(pair, "([^,]+),([^,]+)")
+							local x, z = tonumber(xs), tonumber(zs)
+							if x and z then
+								table.insert(points, Vector3.new(x, y, z))
+							end
+						end
+						if #points >= 2 then
+							local total = 0
+							for i = 2, #points do
+								total += (points[i] - points[i - 1]).Magnitude
+							end
+							local walked = alpha * total
+							for i = 2, #points do
+								local seg = (points[i] - points[i - 1]).Magnitude
+								if walked <= seg or i == #points then
+									local t = seg > 0 and math.clamp(walked / seg, 0, 1) or 1
+									table.insert(walkers, points[i - 1]:Lerp(points[i], t))
+									break
+								end
+								walked -= seg
+							end
+						end
+					else
+						local from = npc:GetAttribute("EscortFrom")
+						local to = npc:GetAttribute("EscortTo")
+						if typeof(from) == "Vector3" and typeof(to) == "Vector3" then
+							table.insert(walkers, from:Lerp(to, alpha))
+						end
+					end
+				end
+			end
+
 			for model, door in pairs(doors) do
 				local character = door.player and door.player.Character
 				local root = character and character:FindFirstChild("HumanoidRootPart")
 				local shouldOpen = root ~= nil
 					and (root.Position - door.position).Magnitude < Config.DoorOpenDistance
+				if not shouldOpen then
+					for _, pos in ipairs(walkers) do
+						if (pos - door.position).Magnitude < Config.DoorOpenDistance then
+							shouldOpen = true
+							break
+						end
+					end
+				end
 				if shouldOpen ~= door.open then
 					setOpen(model, door, shouldOpen)
 				end

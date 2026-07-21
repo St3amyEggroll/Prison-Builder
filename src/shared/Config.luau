@@ -10,6 +10,54 @@
 
 local Config = {}
 
+-- Money ------------------------------------------------------------------
+
+Config.StartingCash = 3000
+
+-- Owner switches: FreeBuild ignores all prices; InstantBuild skips the
+-- workman/blueprint construction (handy while designing your map).
+Config.FreeBuild = false
+Config.InstantBuild = false
+
+-- Bulldozing refunds this fraction of the price. Undo refunds 100%.
+Config.RefundRate = 0.5
+
+-- Every GrantInterval seconds, each HOUSED prisoner pays their grant.
+-- (Waiting handcuffed at the gate pays nothing — house them!)
+Config.GrantInterval = 30
+Config.GrantPerPrisoner = 60
+
+-- An asset's price = its "Price" attribute, else its category's default.
+Config.DefaultPrices = {
+	["Walls & Doors"] = 40,
+	["Flooring"] = 10,
+	["Objects"] = 250,
+}
+Config.FallbackPrice = 50
+
+-- Construction -----------------------------------------------------------
+
+-- Placements start as transparent blueprints; workmen walk over and
+-- build them (Prison Architect's whole vibe).
+Config.WorkmenPerPlot = 2
+Config.WorkerSpeed = 6 -- studs/sec walking to the job
+Config.BuildTimeBase = 1 -- seconds per job...
+Config.BuildTimePerCell = 0.5 -- ...plus this per grid square of footprint
+Config.WorkerNames = { "Hammer Hank", "Nailgun Ned", "Plank Paul", "Rivet Rita", "Sawdust Sam", "Bolt Betty" }
+
+-- Objectives -------------------------------------------------------------
+
+-- Sequential starter goals, PA-grants style. kinds:
+--   counter -> ObjectiveService counts named events
+--   attr    -> watches a published player attribute
+Config.Objectives = {
+	{ id = "walls", text = "Build 10 walls or fences", kind = "counter", event = "wall_built", target = 10, reward = 400 },
+	{ id = "cellroom", text = "Paint a Cell room", kind = "counter", event = "cell_painted", target = 1, reward = 300 },
+	{ id = "readycell", text = "Get a Cell room to ✓ ready", kind = "attr", attr = "ReadyRooms_Cell", target = 1, reward = 800 },
+	{ id = "house3", text = "House 3 prisoners", kind = "attr", attr = "PrisonHoused", target = 3, reward = 1200 },
+	{ id = "earn", text = "Earn $5,000 in prisoner grants", kind = "counter", event = "granted", target = 5000, reward = 2500 },
+}
+
 -- Building ---------------------------------------------------------------
 
 -- Placement grid size in studs. Everything snaps to this. Assets bigger

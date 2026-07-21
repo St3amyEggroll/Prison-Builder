@@ -39,21 +39,23 @@ Make structures real, not decorative. Unlocks the Foundations tab.
 - [x] Build-mode grid overlay, place/demolish sounds, right-click cancels selection
 - [ ] Owner playtest: build a real enclosed cell block with a door and watch the labels go green — **← your move!**
 
-## Phase 3 — Money & construction crews 💰
+## ✅ Phase 3 — Money, construction crews & pathfinding 💰 *(shipped)*
 
-The economy returns, plus PA's construction feel.
+The economy returns, plus PA's construction feel — and pathfinding, pulled forward from Phase 4 (owner's call).
 
-- [ ] Prices: the `Price` attribute goes live; placing costs cash, bulldozing refunds a cut
-- [ ] Daily grants per prisoner held; cash HUD returns (count-up, +$ popups)
-- [ ] Workmen: placements become blueprint ghosts that construction workers walk over and build
-- [ ] Starter objectives ("build 10 cells → $5,000") — PA grants, simplified
-- [ ] Simple cashflow report (income vs. wages)
+- [x] Prices live: `Price` attribute (category defaults otherwise); placing charges, bulldozing refunds 50%, undo refunds 100%, blueprints refund in full. `Config.FreeBuild` = owner sandbox switch
+- [x] Grants: each housed prisoner pays $60 / 30s; cash HUD with count-up, ±$ blips, income/min and session +/- report; cash on the player list
+- [x] Workmen: placements become blue see-through blueprints; each plot's 2-man crew pathfinds over and hammers them real (blueprints don't count for capacity, enclosure, or rooms until built). `Config.InstantBuild` skips it
+- [x] **A* pathfinding on the build grid**: escorts and workmen walk around walls and through doors; unreachable cells leave arrivals waiting with a "⚠ no door path" warning; doors auto-open for walking NPCs
+- [x] Starter objectives (PA grants): build walls → paint a Cell → get it ✓ ready → house 3 → earn $5k, with rewards and a progress card
+- [x] Move tool reworked: true server-side move — free, instant, Ctrl+Z moves it back
+- [ ] Owner playtest: watch a workman build your wall line, and an arrival walk the corridor to their cell — **← your move!**
 
 ## Phase 4 — Prisoner life: needs, regime & staff 👮
 
 The sim under the hood. Unlocks the Staff tab.
 
-- [ ] **Real pathfinding** — prisoners walk around walls, through doors (escorts upgraded from straight lines too)
+- [x] ~~Real pathfinding~~ — shipped early in Phase 3
 - [ ] Needs meters: Food, Sleep, Hygiene, Recreation, Safety
 - [ ] Regime schedule: hour-by-hour day (sleep → eat → yard → lockup), prisoners follow it
 - [ ] The food chain: Kitchen room + Cook staff → meals in the Canteen

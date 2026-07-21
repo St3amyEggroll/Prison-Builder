@@ -12,7 +12,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Config = require(ReplicatedStorage.Shared.Config)
 local GridMath = require(ReplicatedStorage.Shared.GridMath)
 local Buildables = require(script.Parent.Buildables)
-local PlacementService = require(script.Parent.PlacementService)
+local ObjectiveService = require(script.Parent.ObjectiveService)
 
 local RoomService = {}
 
@@ -66,16 +66,10 @@ local function renderRow(zone, z)
 	end
 end
 
--- Is this asset name something that walls a room in? Anything from the
--- "Walls & Doors" category (doors count — a doorway isn't a hole).
-local function blocksEnclosure(assetName)
-	local asset = assetName and Buildables.get(assetName)
-	return asset ~= nil and (asset.category == "Walls & Doors" or asset.door)
-end
-
 -- Evaluate a painted region against Config.RoomRequirements. Returns
--- (met, statusText).
-local function evaluateRegion(zone, typeName, regionCells, placedInfos)
+-- (met, statusText). blockedCells = squares covered by BUILT walls/doors
+-- (blueprints don't enclose anything yet).
+local function evaluateRegion(zone, typeName, regionCells, placedInfos, blockedCells)
 	local req = Config.RoomRequirements[typeName]
 	if not req then
 		return true, "✓"
@@ -97,7 +91,7 @@ local function evaluateRegion(zone, typeName, regionCells, placedInfos)
 				local nx, nz = cell[1] + step[1], cell[2] + step[2]
 				if not inRegion[nx .. ":" .. nz] then
 					local outOfBounds = nx < 0 or nx >= zone.info.cols or nz < 0 or nz >= zone.info.rows
-					if outOfBounds or not blocksEnclosure(PlacementService.cellAsset(zone, nx, nz)) then
+					if outOfBounds or not blockedCells[nx .. ":" .. nz] then
 						enclosed = false
 					end
 				end
@@ -122,7 +116,7 @@ local function evaluateRegion(zone, typeName, regionCells, placedInfos)
 		for attrName, wanted in pairs(req.attrCounts) do
 			local count = 0
 			for _, info in ipairs(placedInfos) do
-				if info.model:GetAttribute(attrName) == true then
+				if info.model:GetAttribute(attrName) == true and not info.blueprint then
 					local overlaps = false
 					for x = info.gx, info.gx + info.w - 1 do
 						for z = info.gz, info.gz + info.d - 1 do
@@ -156,8 +150,11 @@ local function rebuildLabels(zone)
 	local state = zoneRooms[zone]
 	state.labelsFolder:ClearAllChildren()
 
-	-- Snapshot the placed objects once for the requirement checks.
+	-- Snapshot the placed objects once for the requirement checks, and
+	-- build the set of squares covered by BUILT walls/doors (blueprints
+	-- don't enclose or satisfy anything until a workman finishes them).
 	local placedInfos = {}
+	local blockedCells = {}
 	for _, model in ipairs(zone.placed:GetChildren()) do
 		local asset = Buildables.get(model:GetAttribute("Asset") or "")
 		local gx = model:GetAttribute("GX")
@@ -165,9 +162,21 @@ local function rebuildLabels(zone)
 		local r = model:GetAttribute("Rot")
 		if asset and type(gx) == "number" and type(gz) == "number" and type(r) == "number" then
 			local w, d = GridMath.footprint(asset, r)
-			table.insert(placedInfos, { model = model, gx = gx, gz = gz, w = w, d = d })
+			local blueprint = model:GetAttribute("Blueprint") == true
+			table.insert(placedInfos, { model = model, gx = gx, gz = gz, w = w, d = d, blueprint = blueprint })
+			if not blueprint and (asset.category == "Walls & Doors" or asset.door) then
+				for x = gx, gx + w - 1 do
+					for z = gz, gz + d - 1 do
+						blockedCells[x .. ":" .. z] = true
+					end
+				end
+			end
 		end
 	end
+
+	-- Count the regions that fully meet their requirements, per type —
+	-- published as ReadyRooms_<Type> attributes (objectives watch these).
+	local readyCounts = {}
 
 	local map = state.map
 	local seen = {}
@@ -216,7 +225,11 @@ local function rebuildLabels(zone)
 					* CFrame.new((minX + maxX + 1) / 2 * GRID, 0.22, (minZ + maxZ + 1) / 2 * GRID)
 					* CFrame.Angles(0, math.pi, 0)
 
-				local met, statusText = evaluateRegion(zone, Config.RoomTypes[t].name, regionCells, placedInfos)
+				local typeName = Config.RoomTypes[t].name
+				local met, statusText = evaluateRegion(zone, typeName, regionCells, placedInfos, blockedCells)
+				if met then
+					readyCounts[typeName] = (readyCounts[typeName] or 0) + 1
+				end
 
 				local surface = Instance.new("SurfaceGui")
 				surface.Face = Enum.NormalId.Top
@@ -247,6 +260,12 @@ local function rebuildLabels(zone)
 
 				labelPart.Parent = state.labelsFolder
 			end
+		end
+	end
+
+	if zone.owner then
+		for _, roomType in ipairs(Config.RoomTypes) do
+			zone.owner:SetAttribute("ReadyRooms_" .. roomType.name, readyCounts[roomType.name] or 0)
 		end
 	end
 end
@@ -292,6 +311,7 @@ function RoomService.assignZone(player, zone, savedRooms)
 			end
 		end)
 	end
+	state.queueRebuild = queueRebuild
 	table.insert(state.connections, zone.placed.ChildAdded:Connect(queueRebuild))
 	table.insert(state.connections, zone.placed.ChildRemoved:Connect(queueRebuild))
 
@@ -360,6 +380,15 @@ end
 
 -- Player requests ---------------------------------------------------------
 
+-- Re-evaluate requirements (used after moves and blueprint completions).
+function RoomService.poke(player)
+	local zone = playerZones[player]
+	local state = zone and zoneRooms[zone]
+	if state and state.queueRebuild then
+		state.queueRebuild()
+	end
+end
+
 function RoomService.handlePaint(player, typeId, x1, z1, x2, z2)
 	local zone = playerZones[player]
 	if not zone then
@@ -384,6 +413,9 @@ function RoomService.handlePaint(player, typeId, x1, z1, x2, z2)
 	z2 = math.clamp(math.floor(z2), 0, zone.info.rows - 1)
 
 	paintRect(zone, typeId, x1, z1, x2, z2)
+	if typeId ~= 0 and Config.RoomTypes[typeId].name == "Cell" then
+		ObjectiveService.notify(player, "cell_painted")
+	end
 	return { ok = true }
 end
 

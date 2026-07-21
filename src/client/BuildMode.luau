@@ -27,6 +27,7 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 
 local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
+local Format = require(ReplicatedStorage.Shared:WaitForChild("Format"))
 local GridMath = require(ReplicatedStorage.Shared:WaitForChild("GridMath"))
 local AssetCatalog = require(ReplicatedStorage.Shared:WaitForChild("AssetCatalog"))
 local BuildCamera = require(script.Parent.BuildCamera)
@@ -36,6 +37,7 @@ local BuildMode = {}
 local GRID = Config.GridSize
 local GREEN = Color3.fromRGB(80, 255, 120)
 local RED = Color3.fromRGB(255, 80, 80)
+local ORANGE = Color3.fromRGB(255, 170, 60) -- valid spot, can't afford it
 local PANEL_BG = Color3.fromRGB(20, 24, 20)
 local BUTTON_BG = Color3.fromRGB(45, 52, 45)
 local SELECTED_BG = Color3.fromRGB(60, 110, 60)
@@ -51,7 +53,21 @@ function BuildMode.start()
 	local foundationRequest = remotes:WaitForChild("FoundationRequest")
 	local placeRectRequest = remotes:WaitForChild("PlaceRectRequest")
 	local deleteRectRequest = remotes:WaitForChild("DeleteRectRequest")
+	local moveRequest = remotes:WaitForChild("MoveRequest")
 	local roomPaintRequest = remotes:WaitForChild("RoomPaintRequest")
+
+	-- Mirror of the wallet, for the can-you-afford-it ghost tint.
+	local cashNow = 0
+	task.spawn(function()
+		local leaderstats = player:WaitForChild("leaderstats", 60)
+		local cashValue = leaderstats and leaderstats:WaitForChild("Cash", 60)
+		if cashValue then
+			cashNow = cashValue.Value
+			cashValue.Changed:Connect(function(value)
+				cashNow = value
+			end)
+		end
+	end)
 
 	local buildablesFolder = ReplicatedStorage:WaitForChild(Config.BuildablesFolderName)
 	local catalogByName, catalogOrdered = AssetCatalog.load(buildablesFolder)
@@ -100,10 +116,13 @@ function BuildMode.start()
 	local stretchBox = nil
 	local hoverHighlight = nil
 	local zoneBox = nil
+	local movingModel = nil -- the object currently carried by the Move tool
+	local movingFrom = nil -- its original {n, x, z, r}, for undo
 
 	-- Undo: a stack of inverse actions (Ctrl+Z or the ↩ button).
 	--   { kind = "place", models = {Model, ...} }        -> demolish them
 	--   { kind = "delete", items = { {n, x, z, r}, ... } } -> re-place them
+	--   { kind = "move", model, from = {x, z, r} }        -> move it back
 	local undoStack = {}
 	local function pushUndo(entry)
 		table.insert(undoStack, entry)
@@ -299,8 +318,10 @@ function BuildMode.start()
 		ghost:PivotTo(GridMath.placementPivot(zone.info, selected, gx, gz, rot))
 		ghost.Parent = workspace
 		ghostCell = { gx, gz }
-		ghostValid = regionFree(gx, gz, w, d)
-		local color = ghostValid and GREEN or RED
+		local spotFree = regionFree(gx, gz, w, d)
+		local affordable = Config.FreeBuild or movingModel ~= nil or selected.price <= cashNow
+		ghostValid = spotFree and affordable
+		local color = not spotFree and RED or (not affordable and ORANGE) or GREEN
 		ghostHighlight.FillColor = color
 		ghostHighlight.OutlineColor = color
 	end
@@ -640,6 +661,20 @@ function BuildMode.start()
 		label.Text = asset.name
 		label.Parent = tile
 
+		local priceTag = Instance.new("TextLabel")
+		priceTag.Position = UDim2.new(0, 4, 0, 4)
+		priceTag.Size = UDim2.new(0, 52, 0, 15)
+		priceTag.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+		priceTag.BackgroundTransparency = 0.4
+		priceTag.Font = Enum.Font.GothamBold
+		priceTag.TextScaled = true
+		priceTag.TextColor3 = Color3.fromRGB(150, 255, 160)
+		priceTag.Text = Format.money(asset.price)
+		local priceCorner = Instance.new("UICorner")
+		priceCorner.CornerRadius = UDim.new(0, 5)
+		priceCorner.Parent = priceTag
+		priceTag.Parent = tile
+
 		tile.Activated:Connect(function()
 			selectAsset(asset)
 		end)
@@ -700,6 +735,8 @@ function BuildMode.start()
 		local wasOff = mode == "off"
 		mode = newMode
 		pressing = false
+		movingModel = nil
+		movingFrom = nil
 		destroyGhost()
 		hideStretchBox()
 		clearHover()
@@ -777,13 +814,14 @@ function BuildMode.start()
 		hideStretchBox()
 		makeGhost(asset)
 		refreshSelectionLook()
+		local price = Config.FreeBuild and "" or (" · " .. Format.money(asset.price))
 		local style = dragStyleOf(asset)
 		if style == "line" then
-			setStatusDefault("Placing " .. asset.name .. " — drag for a whole line! (R rotates)")
+			setStatusDefault("Placing " .. asset.name .. price .. " — drag for a whole line! (R rotates)")
 		elseif style == "rect" then
-			setStatusDefault("Placing " .. asset.name .. " — drag to fill an area!")
+			setStatusDefault("Placing " .. asset.name .. price .. " — drag to fill an area!")
 		else
-			setStatusDefault("Placing " .. asset.name .. " (R or ↻ rotates)")
+			setStatusDefault("Placing " .. asset.name .. price .. " (R or ↻ rotates)")
 		end
 	end
 
@@ -895,7 +933,11 @@ function BuildMode.start()
 				pushUndo({ kind = "place", models = result.models })
 			end
 			playSound("electronicpingshort.wav", 0.5)
-			flashStatus(("%d × %s placed!"):format(result.placed, selected.name), GREEN)
+			if result.broke then
+				flashStatus(("%d placed — then the money ran out!"):format(result.placed), ORANGE)
+			else
+				flashStatus(("%d × %s placed!"):format(result.placed, selected.name), GREEN)
+			end
 		elseif ok and result then
 			flashStatus(result.err or "Couldn't build that line.", RED)
 		end
@@ -910,7 +952,11 @@ function BuildMode.start()
 				pushUndo({ kind = "place", models = result.models })
 			end
 			playSound("electronicpingshort.wav", 0.5)
-			flashStatus(("%d × %s placed!"):format(result.placed, selected.name), GREEN)
+			if result.broke then
+				flashStatus(("%d placed — then the money ran out!"):format(result.placed), ORANGE)
+			else
+				flashStatus(("%d × %s placed!"):format(result.placed, selected.name), GREEN)
+			end
 		elseif ok and result then
 			flashStatus(result.err or "Couldn't fill that area.", RED)
 		end
@@ -925,7 +971,11 @@ function BuildMode.start()
 				pushUndo({ kind = "place", models = result.models })
 			end
 			playSound("electronicpingshort.wav", 0.5)
-			flashStatus(("Foundation built — %d pieces. Now add a door!"):format(result.built), GREEN)
+			if result.broke then
+				flashStatus(("Foundation ran out of cash after %d pieces!"):format(result.built), ORANGE)
+			else
+				flashStatus(("Foundation planned — %d pieces. Now add a door!"):format(result.built), GREEN)
+			end
 		elseif ok and result then
 			flashStatus(result.err or "Couldn't build that foundation.", RED)
 		end
@@ -995,7 +1045,11 @@ function BuildMode.start()
 				pushUndo({ kind = "delete", items = { params } })
 			end
 			playSound("snap.mp3", 0.5)
-			flashStatus("Demolished!", GREEN)
+			if result.refund and result.refund > 0 then
+				flashStatus("Demolished! +" .. Format.money(result.refund), GREEN)
+			else
+				flashStatus("Demolished!", GREEN)
+			end
 		elseif ok and result then
 			flashStatus(result.err or "Couldn't demolish that.", RED)
 		end
@@ -1010,15 +1064,39 @@ function BuildMode.start()
 				pushUndo({ kind = "delete", items = result.items })
 			end
 			playSound("snap.mp3", 0.5)
-			flashStatus(("Bulldozed %d object%s"):format(result.deleted, result.deleted == 1 and "" or "s"), GREEN)
+			local refundText = (result.refund and result.refund > 0) and (" · +" .. Format.money(result.refund)) or ""
+			flashStatus(("Bulldozed %d object%s%s"):format(result.deleted, result.deleted == 1 and "" or "s", refundText), GREEN)
 		elseif ok and result then
 			flashStatus(result.err or "Nothing there to bulldoze.", RED)
 		end
 	end
 
-	-- The Move tool: pick an object up (it's demolished but remembered),
-	-- then place it wherever — Ctrl+Z puts it back where it was.
+	-- The Move tool: pick up, carry the ghost, click to relocate. The
+	-- server does one free, instant move — no demolish, no cost.
 	tryMove = function()
+		if movingModel and ghostCell then
+			-- Second click: commit the move.
+			local ok, result = pcall(function()
+				return moveRequest:InvokeServer(movingModel, ghostCell[1], ghostCell[2], rot)
+			end)
+			if ok and result and result.ok then
+				if movingFrom then
+					pushUndo({ kind = "move", model = movingModel, from = movingFrom })
+				end
+				playSound("electronicpingshort.wav", 0.5)
+				flashStatus("Moved!", GREEN)
+				movingModel = nil
+				movingFrom = nil
+				destroyGhost()
+				selected = nil
+				setStatusDefault("Move: click an object to pick it up")
+			elseif ok and result then
+				flashStatus(result.err or "Can't move it there.", RED)
+			end
+			return
+		end
+
+		-- First click: pick something up.
 		local model = findPlacedModel()
 		if not model then
 			return
@@ -1029,19 +1107,13 @@ function BuildMode.start()
 			flashStatus("Can't move that one.", RED)
 			return
 		end
-		local ok, result = pcall(function()
-			return deleteRequest:InvokeServer(model)
-		end)
-		if not (ok and result and result.ok) then
-			flashStatus((ok and result and result.err) or "Couldn't pick that up.", RED)
-			return
-		end
-		pushUndo({ kind = "delete", items = { params } })
-		currentCategory = asset.category
-		setMode("objects")
-		selectAsset(asset)
+		movingModel = model
+		movingFrom = { x = params.x, z = params.z, r = params.r }
+		selected = asset
 		rot = params.r
-		flashStatus("Moving " .. asset.name .. " — click to re-place (Ctrl+Z puts it back)", Color3.fromRGB(255, 230, 120))
+		clearHover()
+		makeGhost(asset)
+		setStatusDefault("Carrying " .. asset.name .. " — click to place, right-click to cancel")
 	end
 
 	doUndo = function()
@@ -1066,6 +1138,14 @@ function BuildMode.start()
 			end)
 			if ok and result and result.ok then
 				flashStatus(("Undid %d placement%s"):format(result.deleted, result.deleted == 1 and "" or "s"), GREEN)
+			end
+		elseif entry.kind == "move" then
+			if typeof(entry.model) == "Instance" and entry.model.Parent ~= nil then
+				local ok, result = pcall(function()
+					return moveRequest:InvokeServer(entry.model, entry.from.x, entry.from.z, entry.from.r)
+				end)
+				flashStatus((ok and result and result.ok) and "Moved back!" or "Couldn't move it back.",
+					(ok and result and result.ok) and GREEN or RED)
 			end
 		elseif entry.kind == "delete" then
 			local restored = 0
@@ -1132,7 +1212,13 @@ function BuildMode.start()
 			end
 		elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
 			-- Right-click clears the current selection (PA habit).
-			if mode == "objects" and selected then
+			if mode == "move" and movingModel then
+				movingModel = nil
+				movingFrom = nil
+				selected = nil
+				destroyGhost()
+				setStatusDefault("Move: click an object to pick it up")
+			elseif mode == "objects" and selected then
 				selected = nil
 				destroyGhost()
 				refreshSelectionLook()
@@ -1240,6 +1326,8 @@ function BuildMode.start()
 			if gx then
 				showStretchBox(pressStartCell[1], pressStartCell[2], gx, gz, RED)
 			end
+		elseif mode == "move" and movingModel then
+			updateGhost()
 		elseif mode == "delete" or mode == "move" then
 			local model = findPlacedModel()
 			if model then

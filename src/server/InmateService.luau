@@ -37,17 +37,22 @@ local function makePart(name, size, color, cframe, parent)
 	return p
 end
 
--- Builds one inmate standing at baseCF (feet on the ground at that spot).
--- cellIndex picks the name — cell #1 is always Sneaky Pete.
-function InmateService.spawn(baseCF, cellIndex, parent)
+-- Builds one NPC standing at baseCF (feet on the ground at that spot).
+-- cellIndex picks the name and look. opts.outfit = "worker" builds a
+-- construction workman (blue overalls, hard hat) instead of an inmate.
+function InmateService.spawn(baseCF, cellIndex, parent, opts)
+	local outfit = opts and opts.outfit or "inmate"
 	local model = Instance.new("Model")
-	model.Name = "Inmate" .. cellIndex
+	model.Name = (outfit == "worker" and "Worker" or "Inmate") .. cellIndex
 
-	-- Every inmate gets a slightly different jumpsuit shade and sway
-	-- rhythm so a full cellblock doesn't look like a copy-paste army.
-	-- Seeding with cellIndex keeps each inmate looking the same each visit.
+	-- Every NPC gets a slightly different shade and sway rhythm so a
+	-- full cellblock doesn't look like a copy-paste army. Seeding with
+	-- cellIndex keeps each one looking the same each visit.
 	local rng = Random.new(cellIndex * 7919)
 	local jumpsuit = Color3.fromRGB(255, 120 + rng:NextInteger(0, 40), 25 + rng:NextInteger(0, 25))
+	if outfit == "worker" then
+		jumpsuit = Color3.fromRGB(60 + rng:NextInteger(0, 20), 90 + rng:NextInteger(0, 20), 170 + rng:NextInteger(0, 30))
+	end
 
 	-- Face a random direction inside the cell.
 	local root = baseCF * CFrame.Angles(0, rng:NextNumber(0, math.pi * 2), 0)
@@ -60,6 +65,12 @@ function InmateService.spawn(baseCF, cellIndex, parent)
 	makePart("RightArm", Vector3.new(1, 2, 1), jumpsuit, root * CFrame.new(1.5, 3, 0), model)
 	local head = makePart("Head", Vector3.new(1.2, 1.2, 1.2), SKIN, root * CFrame.new(0, 4.6, 0), model)
 
+	if outfit == "worker" then
+		-- The hard hat: what separates professionals from prisoners.
+		makePart("HardHat", Vector3.new(1.4, 0.35, 1.4), Color3.fromRGB(255, 200, 40),
+			root * CFrame.new(0, 5.35, 0), model)
+	end
+
 	-- The classic Roblox smile, shipped inside the engine (no download).
 	local face = Instance.new("Decal")
 	face.Name = "Face"
@@ -68,7 +79,8 @@ function InmateService.spawn(baseCF, cellIndex, parent)
 	face.Parent = head
 
 	-- Floating name tag.
-	local nameIndex = ((cellIndex - 1) % #Config.InmateNames) + 1
+	local nameList = outfit == "worker" and Config.WorkerNames or Config.InmateNames
+	local nameIndex = ((cellIndex - 1) % #nameList) + 1
 	local tag = Instance.new("BillboardGui")
 	tag.Name = "NameTag"
 	tag.Size = UDim2.new(0, 130, 0, 26)
@@ -82,7 +94,10 @@ function InmateService.spawn(baseCF, cellIndex, parent)
 	tagText.TextScaled = true
 	tagText.TextColor3 = Color3.fromRGB(255, 220, 180)
 	tagText.TextStrokeTransparency = 0.4
-	tagText.Text = Config.InmateNames[nameIndex]
+	tagText.Text = nameList[nameIndex]
+	if outfit == "worker" then
+		tagText.TextColor3 = Color3.fromRGB(255, 220, 120)
+	end
 	tagText.Parent = tag
 	tag.Parent = head
 

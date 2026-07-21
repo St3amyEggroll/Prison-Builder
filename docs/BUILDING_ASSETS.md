@@ -43,7 +43,7 @@ That's the whole contract. No code edits, no naming lists, nothing to register.
 | `Category` | string | Which bottom-toolbar button the asset lives under: `Walls & Doors`, `Flooring`, or `Objects` (the default). **A brand-new name (e.g. `Security`) automatically becomes a new toolbar button** — organize however you like. |
 | `SpawnsInmate` | boolean, ticked | Marks the asset as **housing for one prisoner**. Prisoners arrive via the 🚔 Intake menu, wait handcuffed at your gate, and get escorted into an empty one of these. Put it on cell-type assets. |
 | `Door` | boolean, ticked | The asset is a **working door**: it opens (slides down) when the plot's warden walks close and stays solid for everyone else. Name the sliding part(s) inside the model exactly `DoorPanel` — no part with that name and the whole model fades open instead. Doors also count as walls for room enclosure. |
-| `Price` | number | *Coming with the economy phase* — what it'll cost to place. Safe to add now. |
+| `Price` | number | **Live!** What placing it costs (no attribute = the category default: walls $40, flooring $10, objects $250). Bulldozing refunds half; undo refunds all. |
 
 **Two names the 🏗️ Foundations tool depends on:** it builds using the assets called `Wall` and `Floor Tile`. If you replace those placeholders, keep the names (or tell Claude to point the tool at your names in the config).
 

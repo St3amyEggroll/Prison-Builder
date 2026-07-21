@@ -19,7 +19,10 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 
 local Config = require(ReplicatedStorage.Shared.Config)
+local GridMath = require(ReplicatedStorage.Shared.GridMath)
+local Buildables = require(script.Parent.Buildables)
 local InmateService = require(script.Parent.InmateService)
+local PathService = require(script.Parent.PathService)
 
 local IntakeService = {}
 
@@ -38,7 +41,9 @@ local records = {}
 local function housingAssets(zone)
 	local houses = {}
 	for _, model in ipairs(zone.placed:GetChildren()) do
-		if model:IsA("Model") and model:GetAttribute("SpawnsInmate") == true then
+		if model:IsA("Model") and model:GetAttribute("SpawnsInmate") == true
+			and model:GetAttribute("Blueprint") ~= true -- unbuilt = no capacity
+		then
 			table.insert(houses, model)
 		end
 	end
@@ -98,10 +103,7 @@ local function refresh(player)
 				-- Their destination was demolished mid-walk; back to waiting.
 				prisoner.status = "waiting"
 				prisoner.house = nil
-				prisoner.model:SetAttribute("EscortStart", nil)
-				prisoner.model:SetAttribute("EscortDur", nil)
-				prisoner.model:SetAttribute("EscortFrom", nil)
-				prisoner.model:SetAttribute("EscortTo", nil)
+				PathService.finishWalk(prisoner.model)
 			else
 				table.remove(rec.prisoners, i)
 			end
@@ -129,18 +131,32 @@ local function refresh(player)
 			if not target then
 				break
 			end
-			occupied[target] = true
-			prisoner.status = "escorting"
-			prisoner.house = target
 
+			-- Pathfind gate -> cell around walls, through doors. No route
+			-- means they wait cuffed (rec.stuck warns the warden).
 			local model = prisoner.model
 			local from = model:GetPivot().Position - Vector3.new(0, PIVOT_HEIGHT, 0)
 			local to = houseFloorCF(target).Position
-			local duration = math.max(1, (to - from).Magnitude / Config.EscortSpeed)
-			model:SetAttribute("EscortFrom", from)
-			model:SetAttribute("EscortTo", to)
-			model:SetAttribute("EscortDur", duration)
-			model:SetAttribute("EscortStart", workspace:GetServerTimeNow())
+			local footprint = { gx = 0, gz = 0, w = 1, d = 1 }
+			do
+				local asset = Buildables.get(target:GetAttribute("Asset") or "")
+				footprint.gx = target:GetAttribute("GX") or 0
+				footprint.gz = target:GetAttribute("GZ") or 0
+				if asset then
+					footprint.w, footprint.d = GridMath.footprint(asset, target:GetAttribute("Rot") or 0)
+				end
+			end
+			local route = PathService.findRoute(rec.zone, from, footprint, to)
+			if not route then
+				rec.stuck = true
+				break
+			end
+			rec.stuck = false
+
+			occupied[target] = true
+			prisoner.status = "escorting"
+			prisoner.house = target
+			local duration = PathService.startWalk(model, route, Config.EscortSpeed)
 
 			task.delay(duration, function()
 				if prisoner.status ~= "escorting" or model.Parent == nil then
@@ -150,14 +166,13 @@ local function refresh(player)
 					return -- refresh() already handled the demolition
 				end
 				-- The one authoritative move: they now live here.
-				model:PivotTo(houseFloorCF(prisoner.house) * CFrame.new(0, PIVOT_HEIGHT, 0))
+				PathService.finishWalk(model, houseFloorCF(prisoner.house) * CFrame.new(0, PIVOT_HEIGHT, 0))
 				model.Parent = prisoner.house -- demolishing the house removes them too
 				local cuffs = model:FindFirstChild("Cuffs")
 				if cuffs then
 					cuffs:Destroy()
 				end
 				model:SetAttribute("Handcuffed", false)
-				model:SetAttribute("EscortStart", nil)
 				prisoner.status = "housed"
 				refresh(player)
 			end)
@@ -177,6 +192,7 @@ local function refresh(player)
 	player:SetAttribute("PrisonHoused", housed)
 	player:SetAttribute("PrisonWaiting", waiting)
 	player:SetAttribute("AutoIntake", rec.auto)
+	player:SetAttribute("IntakeStuck", rec.stuck == true and waiting > 0)
 end
 
 local function arrive(player, skipGate)
@@ -249,6 +265,11 @@ function IntakeService.assignPlayer(player, zone, savedIntake)
 		task.defer(refresh, player)
 	end))
 
+	refresh(player)
+end
+
+-- Re-check capacity/escorts (used after moves and blueprint completions).
+function IntakeService.poke(player)
 	refresh(player)
 end
 

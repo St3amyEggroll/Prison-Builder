@@ -51,3 +51,6 @@ globals:
       - type: any
       - type: number
         required: false
+  math.round:
+    args:
+      - type: number

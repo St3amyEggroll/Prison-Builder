@@ -70,6 +70,8 @@ local function onPlayerAdded(player)
 		rooms = saved and saved.rooms or {},
 		intake = saved and saved.intake or nil,
 		cash = saved and saved.cash or 0,
+		totalSpent = saved and saved.totalSpent or 0,
+		objectives = saved and saved.objectives or nil,
 		-- Only allowed to write to the cloud if the read worked. A failed
 		-- read must never let empty data overwrite a real save.
 		canSave = store ~= nil and loadOk,
@@ -88,6 +90,8 @@ local function saveNow(player)
 		rooms = st.sources.rooms and st.sources.rooms(player) or st.rooms,
 		intake = st.sources.intake and st.sources.intake(player) or st.intake,
 		cash = st.cash,
+		totalSpent = st.totalSpent,
+		objectives = st.objectives,
 	}
 	local ok, err = pcall(function()
 		store:UpdateAsync(keyFor(player), function()

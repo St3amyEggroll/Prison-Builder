@@ -54,6 +54,14 @@ function AssetCatalog.load(folder)
 				cellsD = math.max(1, math.ceil((boxSize.Z - 0.05) / Config.GridSize)),
 				spawnsInmate = model:GetAttribute("SpawnsInmate") == true,
 				door = model:GetAttribute("Door") == true,
+				price = (function()
+					local raw = model:GetAttribute("Price")
+					if type(raw) == "number" and raw >= 0 then
+						return math.floor(raw)
+					end
+					local categoryName = model:GetAttribute("Category")
+					return Config.DefaultPrices[categoryName] or Config.FallbackPrice
+				end)(),
 				category = (function()
 					local raw = model:GetAttribute("Category")
 					return (type(raw) == "string" and raw ~= "") and raw or "Objects"
@@ -89,6 +97,54 @@ return AssetCatalog
 -- Full guide: docs/BUILDING_ASSETS.md
 
 local Config = {}
+
+-- Money ------------------------------------------------------------------
+
+Config.StartingCash = 3000
+
+-- Owner switches: FreeBuild ignores all prices; InstantBuild skips the
+-- workman/blueprint construction (handy while designing your map).
+Config.FreeBuild = false
+Config.InstantBuild = false
+
+-- Bulldozing refunds this fraction of the price. Undo refunds 100%.
+Config.RefundRate = 0.5
+
+-- Every GrantInterval seconds, each HOUSED prisoner pays their grant.
+-- (Waiting handcuffed at the gate pays nothing — house them!)
+Config.GrantInterval = 30
+Config.GrantPerPrisoner = 60
+
+-- An asset's price = its "Price" attribute, else its category's default.
+Config.DefaultPrices = {
+	["Walls & Doors"] = 40,
+	["Flooring"] = 10,
+	["Objects"] = 250,
+}
+Config.FallbackPrice = 50
+
+-- Construction -----------------------------------------------------------
+
+-- Placements start as transparent blueprints; workmen walk over and
+-- build them (Prison Architect's whole vibe).
+Config.WorkmenPerPlot = 2
+Config.WorkerSpeed = 6 -- studs/sec walking to the job
+Config.BuildTimeBase = 1 -- seconds per job...
+Config.BuildTimePerCell = 0.5 -- ...plus this per grid square of footprint
+Config.WorkerNames = { "Hammer Hank", "Nailgun Ned", "Plank Paul", "Rivet Rita", "Sawdust Sam", "Bolt Betty" }
+
+-- Objectives -------------------------------------------------------------
+
+-- Sequential starter goals, PA-grants style. kinds:
+--   counter -> ObjectiveService counts named events
+--   attr    -> watches a published player attribute
+Config.Objectives = {
+	{ id = "walls", text = "Build 10 walls or fences", kind = "counter", event = "wall_built", target = 10, reward = 400 },
+	{ id = "cellroom", text = "Paint a Cell room", kind = "counter", event = "cell_painted", target = 1, reward = 300 },
+	{ id = "readycell", text = "Get a Cell room to ✓ ready", kind = "attr", attr = "ReadyRooms_Cell", target = 1, reward = 800 },
+	{ id = "house3", text = "House 3 prisoners", kind = "attr", attr = "PrisonHoused", target = 3, reward = 1200 },
+	{ id = "earn", text = "Earn $5,000 in prisoner grants", kind = "counter", event = "granted", target = 5000, reward = 2500 },
+}
 
 -- Building ---------------------------------------------------------------
 
@@ -358,10 +414,8 @@ return GridMath
         <token name="RunContext">0</token>
         <string name="Source"><![CDATA[-- Lockdown server bootstrap — first thing the game runs.
 -- Creates the RemoteFunctions (the "ask the server" phone lines the
--- client UIs use), then starts every system in order.
---
--- Order matters: saving must exist before plots hand out zones, and the
--- asset catalog must exist before anything can be placed.
+-- client UIs use), starts every system in order, and wires the
+-- cross-system hooks in one visible place.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -377,6 +431,7 @@ for _, name in ipairs({
 	"DeleteRequest",
 	"DeleteManyRequest",
 	"DeleteRectRequest",
+	"MoveRequest",
 	"RoomPaintRequest",
 	"IntakeRequest",
 }) do
@@ -388,22 +443,43 @@ end
 remotes.Parent = ReplicatedStorage
 
 local SaveService = require(script.SaveService)
+local EconomyService = require(script.EconomyService)
+local ObjectiveService = require(script.ObjectiveService)
 local Buildables = require(script.Buildables)
 local DoorService = require(script.DoorService)
+local PathService = require(script.PathService)
+local ConstructionService = require(script.ConstructionService)
 local PlacementService = require(script.PlacementService)
 local RoomService = require(script.RoomService)
 local IntakeService = require(script.IntakeService)
 local PlotService = require(script.PlotService)
 
 SaveService.init()
+EconomyService.init()
+ObjectiveService.init()
 Buildables.init()
 DoorService.init()
+ConstructionService.init()
 PlacementService.init()
 RoomService.init()
 IntakeService.init()
 PlotService.init()
 
-print("[Lockdown] Server ready — Phase 2: doors, foundations & room rules")
+-- Cross-system wiring, all in one visible place:
+-- PathService walks the same occupancy grid placements live on...
+PathService.setCellLookup(PlacementService.cellAsset)
+-- ...finished construction changes capacity and room validity...
+ConstructionService.onCompleted(function(player)
+	RoomService.poke(player)
+	IntakeService.poke(player)
+end)
+-- ...and so does moving something.
+PlacementService.onMoved(function(player)
+	RoomService.poke(player)
+	IntakeService.poke(player)
+end)
+
+print("[Lockdown] Server ready — Phase 3: money, workmen, pathfinding")
 ]]></string>
       </Properties>
       <Item class="ModuleScript" referent="8">
@@ -453,6 +529,7 @@ local PLACEHOLDERS = {
 		-- runs tile with no gaps, corners just work.
 		name = "Wall",
 		category = "Walls & Doors",
+		price = 40,
 		build = function(model)
 			part({ Size = Vector3.new(4, 8, 4), CFrame = CFrame.new(0, 4, 0) }, model)
 		end,
@@ -460,6 +537,7 @@ local PLACEHOLDERS = {
 	{
 		name = "Floor Tile",
 		category = "Flooring",
+		price = 10,
 		build = function(model)
 			part({ Size = Vector3.new(4, 0.4, 4), CFrame = CFrame.new(0, 0.2, 0), Color = DARK }, model)
 		end,
@@ -467,6 +545,7 @@ local PLACEHOLDERS = {
 	{
 		name = "Fence",
 		category = "Walls & Doors",
+		price = 30,
 		build = function(model)
 			for i = 0, 4 do
 				part({
@@ -489,6 +568,7 @@ local PLACEHOLDERS = {
 		-- into a fence run.
 		name = "Security Door",
 		category = "Walls & Doors",
+		price = 150,
 		build = function(model)
 			part({ Size = Vector3.new(0.4, 8, 0.4), CFrame = CFrame.new(-1.8, 4, 0) }, model)
 			part({ Size = Vector3.new(0.4, 8, 0.4), CFrame = CFrame.new(1.8, 4, 0) }, model)
@@ -507,6 +587,7 @@ local PLACEHOLDERS = {
 	{
 		name = "Prison Cell",
 		category = "Objects",
+		price = 500,
 		build = function(model)
 			part({ Size = Vector3.new(12, 0.4, 12), CFrame = CFrame.new(0, 0.2, 0), Color = DARK }, model)
 			part({ Size = Vector3.new(12, 7, 0.5), CFrame = CFrame.new(0, 3.5, 5.75) }, model)
@@ -546,6 +627,7 @@ local PLACEHOLDERS = {
 	{
 		name = "Guard Tower",
 		category = "Objects",
+		price = 400,
 		build = function(model)
 			for _, offset in ipairs({ { -3, -3 }, { 3, -3 }, { -3, 3 }, { 3, 3 } }) do
 				part({
@@ -588,6 +670,7 @@ function Buildables.init()
 				def.build(model)
 				model:SetAttribute("Placeholder", true)
 				model:SetAttribute("Category", def.category)
+				model:SetAttribute("Price", def.price)
 				model.Parent = folder
 			end
 		end
@@ -607,6 +690,234 @@ return Buildables
       </Item>
       <Item class="ModuleScript" referent="9">
         <Properties>
+          <string name="Name">ConstructionService</string>
+          <string name="Source"><![CDATA[-- ConstructionService: Prison Architect's construction feel. Placements
+-- arrive as BLUEPRINTS — see-through, blue-glowing, non-solid — and each
+-- plot's crew of workmen walk over (pathfinding around walls, through
+-- doors) and hammer them into real objects.
+--
+-- A blueprint isn't functional yet: doors don't work, housing doesn't
+-- count as capacity, and it doesn't satisfy room requirements until a
+-- workman finishes it. Bulldozing a blueprint refunds in full.
+
+local Debris = game:GetService("Debris")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Config = require(ReplicatedStorage.Shared.Config)
+local InmateService = require(script.Parent.InmateService)
+local DoorService = require(script.Parent.DoorService)
+local PathService = require(script.Parent.PathService)
+
+local ConstructionService = {}
+
+local PIVOT_HEIGHT = 3 -- rig pivot rides 3 studs above the feet
+
+-- player -> { zone, folder, workers = { {model, busy} }, queue = { {model, asset, player} } }
+local records = {}
+local completionListeners = {} -- fns(player, model, asset)
+
+local function ghostify(model)
+	local saved = {}
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("BasePart") then
+			table.insert(saved, {
+				part = descendant,
+				transparency = descendant.Transparency,
+				canCollide = descendant.CanCollide,
+			})
+			descendant.Transparency = math.clamp(descendant.Transparency + 0.6, 0.6, 1)
+			descendant.CanCollide = false
+		end
+	end
+	local glow = Instance.new("Highlight")
+	glow.Name = "BlueprintGlow"
+	glow.FillColor = Color3.fromRGB(90, 160, 255)
+	glow.FillTransparency = 0.75
+	glow.OutlineColor = Color3.fromRGB(120, 190, 255)
+	glow.Adornee = model
+	glow.Parent = model
+	return saved
+end
+
+local function completeBlueprint(player, job)
+	local model = job.model
+	if model.Parent == nil then
+		return
+	end
+	for _, entry in ipairs(job.saved) do
+		if entry.part.Parent ~= nil then
+			entry.part.Transparency = entry.transparency
+			entry.part.CanCollide = entry.canCollide
+		end
+	end
+	local glow = model:FindFirstChild("BlueprintGlow")
+	if glow then
+		glow:Destroy()
+	end
+	model:SetAttribute("Blueprint", nil)
+
+	-- Now it's real: doors start working, housing counts, rooms re-check.
+	if job.asset.door then
+		DoorService.register(model, player)
+	end
+	for _, fn in ipairs(completionListeners) do
+		task.spawn(fn, player, model, job.asset)
+	end
+
+	-- A little "ta-da": green flash + a thunk.
+	local flash = Instance.new("Highlight")
+	flash.FillColor = Color3.fromRGB(120, 255, 140)
+	flash.FillTransparency = 0.5
+	flash.OutlineColor = Color3.fromRGB(120, 255, 140)
+	flash.Adornee = model
+	flash.Parent = model
+	Debris:AddItem(flash, 0.35)
+	local root = model:FindFirstChildWhichIsA("BasePart")
+	if root then
+		local sound = Instance.new("Sound")
+		sound.SoundId = "rbxasset://sounds/electronicpingshort.wav"
+		sound.Volume = 0.4
+		sound.Parent = root
+		sound:Play()
+		Debris:AddItem(sound, 2)
+	end
+end
+
+-- Called by PlacementService for every non-instant placement.
+function ConstructionService.queueBlueprint(player, _zone, model, asset)
+	local rec = records[player]
+	if not rec then
+		-- No crew (shouldn't happen) — build it instantly rather than never.
+		if asset.door then
+			DoorService.register(model, player)
+		end
+		return
+	end
+	model:SetAttribute("Blueprint", true)
+	local saved = ghostify(model)
+	table.insert(rec.queue, { model = model, asset = asset, saved = saved })
+end
+
+function ConstructionService.onCompleted(fn)
+	table.insert(completionListeners, fn)
+end
+
+-- Wiring (called by PlotService) ------------------------------------------
+
+function ConstructionService.assignPlayer(player, zone)
+	local folder = Instance.new("Folder")
+	folder.Name = "Workers"
+	folder.Parent = zone.part
+
+	local rec = { zone = zone, folder = folder, workers = {}, queue = {} }
+	records[player] = rec
+
+	-- The crew waits by the front-left corner of the plot.
+	local size = zone.part.Size
+	for i = 1, Config.WorkmenPerPlot do
+		local post = zone.part.CFrame * CFrame.new(-size.X / 2 + 6 + (i - 1) * 4, size.Y / 2, size.Z / 2 - 4)
+		local model = InmateService.spawn(post, i, folder, { outfit = "worker" })
+		table.insert(rec.workers, { model = model, busy = false })
+	end
+end
+
+function ConstructionService.releasePlayer(player)
+	local rec = records[player]
+	records[player] = nil
+	if rec then
+		rec.folder:Destroy()
+	end
+end
+
+function ConstructionService.init()
+	task.spawn(function()
+		while true do
+			task.wait(0.6)
+			for player, rec in pairs(records) do
+				-- Drop finished/bulldozed jobs off the front of the queue.
+				while rec.queue[1] and rec.queue[1].model.Parent == nil do
+					table.remove(rec.queue, 1)
+				end
+				if #rec.queue == 0 then
+					continue
+				end
+
+				for _, worker in ipairs(rec.workers) do
+					local job = table.remove(rec.queue, 1)
+					if not job then
+						break
+					end
+					if worker.busy or worker.model.Parent == nil then
+						-- Not available: put the job back for the next worker.
+						table.insert(rec.queue, 1, job)
+						continue
+					end
+					if job.model.Parent == nil then
+						continue
+					end
+
+					-- Pathfind to the blueprint. Unreachable? Requeue at the
+					-- back and try again later (build a door!).
+					local footprint = {
+						gx = job.model:GetAttribute("GX") or 0,
+						gz = job.model:GetAttribute("GZ") or 0,
+						w = 1,
+						d = 1,
+					}
+					local boxCF, boxSize = job.model:GetBoundingBox()
+					footprint.w = math.max(1, math.round(boxSize.X / Config.GridSize))
+					footprint.d = math.max(1, math.round(boxSize.Z / Config.GridSize))
+					local targetPos = Vector3.new(
+						boxCF.Position.X,
+						rec.zone.part.Position.Y + rec.zone.part.Size.Y / 2,
+						boxCF.Position.Z
+					)
+					local fromPos = worker.model:GetPivot().Position - Vector3.new(0, PIVOT_HEIGHT, 0)
+					local route = PathService.findRoute(rec.zone, fromPos, footprint, targetPos)
+					if not route then
+						table.insert(rec.queue, job)
+						continue
+					end
+
+					worker.busy = true
+					local duration = PathService.startWalk(worker.model, route, Config.WorkerSpeed)
+					local cells = footprint.w * footprint.d
+					local buildTime = Config.BuildTimeBase + Config.BuildTimePerCell * cells
+
+					task.spawn(function()
+						task.wait(duration)
+						if worker.model.Parent == nil then
+							return
+						end
+						-- Arrive next to the job and start hammering.
+						local stand = route[#route - 1] or route[#route]
+						local standCF
+						if (stand - targetPos).Magnitude > 0.05 then
+							standCF = CFrame.lookAt(stand, targetPos)
+						else
+							standCF = CFrame.new(stand)
+						end
+						PathService.finishWalk(worker.model, standCF * CFrame.new(0, PIVOT_HEIGHT, 0))
+						worker.model:SetAttribute("Working", true)
+						task.wait(buildTime)
+						worker.model:SetAttribute("Working", nil)
+						if job.model.Parent ~= nil then
+							completeBlueprint(player, job)
+						end
+						worker.busy = false
+					end)
+				end
+			end
+		end
+	end)
+end
+
+return ConstructionService
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="10">
+        <Properties>
           <string name="Name">DoorService</string>
           <string name="Source"><![CDATA[-- DoorService: makes placed Door assets actually work. When the WARDEN
 -- (the plot's owner) walks up, the door's panels slide down into the
@@ -619,6 +930,7 @@ return Buildables
 -- has no DoorPanel parts, the whole model fades open instead — ugly but
 -- functional, so any door the map-maker builds works on day one.
 
+local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 
@@ -660,6 +972,19 @@ function DoorService.register(model, player)
 	end)
 end
 
+-- Re-measure after the Move tool relocates a door.
+function DoorService.updatePosition(model)
+	local door = doors[model]
+	if door then
+		door.position = model:GetPivot().Position
+		for part in pairs(door.panels) do
+			door.panels[part] = door.open
+				and part.CFrame * CFrame.new(0, part.Size.Y * 0.92, 0)
+				or part.CFrame
+		end
+	end
+end
+
 local function setOpen(model, door, shouldOpen)
 	door.open = shouldOpen
 	model:SetAttribute("DoorOpen", shouldOpen)
@@ -683,11 +1008,69 @@ function DoorService.init()
 	task.spawn(function()
 		while true do
 			task.wait(Config.DoorCheckInterval)
+			-- NPCs mid-walk (escorted prisoners, workmen on the way to a
+			-- job) also open doors — a guard is implied. Their live position
+			-- must be computed from the walk attributes: the client animates
+			-- the walk, so server-side part positions are stale until it ends.
+			local now = workspace:GetServerTimeNow()
+			local walkers = {}
+			for _, npc in ipairs(CollectionService:GetTagged("Inmate")) do
+				local start = npc:GetAttribute("EscortStart")
+				if start ~= nil then
+					local duration = npc:GetAttribute("EscortDur") or 1
+					local alpha = math.clamp((now - start) / duration, 0, 1)
+					local pathString = npc:GetAttribute("EscortPath")
+					if type(pathString) == "string" then
+						-- Decode the waypoints and find the point at `alpha`
+						-- along the path's total length.
+						local y = npc:GetAttribute("EscortY") or 0
+						local points = {}
+						for pair in string.gmatch(pathString, "[^|]+") do
+							local xs, zs = string.match(pair, "([^,]+),([^,]+)")
+							local x, z = tonumber(xs), tonumber(zs)
+							if x and z then
+								table.insert(points, Vector3.new(x, y, z))
+							end
+						end
+						if #points >= 2 then
+							local total = 0
+							for i = 2, #points do
+								total += (points[i] - points[i - 1]).Magnitude
+							end
+							local walked = alpha * total
+							for i = 2, #points do
+								local seg = (points[i] - points[i - 1]).Magnitude
+								if walked <= seg or i == #points then
+									local t = seg > 0 and math.clamp(walked / seg, 0, 1) or 1
+									table.insert(walkers, points[i - 1]:Lerp(points[i], t))
+									break
+								end
+								walked -= seg
+							end
+						end
+					else
+						local from = npc:GetAttribute("EscortFrom")
+						local to = npc:GetAttribute("EscortTo")
+						if typeof(from) == "Vector3" and typeof(to) == "Vector3" then
+							table.insert(walkers, from:Lerp(to, alpha))
+						end
+					end
+				end
+			end
+
 			for model, door in pairs(doors) do
 				local character = door.player and door.player.Character
 				local root = character and character:FindFirstChild("HumanoidRootPart")
 				local shouldOpen = root ~= nil
 					and (root.Position - door.position).Magnitude < Config.DoorOpenDistance
+				if not shouldOpen then
+					for _, pos in ipairs(walkers) do
+						if (pos - door.position).Magnitude < Config.DoorOpenDistance then
+							shouldOpen = true
+							break
+						end
+					end
+				end
 				if shouldOpen ~= door.open then
 					setOpen(model, door, shouldOpen)
 				end
@@ -700,7 +1083,121 @@ return DoorService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="10">
+      <Item class="ModuleScript" referent="11">
+        <Properties>
+          <string name="Name">EconomyService</string>
+          <string name="Source"><![CDATA[-- EconomyService: the money. Server-authoritative — a hacked client can
+-- ask to spend, never take. Cash lives inside SaveService's player state
+-- (so it cloud-saves for free) and mirrors into leaderstats, which both
+-- shows it in the player list and feeds the client HUD.
+--
+-- Income: every GrantInterval seconds each HOUSED prisoner pays their
+-- grant (read from the PrisonHoused attribute IntakeService publishes —
+-- handcuffed arrivals at the gate pay nothing).
+--
+-- Config.FreeBuild = true turns all charging off (owner sandbox switch).
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Config = require(ReplicatedStorage.Shared.Config)
+local SaveService = require(script.Parent.SaveService)
+
+local EconomyService = {}
+
+local wallets = {} -- player -> { st = SaveService state, cashValue = IntValue }
+local grantedListeners = {} -- fns(player, amount) — ObjectiveService hooks in
+
+local function onPlayerAdded(player)
+	local st = SaveService.waitForData(player)
+	if not st or not player:IsDescendantOf(game) then
+		return
+	end
+	if type(st.cash) ~= "number" or st.cash <= 0 then
+		st.cash = st.cash or 0
+		if st.cash == 0 and (st.totalSpent or 0) == 0 then
+			st.cash = Config.StartingCash
+		end
+	end
+
+	local leaderstats = Instance.new("Folder")
+	leaderstats.Name = "leaderstats"
+	local cashValue = Instance.new("IntValue")
+	cashValue.Name = "Cash"
+	cashValue.Value = math.floor(st.cash)
+	cashValue.Parent = leaderstats
+	leaderstats.Parent = player
+
+	wallets[player] = { st = st, cashValue = cashValue }
+end
+
+function EconomyService.getCash(player)
+	local wallet = wallets[player]
+	return wallet and wallet.st.cash or 0
+end
+
+function EconomyService.credit(player, amount)
+	local wallet = wallets[player]
+	if not wallet or amount <= 0 then
+		return
+	end
+	wallet.st.cash += amount
+	wallet.cashValue.Value = math.floor(wallet.st.cash)
+end
+
+-- Spend if affordable. FreeBuild makes everything cost nothing.
+function EconomyService.tryCharge(player, amount)
+	if Config.FreeBuild or amount <= 0 then
+		return true
+	end
+	local wallet = wallets[player]
+	if not wallet or wallet.st.cash < amount then
+		return false
+	end
+	wallet.st.cash -= amount
+	wallet.st.totalSpent = (wallet.st.totalSpent or 0) + amount
+	wallet.cashValue.Value = math.floor(wallet.st.cash)
+	return true
+end
+
+function EconomyService.onGranted(fn)
+	table.insert(grantedListeners, fn)
+end
+
+function EconomyService.init()
+	Players.PlayerAdded:Connect(function(player)
+		task.spawn(onPlayerAdded, player)
+	end)
+	for _, player in ipairs(Players:GetPlayers()) do
+		task.spawn(onPlayerAdded, player)
+	end
+	Players.PlayerRemoving:Connect(function(player)
+		wallets[player] = nil
+	end)
+
+	-- The grant tick: housed prisoners pay their keep.
+	task.spawn(function()
+		while true do
+			task.wait(Config.GrantInterval)
+			for player in pairs(wallets) do
+				local housed = player:GetAttribute("PrisonHoused") or 0
+				if housed > 0 then
+					local amount = housed * Config.GrantPerPrisoner
+					EconomyService.credit(player, amount)
+					for _, fn in ipairs(grantedListeners) do
+						task.spawn(fn, player, amount)
+					end
+				end
+			end
+		end
+	end)
+end
+
+return EconomyService
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="12">
         <Properties>
           <string name="Name">InmateService</string>
           <string name="Source"><![CDATA[-- InmateService: builds inmates as LIGHTWEIGHT CUSTOM RIGS.
@@ -742,17 +1239,22 @@ local function makePart(name, size, color, cframe, parent)
 	return p
 end
 
--- Builds one inmate standing at baseCF (feet on the ground at that spot).
--- cellIndex picks the name — cell #1 is always Sneaky Pete.
-function InmateService.spawn(baseCF, cellIndex, parent)
+-- Builds one NPC standing at baseCF (feet on the ground at that spot).
+-- cellIndex picks the name and look. opts.outfit = "worker" builds a
+-- construction workman (blue overalls, hard hat) instead of an inmate.
+function InmateService.spawn(baseCF, cellIndex, parent, opts)
+	local outfit = opts and opts.outfit or "inmate"
 	local model = Instance.new("Model")
-	model.Name = "Inmate" .. cellIndex
+	model.Name = (outfit == "worker" and "Worker" or "Inmate") .. cellIndex
 
-	-- Every inmate gets a slightly different jumpsuit shade and sway
-	-- rhythm so a full cellblock doesn't look like a copy-paste army.
-	-- Seeding with cellIndex keeps each inmate looking the same each visit.
+	-- Every NPC gets a slightly different shade and sway rhythm so a
+	-- full cellblock doesn't look like a copy-paste army. Seeding with
+	-- cellIndex keeps each one looking the same each visit.
 	local rng = Random.new(cellIndex * 7919)
 	local jumpsuit = Color3.fromRGB(255, 120 + rng:NextInteger(0, 40), 25 + rng:NextInteger(0, 25))
+	if outfit == "worker" then
+		jumpsuit = Color3.fromRGB(60 + rng:NextInteger(0, 20), 90 + rng:NextInteger(0, 20), 170 + rng:NextInteger(0, 30))
+	end
 
 	-- Face a random direction inside the cell.
 	local root = baseCF * CFrame.Angles(0, rng:NextNumber(0, math.pi * 2), 0)
@@ -765,6 +1267,12 @@ function InmateService.spawn(baseCF, cellIndex, parent)
 	makePart("RightArm", Vector3.new(1, 2, 1), jumpsuit, root * CFrame.new(1.5, 3, 0), model)
 	local head = makePart("Head", Vector3.new(1.2, 1.2, 1.2), SKIN, root * CFrame.new(0, 4.6, 0), model)
 
+	if outfit == "worker" then
+		-- The hard hat: what separates professionals from prisoners.
+		makePart("HardHat", Vector3.new(1.4, 0.35, 1.4), Color3.fromRGB(255, 200, 40),
+			root * CFrame.new(0, 5.35, 0), model)
+	end
+
 	-- The classic Roblox smile, shipped inside the engine (no download).
 	local face = Instance.new("Decal")
 	face.Name = "Face"
@@ -773,7 +1281,8 @@ function InmateService.spawn(baseCF, cellIndex, parent)
 	face.Parent = head
 
 	-- Floating name tag.
-	local nameIndex = ((cellIndex - 1) % #Config.InmateNames) + 1
+	local nameList = outfit == "worker" and Config.WorkerNames or Config.InmateNames
+	local nameIndex = ((cellIndex - 1) % #nameList) + 1
 	local tag = Instance.new("BillboardGui")
 	tag.Name = "NameTag"
 	tag.Size = UDim2.new(0, 130, 0, 26)
@@ -787,7 +1296,10 @@ function InmateService.spawn(baseCF, cellIndex, parent)
 	tagText.TextScaled = true
 	tagText.TextColor3 = Color3.fromRGB(255, 220, 180)
 	tagText.TextStrokeTransparency = 0.4
-	tagText.Text = Config.InmateNames[nameIndex]
+	tagText.Text = nameList[nameIndex]
+	if outfit == "worker" then
+		tagText.TextColor3 = Color3.fromRGB(255, 220, 120)
+	end
 	tagText.Parent = tag
 	tag.Parent = head
 
@@ -806,7 +1318,7 @@ return InmateService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="11">
+      <Item class="ModuleScript" referent="13">
         <Properties>
           <string name="Name">IntakeService</string>
           <string name="Source"><![CDATA[-- IntakeService: how prisoners actually arrive (Prison Architect's
@@ -830,7 +1342,10 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 
 local Config = require(ReplicatedStorage.Shared.Config)
+local GridMath = require(ReplicatedStorage.Shared.GridMath)
+local Buildables = require(script.Parent.Buildables)
 local InmateService = require(script.Parent.InmateService)
+local PathService = require(script.Parent.PathService)
 
 local IntakeService = {}
 
@@ -849,7 +1364,9 @@ local records = {}
 local function housingAssets(zone)
 	local houses = {}
 	for _, model in ipairs(zone.placed:GetChildren()) do
-		if model:IsA("Model") and model:GetAttribute("SpawnsInmate") == true then
+		if model:IsA("Model") and model:GetAttribute("SpawnsInmate") == true
+			and model:GetAttribute("Blueprint") ~= true -- unbuilt = no capacity
+		then
 			table.insert(houses, model)
 		end
 	end
@@ -909,10 +1426,7 @@ local function refresh(player)
 				-- Their destination was demolished mid-walk; back to waiting.
 				prisoner.status = "waiting"
 				prisoner.house = nil
-				prisoner.model:SetAttribute("EscortStart", nil)
-				prisoner.model:SetAttribute("EscortDur", nil)
-				prisoner.model:SetAttribute("EscortFrom", nil)
-				prisoner.model:SetAttribute("EscortTo", nil)
+				PathService.finishWalk(prisoner.model)
 			else
 				table.remove(rec.prisoners, i)
 			end
@@ -940,18 +1454,32 @@ local function refresh(player)
 			if not target then
 				break
 			end
-			occupied[target] = true
-			prisoner.status = "escorting"
-			prisoner.house = target
 
+			-- Pathfind gate -> cell around walls, through doors. No route
+			-- means they wait cuffed (rec.stuck warns the warden).
 			local model = prisoner.model
 			local from = model:GetPivot().Position - Vector3.new(0, PIVOT_HEIGHT, 0)
 			local to = houseFloorCF(target).Position
-			local duration = math.max(1, (to - from).Magnitude / Config.EscortSpeed)
-			model:SetAttribute("EscortFrom", from)
-			model:SetAttribute("EscortTo", to)
-			model:SetAttribute("EscortDur", duration)
-			model:SetAttribute("EscortStart", workspace:GetServerTimeNow())
+			local footprint = { gx = 0, gz = 0, w = 1, d = 1 }
+			do
+				local asset = Buildables.get(target:GetAttribute("Asset") or "")
+				footprint.gx = target:GetAttribute("GX") or 0
+				footprint.gz = target:GetAttribute("GZ") or 0
+				if asset then
+					footprint.w, footprint.d = GridMath.footprint(asset, target:GetAttribute("Rot") or 0)
+				end
+			end
+			local route = PathService.findRoute(rec.zone, from, footprint, to)
+			if not route then
+				rec.stuck = true
+				break
+			end
+			rec.stuck = false
+
+			occupied[target] = true
+			prisoner.status = "escorting"
+			prisoner.house = target
+			local duration = PathService.startWalk(model, route, Config.EscortSpeed)
 
 			task.delay(duration, function()
 				if prisoner.status ~= "escorting" or model.Parent == nil then
@@ -961,14 +1489,13 @@ local function refresh(player)
 					return -- refresh() already handled the demolition
 				end
 				-- The one authoritative move: they now live here.
-				model:PivotTo(houseFloorCF(prisoner.house) * CFrame.new(0, PIVOT_HEIGHT, 0))
+				PathService.finishWalk(model, houseFloorCF(prisoner.house) * CFrame.new(0, PIVOT_HEIGHT, 0))
 				model.Parent = prisoner.house -- demolishing the house removes them too
 				local cuffs = model:FindFirstChild("Cuffs")
 				if cuffs then
 					cuffs:Destroy()
 				end
 				model:SetAttribute("Handcuffed", false)
-				model:SetAttribute("EscortStart", nil)
 				prisoner.status = "housed"
 				refresh(player)
 			end)
@@ -988,6 +1515,7 @@ local function refresh(player)
 	player:SetAttribute("PrisonHoused", housed)
 	player:SetAttribute("PrisonWaiting", waiting)
 	player:SetAttribute("AutoIntake", rec.auto)
+	player:SetAttribute("IntakeStuck", rec.stuck == true and waiting > 0)
 end
 
 local function arrive(player, skipGate)
@@ -1060,6 +1588,11 @@ function IntakeService.assignPlayer(player, zone, savedIntake)
 		task.defer(refresh, player)
 	end))
 
+	refresh(player)
+end
+
+-- Re-check capacity/escorts (used after moves and blueprint completions).
+function IntakeService.poke(player)
 	refresh(player)
 end
 
@@ -1136,7 +1669,336 @@ return IntakeService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="12">
+      <Item class="ModuleScript" referent="14">
+        <Properties>
+          <string name="Name">ObjectiveService</string>
+          <string name="Source"><![CDATA[-- ObjectiveService: PA-style starter grants, simplified into a sequential
+-- chain. One objective is active at a time; completing it pays out and
+-- advances to the next. Progress cloud-saves.
+--
+-- Two objective kinds (defined in Config.Objectives):
+--   counter -> other systems report events ("wall_built", "granted"...)
+--   attr    -> watches a published player attribute (PrisonHoused, ...)
+--
+-- The client panel reads everything from player attributes: ObjText,
+-- ObjProgress, ObjTarget, ObjReward, ObjDone (all finished).
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Config = require(ReplicatedStorage.Shared.Config)
+local SaveService = require(script.Parent.SaveService)
+local EconomyService = require(script.Parent.EconomyService)
+
+local ObjectiveService = {}
+
+local states = {} -- player -> { index, progress, st }
+
+local function publish(player)
+	local state = states[player]
+	if not state then
+		return
+	end
+	local objective = Config.Objectives[state.index]
+	if not objective then
+		player:SetAttribute("ObjText", nil)
+		player:SetAttribute("ObjDone", true)
+		return
+	end
+	player:SetAttribute("ObjText", objective.text)
+	player:SetAttribute("ObjProgress", math.min(state.progress, objective.target))
+	player:SetAttribute("ObjTarget", objective.target)
+	player:SetAttribute("ObjReward", objective.reward)
+	player:SetAttribute("ObjDone", false)
+end
+
+local function checkComplete(player)
+	local state = states[player]
+	if not state then
+		return
+	end
+	local objective = Config.Objectives[state.index]
+	while objective and state.progress >= objective.target do
+		EconomyService.credit(player, objective.reward)
+		state.index += 1
+		state.progress = 0
+		-- Persist through SaveService's state table.
+		state.st.objectives = { i = state.index, p = 0 }
+		objective = Config.Objectives[state.index]
+	end
+	publish(player)
+end
+
+-- Counter-kind progress, reported by the other systems.
+function ObjectiveService.notify(player, event, amount)
+	local state = states[player]
+	if not state then
+		return
+	end
+	local objective = Config.Objectives[state.index]
+	if objective and objective.kind == "counter" and objective.event == event then
+		state.progress += amount or 1
+		state.st.objectives = { i = state.index, p = state.progress }
+		checkComplete(player)
+	end
+end
+
+local function onPlayerAdded(player)
+	local st = SaveService.waitForData(player)
+	if not st or not player:IsDescendantOf(game) then
+		return
+	end
+	local saved = type(st.objectives) == "table" and st.objectives or {}
+	states[player] = {
+		index = math.clamp(math.floor(tonumber(saved.i) or 1), 1, #Config.Objectives + 1),
+		progress = math.max(0, math.floor(tonumber(saved.p) or 0)),
+		st = st,
+	}
+	publish(player)
+end
+
+function ObjectiveService.init()
+	Players.PlayerAdded:Connect(function(player)
+		task.spawn(onPlayerAdded, player)
+	end)
+	for _, player in ipairs(Players:GetPlayers()) do
+		task.spawn(onPlayerAdded, player)
+	end
+	Players.PlayerRemoving:Connect(function(player)
+		states[player] = nil
+	end)
+
+	-- Grant income feeds the "earn $X" objective.
+	EconomyService.onGranted(function(player, amount)
+		ObjectiveService.notify(player, "granted", amount)
+	end)
+
+	-- Attr-kind objectives poll their published stat.
+	task.spawn(function()
+		while true do
+			task.wait(2)
+			for player, state in pairs(states) do
+				local objective = Config.Objectives[state.index]
+				if objective and objective.kind == "attr" then
+					local value = player:GetAttribute(objective.attr)
+					if type(value) == "number" and value ~= state.progress then
+						state.progress = value
+						checkComplete(player)
+					end
+				end
+			end
+		end
+	end)
+end
+
+return ObjectiveService
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="15">
+        <Properties>
+          <string name="Name">PathService</string>
+          <string name="Source"><![CDATA[-- PathService: A* pathfinding over the build grid, plus the shared
+-- "walk an NPC along a path" machinery that prisoners and workmen use.
+--
+-- Walkability comes straight from the placement grid: empty squares and
+-- Flooring are walkable, walls/fences/objects block, and DOORS COUNT AS
+-- PASSABLE (escorts and workmen are allowed through). No route at all —
+-- a fully sealed prison with no door — means the walk fails, and the
+-- caller shows the player why ("the gate can't reach your cells!").
+--
+-- The walk itself stays cheap: the server stamps the path onto the model
+-- as attributes (a string of waypoints + a start time on the shared
+-- server clock) and does ONE authoritative move at the end; every
+-- client's InmateAnimator plays the same walk locally.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Config = require(ReplicatedStorage.Shared.Config)
+local GridMath = require(ReplicatedStorage.Shared.GridMath)
+local Buildables = require(script.Parent.Buildables)
+
+local PathService = {}
+
+-- Injected by the bootstrap (PlacementService.cellAsset) — a direct
+-- require would create a dependency cycle.
+local cellLookup = nil
+function PathService.setCellLookup(fn)
+	cellLookup = fn
+end
+
+local function isWalkable(zone, x, z)
+	if x < 0 or x >= zone.info.cols or z < 0 or z >= zone.info.rows then
+		return false
+	end
+	local assetName = cellLookup and cellLookup(zone, x, z)
+	if not assetName then
+		return true
+	end
+	local asset = Buildables.get(assetName)
+	return asset ~= nil and (asset.category == "Flooring" or asset.door)
+end
+
+-- Plain A* on the zone grid (max ~1024 squares — instant).
+local function aStar(zone, sx, sz, gx, gz)
+	local function key(x, z)
+		return x .. ":" .. z
+	end
+	local open = { { x = sx, z = sz, g = 0, f = math.abs(gx - sx) + math.abs(gz - sz) } }
+	local bestG = { [key(sx, sz)] = 0 }
+	local cameFrom = {}
+	local steps = 0
+
+	while #open > 0 and steps < 4096 do
+		steps += 1
+		-- Pull the lowest-f node (linear scan is fine at this scale).
+		local bestIndex = 1
+		for i = 2, #open do
+			if open[i].f < open[bestIndex].f then
+				bestIndex = i
+			end
+		end
+		local current = table.remove(open, bestIndex)
+		if current.x == gx and current.z == gz then
+			-- Rebuild the path.
+			local path = { { current.x, current.z } }
+			local k = key(current.x, current.z)
+			while cameFrom[k] do
+				local prev = cameFrom[k]
+				table.insert(path, 1, { prev[1], prev[2] })
+				k = key(prev[1], prev[2])
+			end
+			return path
+		end
+		for _, step in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do
+			local nx, nz = current.x + step[1], current.z + step[2]
+			if isWalkable(zone, nx, nz) then
+				local nk = key(nx, nz)
+				local g = current.g + 1
+				if bestG[nk] == nil or g < bestG[nk] then
+					bestG[nk] = g
+					cameFrom[nk] = { current.x, current.z }
+					table.insert(open, {
+						x = nx,
+						z = nz,
+						g = g,
+						f = g + math.abs(gx - nx) + math.abs(gz - nz),
+					})
+				end
+			end
+		end
+	end
+	return nil
+end
+
+-- Drop waypoints that continue in a straight line.
+local function compress(path)
+	if #path <= 2 then
+		return path
+	end
+	local out = { path[1] }
+	for i = 2, #path - 1 do
+		local a, b, c = out[#out], path[i], path[i + 1]
+		local abx, abz = b[1] - a[1], b[2] - a[2]
+		local bcx, bcz = c[1] - b[1], c[2] - b[2]
+		if abx * bcz - abz * bcx ~= 0 then
+			table.insert(out, b)
+		end
+	end
+	table.insert(out, path[#path])
+	return out
+end
+
+-- Find a route from a world position to (adjacent to) a footprint.
+-- Returns an array of world Vector3 waypoints ending AT targetPos, or nil.
+function PathService.findRoute(zone, fromPos, footprint, targetPos)
+	-- Wherever they're standing counts as the start even if that square
+	-- is technically blocked — A* only needs the neighbors to work.
+	local sx, sz = GridMath.worldToCell(zone.info, fromPos, 1, 1)
+
+	-- Candidate goals: every walkable square hugging the footprint edge.
+	local candidates = {}
+	for x = footprint.gx - 1, footprint.gx + footprint.w do
+		for z = footprint.gz - 1, footprint.gz + footprint.d do
+			local onEdge = x < footprint.gx or x > footprint.gx + footprint.w - 1
+				or z < footprint.gz or z > footprint.gz + footprint.d - 1
+			if onEdge and isWalkable(zone, x, z) then
+				table.insert(candidates, { x, z, math.abs(x - sx) + math.abs(z - sz) })
+			end
+		end
+	end
+	table.sort(candidates, function(a, b)
+		return a[3] < b[3]
+	end)
+
+	for i = 1, math.min(#candidates, 4) do
+		local goal = candidates[i]
+		local cells = aStar(zone, sx, sz, goal[1], goal[2])
+		if cells then
+			cells = compress(cells)
+			local points = {}
+			for _, cell in ipairs(cells) do
+				table.insert(points, GridMath.regionCenter(zone.info, cell[1], cell[2], 1, 1).Position)
+			end
+			-- Start exactly where they stand, end exactly at the target.
+			points[1] = Vector3.new(fromPos.X, points[1] and points[1].Y or fromPos.Y, fromPos.Z)
+			table.insert(points, targetPos)
+			return points
+		end
+	end
+	return nil
+end
+
+-- Stamp a path walk onto a model (clients animate it) and return its
+-- duration. The caller is responsible for finishing the walk.
+function PathService.startWalk(model, points, speed)
+	local total = 0
+	for i = 2, #points do
+		total += (points[i] - points[i - 1]).Magnitude
+	end
+	local duration = math.max(0.5, total / speed)
+
+	local encoded = {}
+	for _, p in ipairs(points) do
+		table.insert(encoded, ("%.1f,%.1f"):format(p.X, p.Z))
+	end
+	model:SetAttribute("EscortPath", table.concat(encoded, "|"))
+	model:SetAttribute("EscortY", points[1].Y)
+	model:SetAttribute("EscortFrom", points[1])
+	model:SetAttribute("EscortTo", points[#points])
+	model:SetAttribute("EscortDur", duration)
+	model:SetAttribute("EscortStart", workspace:GetServerTimeNow())
+	return duration
+end
+
+-- Clear the walk attributes and drop the model at its destination.
+-- finalCF is where the pivot ends up (remember the pivot rides 3 studs
+-- above the feet).
+function PathService.finishWalk(model, finalCF)
+	if finalCF then
+		model:PivotTo(finalCF)
+	end
+	model:SetAttribute("EscortStart", nil)
+	model:SetAttribute("EscortPath", nil)
+	model:SetAttribute("EscortDur", nil)
+	model:SetAttribute("EscortFrom", nil)
+	model:SetAttribute("EscortTo", nil)
+	model:SetAttribute("EscortY", nil)
+end
+
+-- Convenience: is this square reachable at all from that position?
+function PathService.canReach(zone, fromPos, footprint, targetPos)
+	return PathService.findRoute(zone, fromPos, footprint, targetPos) ~= nil
+end
+
+-- Walk speed shared by escorts unless the caller overrides.
+PathService.DefaultSpeed = Config.EscortSpeed
+
+return PathService
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="16">
         <Properties>
           <string name="Name">PlacementService</string>
           <string name="Source"><![CDATA[-- PlacementService: the server half of the building system. The client
@@ -1154,6 +2016,9 @@ local GridMath = require(ReplicatedStorage.Shared.GridMath)
 local Config = require(ReplicatedStorage.Shared.Config)
 local Buildables = require(script.Parent.Buildables)
 local DoorService = require(script.Parent.DoorService)
+local EconomyService = require(script.Parent.EconomyService)
+local ObjectiveService = require(script.Parent.ObjectiveService)
+local ConstructionService = require(script.Parent.ConstructionService)
 
 local PlacementService = {}
 
@@ -1200,9 +2065,15 @@ function PlacementService.cellAsset(zone, gx, gz)
 	return taken and taken[gx .. ":" .. gz] or nil
 end
 
+local movedListeners = {} -- fns(player) — bootstrap wires room/intake pokes
+function PlacementService.onMoved(fn)
+	table.insert(movedListeners, fn)
+end
+
 -- The one true "make it exist" function — used by live purchases and by
--- save-file rebuilds, so they can never behave differently.
-local function placeInternal(player, zone, asset, gx, gz, rot)
+-- save-file rebuilds, so they can never behave differently. instant=true
+-- (save rebuilds, Config.InstantBuild) skips the blueprint/workman step.
+local function placeInternal(player, zone, asset, gx, gz, rot, instant)
 	local w, d = GridMath.footprint(asset, rot)
 	if not GridMath.inBounds(zone.info, gx, gz, w, d) then
 		return nil, "That spot is outside your plot."
@@ -1229,8 +2100,12 @@ local function placeInternal(player, zone, asset, gx, gz, rot)
 	model:SetAttribute("Rot", rot)
 	model.Parent = zone.placed
 
-	if asset.door then
-		DoorService.register(model, player)
+	if instant then
+		if asset.door then
+			DoorService.register(model, player)
+		end
+	else
+		ConstructionService.queueBlueprint(player, zone, model, asset)
 	end
 
 	setRegion(zone, gx, gz, w, d, asset.name)
@@ -1258,7 +2133,7 @@ function PlacementService.assignZone(player, zone, savedLayout)
 			then
 				local asset = Buildables.get(entry.n)
 				if asset then
-					placeInternal(player, zone, asset, math.floor(entry.x), math.floor(entry.z), math.floor(entry.r) % 4)
+					placeInternal(player, zone, asset, math.floor(entry.x), math.floor(entry.z), math.floor(entry.r) % 4, true)
 				end
 			end
 		end
@@ -1297,6 +2172,26 @@ local function tooFast(player)
 	return false
 end
 
+-- Charge, then place; refund if placement failed. Returns the model plus
+-- an error kind ("cash" means stop trying, anything else means that one
+-- square failed).
+local function paidPlace(player, zone, asset, gx, gz, rot)
+	if not EconomyService.tryCharge(player, asset.price) then
+		return nil, "cash"
+	end
+	local model, err = placeInternal(player, zone, asset, gx, gz, rot, Config.InstantBuild)
+	if not model then
+		EconomyService.credit(player, asset.price)
+		return nil, err
+	end
+	if asset.category == "Walls & Doors" then
+		ObjectiveService.notify(player, "wall_built")
+	end
+	return model
+end
+
+local NEED_CASH = "Not enough cash!"
+
 function PlacementService.handlePlace(player, assetName, gx, gz, rot)
 	local zone = playerZones[player]
 	if not zone then
@@ -1313,11 +2208,11 @@ function PlacementService.handlePlace(player, assetName, gx, gz, rot)
 		return { ok = false, err = "Unknown asset." }
 	end
 
-	local model, err = placeInternal(player, zone, asset, math.floor(gx), math.floor(gz), math.floor(rot) % 4)
+	local model, err = paidPlace(player, zone, asset, math.floor(gx), math.floor(gz), math.floor(rot) % 4)
 	if not model then
-		return { ok = false, err = err }
+		return { ok = false, err = err == "cash" and NEED_CASH or err }
 	end
-	return { ok = true, model = model }
+	return { ok = true, model = model, spent = Config.FreeBuild and 0 or asset.price }
 end
 
 -- Drag-to-build: place a straight line of a 1x1 asset in one request
@@ -1357,18 +2252,22 @@ function PlacementService.handlePlaceLine(player, assetName, x1, z1, x2, z2)
 	local pieces = math.min(math.floor((rawCount - 1) / step) + 1, 64)
 
 	local models = {}
+	local broke = false
 	for i = 0, pieces - 1 do
 		local gx = axis == "x" and startX + i * step or startX
 		local gz = axis == "z" and startZ + i * step or startZ
-		local model = placeInternal(player, zone, asset, gx, gz, rot)
+		local model, err = paidPlace(player, zone, asset, gx, gz, rot)
 		if model then
 			table.insert(models, model)
+		elseif err == "cash" then
+			broke = true
+			break
 		end
 	end
 	if #models == 0 then
-		return { ok = false, err = "Nothing free along that line." }
+		return { ok = false, err = broke and NEED_CASH or "Nothing free along that line." }
 	end
-	return { ok = true, placed = #models, models = models }
+	return { ok = true, placed = #models, models = models, broke = broke }
 end
 
 -- Rectangle FILL (Prison Architect flooring): tile the whole dragged
@@ -1399,21 +2298,24 @@ function PlacementService.handlePlaceRect(player, assetName, x1, z1, x2, z2, rot
 	local maxZ = math.min(zone.info.rows - 1, math.floor(math.max(z1, z2)))
 
 	local models = {}
+	local broke = false
 	for gz = minZ, maxZ, d do
 		for gx = minX, maxX, w do
-			if #models >= 512 then
+			if #models >= 512 or broke then
 				break
 			end
-			local model = placeInternal(player, zone, asset, gx, gz, rot)
+			local model, err = paidPlace(player, zone, asset, gx, gz, rot)
 			if model then
 				table.insert(models, model)
+			elseif err == "cash" then
+				broke = true
 			end
 		end
 	end
 	if #models == 0 then
-		return { ok = false, err = "No room in that rectangle." }
+		return { ok = false, err = broke and NEED_CASH or "No room in that rectangle." }
 	end
-	return { ok = true, placed = #models, models = models }
+	return { ok = true, placed = #models, models = models, broke = broke }
 end
 
 -- The 🏗️ Foundations tool: drag a rectangle, get perimeter walls and an
@@ -1452,42 +2354,56 @@ function PlacementService.handleFoundation(player, x1, z1, x2, z2)
 	end
 
 	local models = {}
+	local broke = false
 	for z = minZ, maxZ do
 		for x = minX, maxX do
+			if broke then
+				break
+			end
 			local isBorder = x == minX or x == maxX or z == minZ or z == maxZ
-			local model = placeInternal(player, zone, isBorder and wallAsset or floorAsset, x, z, 0)
+			local model, err = paidPlace(player, zone, isBorder and wallAsset or floorAsset, x, z, 0)
 			if model then
 				table.insert(models, model)
+			elseif err == "cash" then
+				broke = true
 			end
 		end
 	end
 	if #models == 0 then
-		return { ok = false, err = "No room for a foundation there." }
+		return { ok = false, err = broke and NEED_CASH or "No room for a foundation there." }
 	end
-	return { ok = true, built = #models, models = models }
+	return { ok = true, built = #models, models = models, broke = broke }
 end
 
-local function deleteOne(player, zone, model)
+-- refundRate: bulldozing pays back Config.RefundRate; Undo passes 1.0.
+-- Blueprints always refund in full (nothing was built yet).
+local function deleteOne(player, zone, model, refundRate)
 	-- The model must be a real placed object inside THIS player's zone.
 	if typeof(model) ~= "Instance" or not model:IsA("Model") or model.Parent ~= zone.placed then
-		return false, "That's not yours to demolish."
+		return false, "That's not yours to demolish.", 0
 	end
 	local id = model:GetAttribute("LayoutId")
+	local isBlueprint = model:GetAttribute("Blueprint") == true
 
 	local layout = layouts[player]
 	for index, entry in ipairs(layout) do
 		if entry.id == id then
 			local asset = Buildables.get(entry.n)
+			local refund = 0
 			if asset then
 				local w, d = GridMath.footprint(asset, entry.r)
 				setRegion(zone, entry.x, entry.z, w, d, nil)
+				if not Config.FreeBuild then
+					refund = math.floor(asset.price * (isBlueprint and 1 or refundRate))
+					EconomyService.credit(player, refund)
+				end
 			end
 			table.remove(layout, index)
 			model:Destroy()
-			return true
+			return true, nil, refund
 		end
 	end
-	return false, "Couldn't find that object."
+	return false, "Couldn't find that object.", 0
 end
 
 function PlacementService.handleDelete(player, model)
@@ -1498,11 +2414,11 @@ function PlacementService.handleDelete(player, model)
 	if tooFast(player) then
 		return { ok = false, err = "Too fast!" }
 	end
-	local ok, err = deleteOne(player, zone, model)
+	local ok, err, refund = deleteOne(player, zone, model, Config.RefundRate)
 	if not ok then
 		return { ok = false, err = err }
 	end
-	return { ok = true }
+	return { ok = true, refund = refund }
 end
 
 -- Batch demolish, used by Undo to revert a whole line or foundation in
@@ -1518,16 +2434,18 @@ function PlacementService.handleDeleteMany(player, models)
 	if type(models) ~= "table" or #models > 512 then
 		return { ok = false, err = "Bad request." }
 	end
-	local deleted = 0
+	local deleted, refundTotal = 0, 0
 	for _, model in ipairs(models) do
-		if deleteOne(player, zone, model) then
+		local ok, _, refund = deleteOne(player, zone, model, 1)
+		if ok then
 			deleted += 1
+			refundTotal += refund
 		end
 	end
 	if deleted == 0 then
 		return { ok = false, err = "Nothing to demolish." }
 	end
-	return { ok = true, deleted = deleted }
+	return { ok = true, deleted = deleted, refund = refundTotal }
 end
 
 -- Rectangle BULLDOZE: demolish everything whose footprint touches the
@@ -1561,16 +2479,83 @@ function PlacementService.handleDeleteRect(player, x1, z1, x2, z2)
 	end
 
 	local items = {}
+	local refundTotal = 0
 	for _, entry in ipairs(victims) do
 		local params = { n = entry.n, x = entry.x, z = entry.z, r = entry.r }
-		if deleteOne(player, zone, entry.model) then
+		local ok, _, refund = deleteOne(player, zone, entry.model, Config.RefundRate)
+		if ok then
 			table.insert(items, params)
+			refundTotal += refund
 		end
 	end
 	if #items == 0 then
 		return { ok = false, err = "Nothing there to bulldoze." }
 	end
-	return { ok = true, deleted = #items, items = items }
+	return { ok = true, deleted = #items, items = items, refund = refundTotal }
+end
+
+-- The Move tool, done properly: free, instant, no blueprint — picking
+-- up your own furniture shouldn't cost half its price.
+function PlacementService.handleMove(player, model, gx, gz, rot)
+	local zone = playerZones[player]
+	if not zone then
+		return { ok = false, err = "You don't have a plot yet." }
+	end
+	if tooFast(player) then
+		return { ok = false, err = "Too fast!" }
+	end
+	if typeof(model) ~= "Instance" or not model:IsA("Model") or model.Parent ~= zone.placed
+		or type(gx) ~= "number" or type(gz) ~= "number" or type(rot) ~= "number"
+	then
+		return { ok = false, err = "Bad request." }
+	end
+	if model:GetAttribute("Blueprint") == true then
+		return { ok = false, err = "That's still under construction!" }
+	end
+	for _, child in ipairs(model:GetChildren()) do
+		if child:IsA("Model") then
+			return { ok = false, err = "Someone lives there — can't move an occupied cell!" }
+		end
+	end
+
+	local id = model:GetAttribute("LayoutId")
+	local layout = layouts[player]
+	for _, entry in ipairs(layout) do
+		if entry.id == id then
+			local asset = Buildables.get(entry.n)
+			if not asset then
+				return { ok = false, err = "Can't move that one." }
+			end
+			gx, gz, rot = math.floor(gx), math.floor(gz), math.floor(rot) % 4
+			local oldW, oldD = GridMath.footprint(asset, entry.r)
+			local newW, newD = GridMath.footprint(asset, rot)
+
+			-- Free the old squares first so moving within your own
+			-- footprint works, then validate the new spot.
+			setRegion(zone, entry.x, entry.z, oldW, oldD, nil)
+			if not GridMath.inBounds(zone.info, gx, gz, newW, newD)
+				or not regionFree(zone, gx, gz, newW, newD)
+			then
+				setRegion(zone, entry.x, entry.z, oldW, oldD, asset.name)
+				return { ok = false, err = "Can't move it there." }
+			end
+
+			model:PivotTo(GridMath.placementPivot(zone.info, asset, gx, gz, rot))
+			model:SetAttribute("GX", gx)
+			model:SetAttribute("GZ", gz)
+			model:SetAttribute("Rot", rot)
+			setRegion(zone, gx, gz, newW, newD, asset.name)
+			entry.x, entry.z, entry.r = gx, gz, rot
+			if asset.door then
+				DoorService.updatePosition(model)
+			end
+			for _, fn in ipairs(movedListeners) do
+				task.spawn(fn, player)
+			end
+			return { ok = true }
+		end
+	end
+	return { ok = false, err = "Couldn't find that object." }
 end
 
 function PlacementService.init()
@@ -1582,13 +2567,14 @@ function PlacementService.init()
 	remotes.DeleteRequest.OnServerInvoke = PlacementService.handleDelete
 	remotes.DeleteManyRequest.OnServerInvoke = PlacementService.handleDeleteMany
 	remotes.DeleteRectRequest.OnServerInvoke = PlacementService.handleDeleteRect
+	remotes.MoveRequest.OnServerInvoke = PlacementService.handleMove
 end
 
 return PlacementService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="13">
+      <Item class="ModuleScript" referent="17">
         <Properties>
           <string name="Name">PlotService</string>
           <string name="Source"><![CDATA[-- PlotService: finds the build zones in YOUR hand-made map and assigns
@@ -1613,6 +2599,7 @@ local SaveService = require(script.Parent.SaveService)
 local PlacementService = require(script.Parent.PlacementService)
 local RoomService = require(script.Parent.RoomService)
 local IntakeService = require(script.Parent.IntakeService)
+local ConstructionService = require(script.Parent.ConstructionService)
 
 local PlotService = {}
 
@@ -1713,6 +2700,7 @@ local function assignZone(player)
 	zone.owner = player
 	PlacementService.assignZone(player, zone, data.layout)
 	RoomService.assignZone(player, zone, data.rooms)
+	ConstructionService.assignPlayer(player, zone)
 	IntakeService.assignPlayer(player, zone, data.intake)
 	SaveService.attachSource(player, "layout", PlacementService.snapshotLayout)
 	SaveService.attachSource(player, "rooms", RoomService.snapshotRooms)
@@ -1745,6 +2733,7 @@ end
 
 local function releaseZone(player)
 	IntakeService.releasePlayer(player)
+	ConstructionService.releasePlayer(player)
 	RoomService.releasePlayer(player)
 	PlacementService.releasePlayer(player)
 	local marker = player:FindFirstChild("BuildZone")
@@ -1774,7 +2763,7 @@ return PlotService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="14">
+      <Item class="ModuleScript" referent="18">
         <Properties>
           <string name="Name">RoomService</string>
           <string name="Source"><![CDATA[-- RoomService: Prison Architect-style room designation. The player picks
@@ -1791,7 +2780,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Config = require(ReplicatedStorage.Shared.Config)
 local GridMath = require(ReplicatedStorage.Shared.GridMath)
 local Buildables = require(script.Parent.Buildables)
-local PlacementService = require(script.Parent.PlacementService)
+local ObjectiveService = require(script.Parent.ObjectiveService)
 
 local RoomService = {}
 
@@ -1845,16 +2834,10 @@ local function renderRow(zone, z)
 	end
 end
 
--- Is this asset name something that walls a room in? Anything from the
--- "Walls & Doors" category (doors count — a doorway isn't a hole).
-local function blocksEnclosure(assetName)
-	local asset = assetName and Buildables.get(assetName)
-	return asset ~= nil and (asset.category == "Walls & Doors" or asset.door)
-end
-
 -- Evaluate a painted region against Config.RoomRequirements. Returns
--- (met, statusText).
-local function evaluateRegion(zone, typeName, regionCells, placedInfos)
+-- (met, statusText). blockedCells = squares covered by BUILT walls/doors
+-- (blueprints don't enclose anything yet).
+local function evaluateRegion(zone, typeName, regionCells, placedInfos, blockedCells)
 	local req = Config.RoomRequirements[typeName]
 	if not req then
 		return true, "✓"
@@ -1876,7 +2859,7 @@ local function evaluateRegion(zone, typeName, regionCells, placedInfos)
 				local nx, nz = cell[1] + step[1], cell[2] + step[2]
 				if not inRegion[nx .. ":" .. nz] then
 					local outOfBounds = nx < 0 or nx >= zone.info.cols or nz < 0 or nz >= zone.info.rows
-					if outOfBounds or not blocksEnclosure(PlacementService.cellAsset(zone, nx, nz)) then
+					if outOfBounds or not blockedCells[nx .. ":" .. nz] then
 						enclosed = false
 					end
 				end
@@ -1901,7 +2884,7 @@ local function evaluateRegion(zone, typeName, regionCells, placedInfos)
 		for attrName, wanted in pairs(req.attrCounts) do
 			local count = 0
 			for _, info in ipairs(placedInfos) do
-				if info.model:GetAttribute(attrName) == true then
+				if info.model:GetAttribute(attrName) == true and not info.blueprint then
 					local overlaps = false
 					for x = info.gx, info.gx + info.w - 1 do
 						for z = info.gz, info.gz + info.d - 1 do
@@ -1935,8 +2918,11 @@ local function rebuildLabels(zone)
 	local state = zoneRooms[zone]
 	state.labelsFolder:ClearAllChildren()
 
-	-- Snapshot the placed objects once for the requirement checks.
+	-- Snapshot the placed objects once for the requirement checks, and
+	-- build the set of squares covered by BUILT walls/doors (blueprints
+	-- don't enclose or satisfy anything until a workman finishes them).
 	local placedInfos = {}
+	local blockedCells = {}
 	for _, model in ipairs(zone.placed:GetChildren()) do
 		local asset = Buildables.get(model:GetAttribute("Asset") or "")
 		local gx = model:GetAttribute("GX")
@@ -1944,9 +2930,21 @@ local function rebuildLabels(zone)
 		local r = model:GetAttribute("Rot")
 		if asset and type(gx) == "number" and type(gz) == "number" and type(r) == "number" then
 			local w, d = GridMath.footprint(asset, r)
-			table.insert(placedInfos, { model = model, gx = gx, gz = gz, w = w, d = d })
+			local blueprint = model:GetAttribute("Blueprint") == true
+			table.insert(placedInfos, { model = model, gx = gx, gz = gz, w = w, d = d, blueprint = blueprint })
+			if not blueprint and (asset.category == "Walls & Doors" or asset.door) then
+				for x = gx, gx + w - 1 do
+					for z = gz, gz + d - 1 do
+						blockedCells[x .. ":" .. z] = true
+					end
+				end
+			end
 		end
 	end
+
+	-- Count the regions that fully meet their requirements, per type —
+	-- published as ReadyRooms_<Type> attributes (objectives watch these).
+	local readyCounts = {}
 
 	local map = state.map
 	local seen = {}
@@ -1995,7 +2993,11 @@ local function rebuildLabels(zone)
 					* CFrame.new((minX + maxX + 1) / 2 * GRID, 0.22, (minZ + maxZ + 1) / 2 * GRID)
 					* CFrame.Angles(0, math.pi, 0)
 
-				local met, statusText = evaluateRegion(zone, Config.RoomTypes[t].name, regionCells, placedInfos)
+				local typeName = Config.RoomTypes[t].name
+				local met, statusText = evaluateRegion(zone, typeName, regionCells, placedInfos, blockedCells)
+				if met then
+					readyCounts[typeName] = (readyCounts[typeName] or 0) + 1
+				end
 
 				local surface = Instance.new("SurfaceGui")
 				surface.Face = Enum.NormalId.Top
@@ -2026,6 +3028,12 @@ local function rebuildLabels(zone)
 
 				labelPart.Parent = state.labelsFolder
 			end
+		end
+	end
+
+	if zone.owner then
+		for _, roomType in ipairs(Config.RoomTypes) do
+			zone.owner:SetAttribute("ReadyRooms_" .. roomType.name, readyCounts[roomType.name] or 0)
 		end
 	end
 end
@@ -2071,6 +3079,7 @@ function RoomService.assignZone(player, zone, savedRooms)
 			end
 		end)
 	end
+	state.queueRebuild = queueRebuild
 	table.insert(state.connections, zone.placed.ChildAdded:Connect(queueRebuild))
 	table.insert(state.connections, zone.placed.ChildRemoved:Connect(queueRebuild))
 
@@ -2139,6 +3148,15 @@ end
 
 -- Player requests ---------------------------------------------------------
 
+-- Re-evaluate requirements (used after moves and blueprint completions).
+function RoomService.poke(player)
+	local zone = playerZones[player]
+	local state = zone and zoneRooms[zone]
+	if state and state.queueRebuild then
+		state.queueRebuild()
+	end
+end
+
 function RoomService.handlePaint(player, typeId, x1, z1, x2, z2)
 	local zone = playerZones[player]
 	if not zone then
@@ -2163,6 +3181,9 @@ function RoomService.handlePaint(player, typeId, x1, z1, x2, z2)
 	z2 = math.clamp(math.floor(z2), 0, zone.info.rows - 1)
 
 	paintRect(zone, typeId, x1, z1, x2, z2)
+	if typeId ~= 0 and Config.RoomTypes[typeId].name == "Cell" then
+		ObjectiveService.notify(player, "cell_painted")
+	end
 	return { ok = true }
 end
 
@@ -2175,7 +3196,7 @@ return RoomService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="15">
+      <Item class="ModuleScript" referent="19">
         <Properties>
           <string name="Name">SaveService</string>
           <string name="Source"><![CDATA[-- SaveService: cloud-saves each player's prison layout so it's rebuilt
@@ -2250,6 +3271,8 @@ local function onPlayerAdded(player)
 		rooms = saved and saved.rooms or {},
 		intake = saved and saved.intake or nil,
 		cash = saved and saved.cash or 0,
+		totalSpent = saved and saved.totalSpent or 0,
+		objectives = saved and saved.objectives or nil,
 		-- Only allowed to write to the cloud if the read worked. A failed
 		-- read must never let empty data overwrite a real save.
 		canSave = store ~= nil and loadOk,
@@ -2268,6 +3291,8 @@ local function saveNow(player)
 		rooms = st.sources.rooms and st.sources.rooms(player) or st.rooms,
 		intake = st.sources.intake and st.sources.intake(player) or st.intake,
 		cash = st.cash,
+		totalSpent = st.totalSpent,
+		objectives = st.objectives,
 	}
 	local ok, err = pcall(function()
 		store:UpdateAsync(keyFor(player), function()
@@ -2332,27 +3357,29 @@ return SaveService
       </Item>
     </Item>
   </Item>
-  <Item class="StarterPlayer" referent="16">
+  <Item class="StarterPlayer" referent="20">
     <Properties>
       <string name="Name">StarterPlayer</string>
     </Properties>
-    <Item class="StarterPlayerScripts" referent="17">
+    <Item class="StarterPlayerScripts" referent="21">
       <Properties>
         <string name="Name">StarterPlayerScripts</string>
       </Properties>
-      <Item class="LocalScript" referent="18">
+      <Item class="LocalScript" referent="22">
         <Properties>
           <string name="Name">Client</string>
           <string name="Source"><![CDATA[-- Lockdown client bootstrap. Runs on each player's own device and starts
 -- what they personally see: build mode (with the top-down camera), the
--- intake panel, and the inmate life animation.
+-- cash HUD, the objective card, the intake panel, and NPC animation.
 
 require(script.BuildMode).start()
+require(script.CashHud).start()
+require(script.ObjectivePanel).start()
 require(script.IntakePanel).start()
 require(script.InmateAnimator).start()
 ]]></string>
         </Properties>
-        <Item class="ModuleScript" referent="19">
+        <Item class="ModuleScript" referent="23">
           <Properties>
             <string name="Name">BuildCamera</string>
             <string name="Source"><![CDATA[-- BuildCamera: the Prison Architect view. While build mode is open the
@@ -2612,7 +3639,7 @@ return BuildCamera
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="20">
+        <Item class="ModuleScript" referent="24">
           <Properties>
             <string name="Name">BuildMode</string>
             <string name="Source"><![CDATA[-- BuildMode: the whole building experience on the player's screen,
@@ -2644,6 +3671,7 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 
 local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
+local Format = require(ReplicatedStorage.Shared:WaitForChild("Format"))
 local GridMath = require(ReplicatedStorage.Shared:WaitForChild("GridMath"))
 local AssetCatalog = require(ReplicatedStorage.Shared:WaitForChild("AssetCatalog"))
 local BuildCamera = require(script.Parent.BuildCamera)
@@ -2653,6 +3681,7 @@ local BuildMode = {}
 local GRID = Config.GridSize
 local GREEN = Color3.fromRGB(80, 255, 120)
 local RED = Color3.fromRGB(255, 80, 80)
+local ORANGE = Color3.fromRGB(255, 170, 60) -- valid spot, can't afford it
 local PANEL_BG = Color3.fromRGB(20, 24, 20)
 local BUTTON_BG = Color3.fromRGB(45, 52, 45)
 local SELECTED_BG = Color3.fromRGB(60, 110, 60)
@@ -2668,7 +3697,21 @@ function BuildMode.start()
 	local foundationRequest = remotes:WaitForChild("FoundationRequest")
 	local placeRectRequest = remotes:WaitForChild("PlaceRectRequest")
 	local deleteRectRequest = remotes:WaitForChild("DeleteRectRequest")
+	local moveRequest = remotes:WaitForChild("MoveRequest")
 	local roomPaintRequest = remotes:WaitForChild("RoomPaintRequest")
+
+	-- Mirror of the wallet, for the can-you-afford-it ghost tint.
+	local cashNow = 0
+	task.spawn(function()
+		local leaderstats = player:WaitForChild("leaderstats", 60)
+		local cashValue = leaderstats and leaderstats:WaitForChild("Cash", 60)
+		if cashValue then
+			cashNow = cashValue.Value
+			cashValue.Changed:Connect(function(value)
+				cashNow = value
+			end)
+		end
+	end)
 
 	local buildablesFolder = ReplicatedStorage:WaitForChild(Config.BuildablesFolderName)
 	local catalogByName, catalogOrdered = AssetCatalog.load(buildablesFolder)
@@ -2717,10 +3760,13 @@ function BuildMode.start()
 	local stretchBox = nil
 	local hoverHighlight = nil
 	local zoneBox = nil
+	local movingModel = nil -- the object currently carried by the Move tool
+	local movingFrom = nil -- its original {n, x, z, r}, for undo
 
 	-- Undo: a stack of inverse actions (Ctrl+Z or the ↩ button).
 	--   { kind = "place", models = {Model, ...} }        -> demolish them
 	--   { kind = "delete", items = { {n, x, z, r}, ... } } -> re-place them
+	--   { kind = "move", model, from = {x, z, r} }        -> move it back
 	local undoStack = {}
 	local function pushUndo(entry)
 		table.insert(undoStack, entry)
@@ -2916,8 +3962,10 @@ function BuildMode.start()
 		ghost:PivotTo(GridMath.placementPivot(zone.info, selected, gx, gz, rot))
 		ghost.Parent = workspace
 		ghostCell = { gx, gz }
-		ghostValid = regionFree(gx, gz, w, d)
-		local color = ghostValid and GREEN or RED
+		local spotFree = regionFree(gx, gz, w, d)
+		local affordable = Config.FreeBuild or movingModel ~= nil or selected.price <= cashNow
+		ghostValid = spotFree and affordable
+		local color = not spotFree and RED or (not affordable and ORANGE) or GREEN
 		ghostHighlight.FillColor = color
 		ghostHighlight.OutlineColor = color
 	end
@@ -3257,6 +4305,20 @@ function BuildMode.start()
 		label.Text = asset.name
 		label.Parent = tile
 
+		local priceTag = Instance.new("TextLabel")
+		priceTag.Position = UDim2.new(0, 4, 0, 4)
+		priceTag.Size = UDim2.new(0, 52, 0, 15)
+		priceTag.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+		priceTag.BackgroundTransparency = 0.4
+		priceTag.Font = Enum.Font.GothamBold
+		priceTag.TextScaled = true
+		priceTag.TextColor3 = Color3.fromRGB(150, 255, 160)
+		priceTag.Text = Format.money(asset.price)
+		local priceCorner = Instance.new("UICorner")
+		priceCorner.CornerRadius = UDim.new(0, 5)
+		priceCorner.Parent = priceTag
+		priceTag.Parent = tile
+
 		tile.Activated:Connect(function()
 			selectAsset(asset)
 		end)
@@ -3317,6 +4379,8 @@ function BuildMode.start()
 		local wasOff = mode == "off"
 		mode = newMode
 		pressing = false
+		movingModel = nil
+		movingFrom = nil
 		destroyGhost()
 		hideStretchBox()
 		clearHover()
@@ -3394,13 +4458,14 @@ function BuildMode.start()
 		hideStretchBox()
 		makeGhost(asset)
 		refreshSelectionLook()
+		local price = Config.FreeBuild and "" or (" · " .. Format.money(asset.price))
 		local style = dragStyleOf(asset)
 		if style == "line" then
-			setStatusDefault("Placing " .. asset.name .. " — drag for a whole line! (R rotates)")
+			setStatusDefault("Placing " .. asset.name .. price .. " — drag for a whole line! (R rotates)")
 		elseif style == "rect" then
-			setStatusDefault("Placing " .. asset.name .. " — drag to fill an area!")
+			setStatusDefault("Placing " .. asset.name .. price .. " — drag to fill an area!")
 		else
-			setStatusDefault("Placing " .. asset.name .. " (R or ↻ rotates)")
+			setStatusDefault("Placing " .. asset.name .. price .. " (R or ↻ rotates)")
 		end
 	end
 
@@ -3512,7 +4577,11 @@ function BuildMode.start()
 				pushUndo({ kind = "place", models = result.models })
 			end
 			playSound("electronicpingshort.wav", 0.5)
-			flashStatus(("%d × %s placed!"):format(result.placed, selected.name), GREEN)
+			if result.broke then
+				flashStatus(("%d placed — then the money ran out!"):format(result.placed), ORANGE)
+			else
+				flashStatus(("%d × %s placed!"):format(result.placed, selected.name), GREEN)
+			end
 		elseif ok and result then
 			flashStatus(result.err or "Couldn't build that line.", RED)
 		end
@@ -3527,7 +4596,11 @@ function BuildMode.start()
 				pushUndo({ kind = "place", models = result.models })
 			end
 			playSound("electronicpingshort.wav", 0.5)
-			flashStatus(("%d × %s placed!"):format(result.placed, selected.name), GREEN)
+			if result.broke then
+				flashStatus(("%d placed — then the money ran out!"):format(result.placed), ORANGE)
+			else
+				flashStatus(("%d × %s placed!"):format(result.placed, selected.name), GREEN)
+			end
 		elseif ok and result then
 			flashStatus(result.err or "Couldn't fill that area.", RED)
 		end
@@ -3542,7 +4615,11 @@ function BuildMode.start()
 				pushUndo({ kind = "place", models = result.models })
 			end
 			playSound("electronicpingshort.wav", 0.5)
-			flashStatus(("Foundation built — %d pieces. Now add a door!"):format(result.built), GREEN)
+			if result.broke then
+				flashStatus(("Foundation ran out of cash after %d pieces!"):format(result.built), ORANGE)
+			else
+				flashStatus(("Foundation planned — %d pieces. Now add a door!"):format(result.built), GREEN)
+			end
 		elseif ok and result then
 			flashStatus(result.err or "Couldn't build that foundation.", RED)
 		end
@@ -3612,7 +4689,11 @@ function BuildMode.start()
 				pushUndo({ kind = "delete", items = { params } })
 			end
 			playSound("snap.mp3", 0.5)
-			flashStatus("Demolished!", GREEN)
+			if result.refund and result.refund > 0 then
+				flashStatus("Demolished! +" .. Format.money(result.refund), GREEN)
+			else
+				flashStatus("Demolished!", GREEN)
+			end
 		elseif ok and result then
 			flashStatus(result.err or "Couldn't demolish that.", RED)
 		end
@@ -3627,15 +4708,39 @@ function BuildMode.start()
 				pushUndo({ kind = "delete", items = result.items })
 			end
 			playSound("snap.mp3", 0.5)
-			flashStatus(("Bulldozed %d object%s"):format(result.deleted, result.deleted == 1 and "" or "s"), GREEN)
+			local refundText = (result.refund and result.refund > 0) and (" · +" .. Format.money(result.refund)) or ""
+			flashStatus(("Bulldozed %d object%s%s"):format(result.deleted, result.deleted == 1 and "" or "s", refundText), GREEN)
 		elseif ok and result then
 			flashStatus(result.err or "Nothing there to bulldoze.", RED)
 		end
 	end
 
-	-- The Move tool: pick an object up (it's demolished but remembered),
-	-- then place it wherever — Ctrl+Z puts it back where it was.
+	-- The Move tool: pick up, carry the ghost, click to relocate. The
+	-- server does one free, instant move — no demolish, no cost.
 	tryMove = function()
+		if movingModel and ghostCell then
+			-- Second click: commit the move.
+			local ok, result = pcall(function()
+				return moveRequest:InvokeServer(movingModel, ghostCell[1], ghostCell[2], rot)
+			end)
+			if ok and result and result.ok then
+				if movingFrom then
+					pushUndo({ kind = "move", model = movingModel, from = movingFrom })
+				end
+				playSound("electronicpingshort.wav", 0.5)
+				flashStatus("Moved!", GREEN)
+				movingModel = nil
+				movingFrom = nil
+				destroyGhost()
+				selected = nil
+				setStatusDefault("Move: click an object to pick it up")
+			elseif ok and result then
+				flashStatus(result.err or "Can't move it there.", RED)
+			end
+			return
+		end
+
+		-- First click: pick something up.
 		local model = findPlacedModel()
 		if not model then
 			return
@@ -3646,19 +4751,13 @@ function BuildMode.start()
 			flashStatus("Can't move that one.", RED)
 			return
 		end
-		local ok, result = pcall(function()
-			return deleteRequest:InvokeServer(model)
-		end)
-		if not (ok and result and result.ok) then
-			flashStatus((ok and result and result.err) or "Couldn't pick that up.", RED)
-			return
-		end
-		pushUndo({ kind = "delete", items = { params } })
-		currentCategory = asset.category
-		setMode("objects")
-		selectAsset(asset)
+		movingModel = model
+		movingFrom = { x = params.x, z = params.z, r = params.r }
+		selected = asset
 		rot = params.r
-		flashStatus("Moving " .. asset.name .. " — click to re-place (Ctrl+Z puts it back)", Color3.fromRGB(255, 230, 120))
+		clearHover()
+		makeGhost(asset)
+		setStatusDefault("Carrying " .. asset.name .. " — click to place, right-click to cancel")
 	end
 
 	doUndo = function()
@@ -3683,6 +4782,14 @@ function BuildMode.start()
 			end)
 			if ok and result and result.ok then
 				flashStatus(("Undid %d placement%s"):format(result.deleted, result.deleted == 1 and "" or "s"), GREEN)
+			end
+		elseif entry.kind == "move" then
+			if typeof(entry.model) == "Instance" and entry.model.Parent ~= nil then
+				local ok, result = pcall(function()
+					return moveRequest:InvokeServer(entry.model, entry.from.x, entry.from.z, entry.from.r)
+				end)
+				flashStatus((ok and result and result.ok) and "Moved back!" or "Couldn't move it back.",
+					(ok and result and result.ok) and GREEN or RED)
 			end
 		elseif entry.kind == "delete" then
 			local restored = 0
@@ -3749,7 +4856,13 @@ function BuildMode.start()
 			end
 		elseif input.UserInputType == Enum.UserInputType.MouseButton2 then
 			-- Right-click clears the current selection (PA habit).
-			if mode == "objects" and selected then
+			if mode == "move" and movingModel then
+				movingModel = nil
+				movingFrom = nil
+				selected = nil
+				destroyGhost()
+				setStatusDefault("Move: click an object to pick it up")
+			elseif mode == "objects" and selected then
 				selected = nil
 				destroyGhost()
 				refreshSelectionLook()
@@ -3857,6 +4970,8 @@ function BuildMode.start()
 			if gx then
 				showStretchBox(pressStartCell[1], pressStartCell[2], gx, gz, RED)
 			end
+		elseif mode == "move" and movingModel then
+			updateGhost()
 		elseif mode == "delete" or mode == "move" then
 			local model = findPlacedModel()
 			if model then
@@ -3880,7 +4995,170 @@ return BuildMode
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="21">
+        <Item class="ModuleScript" referent="25">
+          <Properties>
+            <string name="Name">CashHud</string>
+            <string name="Source"><![CDATA[-- CashHud: the money display, back from the dead for Phase 3.
+--   * Top-center cash counter with a smooth count-up.
+--   * Little "+$120 / -$40" blips floating off it on every change.
+--   * The mini cashflow report: income per minute from housed prisoners,
+--     plus what this session has earned and spent.
+--   * A warning line when handcuffed arrivals can't reach any cell.
+-- Reads leaderstats.Cash and the attributes the server publishes.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+
+local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
+local Format = require(ReplicatedStorage.Shared:WaitForChild("Format"))
+
+local CashHud = {}
+
+function CashHud.start()
+	local player = Players.LocalPlayer
+	local playerGui = player:WaitForChild("PlayerGui")
+	local leaderstats = player:WaitForChild("leaderstats")
+	local cashValue = leaderstats:WaitForChild("Cash")
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "LockdownCash"
+	gui.ResetOnSpawn = false
+
+	local panel = Instance.new("Frame")
+	panel.AnchorPoint = Vector2.new(0.5, 0)
+	panel.Position = UDim2.new(0.5, 0, 0, 8)
+	panel.Size = UDim2.new(0, 240, 0, 66)
+	panel.BackgroundColor3 = Color3.fromRGB(20, 24, 20)
+	panel.BackgroundTransparency = 0.25
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 12)
+	corner.Parent = panel
+
+	local cashLabel = Instance.new("TextLabel")
+	cashLabel.Size = UDim2.new(1, -16, 0, 34)
+	cashLabel.Position = UDim2.new(0, 8, 0, 4)
+	cashLabel.BackgroundTransparency = 1
+	cashLabel.Font = Enum.Font.GothamBlack
+	cashLabel.TextScaled = true
+	cashLabel.TextColor3 = Color3.fromRGB(140, 255, 150)
+	cashLabel.Text = Format.money(cashValue.Value)
+	cashLabel.Parent = panel
+
+	local incomeLabel = Instance.new("TextLabel")
+	incomeLabel.Size = UDim2.new(1, -16, 0, 14)
+	incomeLabel.Position = UDim2.new(0, 8, 0, 38)
+	incomeLabel.BackgroundTransparency = 1
+	incomeLabel.Font = Enum.Font.GothamBold
+	incomeLabel.TextScaled = true
+	incomeLabel.TextColor3 = Color3.fromRGB(210, 210, 210)
+	incomeLabel.Parent = panel
+
+	local sessionLabel = Instance.new("TextLabel")
+	sessionLabel.Size = UDim2.new(1, -16, 0, 12)
+	sessionLabel.Position = UDim2.new(0, 8, 0, 52)
+	sessionLabel.BackgroundTransparency = 1
+	sessionLabel.Font = Enum.Font.Gotham
+	sessionLabel.TextScaled = true
+	sessionLabel.TextColor3 = Color3.fromRGB(170, 170, 170)
+	sessionLabel.Text = ""
+	sessionLabel.Parent = panel
+
+	local stuckLabel = Instance.new("TextLabel")
+	stuckLabel.AnchorPoint = Vector2.new(0.5, 0)
+	stuckLabel.Position = UDim2.new(0.5, 0, 1, 4)
+	stuckLabel.Size = UDim2.new(0, 340, 0, 20)
+	stuckLabel.BackgroundTransparency = 1
+	stuckLabel.Font = Enum.Font.GothamBold
+	stuckLabel.TextScaled = true
+	stuckLabel.TextColor3 = Color3.fromRGB(255, 170, 110)
+	stuckLabel.TextStrokeTransparency = 0.5
+	stuckLabel.Text = ""
+	stuckLabel.Parent = panel
+
+	panel.Parent = gui
+	gui.Parent = playerGui
+
+	-- Smooth count-up toward the real value.
+	local shown = cashValue.Value
+	RunService.RenderStepped:Connect(function(dt)
+		local target = cashValue.Value
+		if shown ~= target then
+			shown += (target - shown) * math.min(dt * 6, 1)
+			if math.abs(target - shown) < 1 then
+				shown = target
+			end
+			cashLabel.Text = Format.money(shown)
+		end
+	end)
+
+	-- Delta blips + the session tally.
+	local earned, spent = 0, 0
+	local lastValue = cashValue.Value
+	local function refreshSession()
+		sessionLabel.Text = ("session: +%s · -%s"):format(Format.money(earned), Format.money(spent))
+	end
+	cashValue.Changed:Connect(function(value)
+		local delta = value - lastValue
+		lastValue = value
+		if delta == 0 then
+			return
+		end
+		if delta > 0 then
+			earned += delta
+		else
+			spent -= delta
+		end
+		refreshSession()
+
+		local blip = Instance.new("TextLabel")
+		blip.AnchorPoint = Vector2.new(0.5, 0)
+		blip.Position = UDim2.new(0.5, math.random(-40, 40), 0, 40)
+		blip.Size = UDim2.new(0, 120, 0, 22)
+		blip.BackgroundTransparency = 1
+		blip.Font = Enum.Font.GothamBlack
+		blip.TextScaled = true
+		blip.TextColor3 = delta > 0 and Color3.fromRGB(140, 255, 150) or Color3.fromRGB(255, 130, 120)
+		blip.TextStrokeTransparency = 0.5
+		blip.Text = (delta > 0 and "+" or "-") .. Format.money(math.abs(delta))
+		blip.Parent = panel
+		TweenService:Create(blip, TweenInfo.new(1.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Position = blip.Position + UDim2.new(0, 0, 0, 34),
+			TextTransparency = 1,
+			TextStrokeTransparency = 1,
+		}):Play()
+		task.delay(1.3, function()
+			blip:Destroy()
+		end)
+	end)
+	refreshSession()
+
+	-- Income line + gate warning, from published attributes.
+	local function refreshIncome()
+		local housed = player:GetAttribute("PrisonHoused") or 0
+		local perMin = housed * Config.GrantPerPrisoner * (60 / Config.GrantInterval)
+		incomeLabel.Text = ("%d prisoner%s · %s/min in grants"):format(
+			housed, housed == 1 and "" or "s", Format.money(perMin))
+	end
+	local function refreshStuck()
+		if player:GetAttribute("IntakeStuck") == true then
+			stuckLabel.Text = "⚠ Arrivals can't reach a cell — is there a door path?"
+		else
+			stuckLabel.Text = ""
+		end
+	end
+	player:GetAttributeChangedSignal("PrisonHoused"):Connect(refreshIncome)
+	player:GetAttributeChangedSignal("IntakeStuck"):Connect(refreshStuck)
+	refreshIncome()
+	refreshStuck()
+end
+
+return CashHud
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="26">
           <Properties>
             <string name="Name">InmateAnimator</string>
             <string name="Source"><![CDATA[-- InmateAnimator: brings the blocky prisoners to life — entirely on each
@@ -3953,6 +5231,8 @@ function InmateAnimator.start()
 				target = nil,
 				phase = 0,
 				escortTo = nil,
+				pathKey = nil, -- which EscortStart the cached path belongs to
+				path = nil, -- { points = {Vector3...}, lengths = {seg lens}, total }
 			}
 			for _, part in ipairs(model:GetChildren()) do
 				if part:IsA("BasePart") and part.Name ~= "Cuffs" then
@@ -4014,22 +5294,73 @@ function InmateAnimator.start()
 			local walking = false
 			local bob = 0
 
+			local working = model:GetAttribute("Working") == true
+
 			if escortStart then
-				-- ESCORTED: follow the server's straight line on a shared
-				-- clock, so everyone sees the same walk.
-				local from = model:GetAttribute("EscortFrom")
-				local to = model:GetAttribute("EscortTo")
+				-- WALKING: follow the server's waypoint path on a shared
+				-- clock, so everyone sees the same walk. (Falls back to a
+				-- straight from->to line if no path was stamped.)
 				local dur = model:GetAttribute("EscortDur") or 1
-				if typeof(from) == "Vector3" and typeof(to) == "Vector3" then
-					info.escortTo = to
-					local alpha = math.clamp((now - escortStart) / dur, 0, 1)
-					info.pos = from:Lerp(to, alpha)
-					local dir = to - from
-					if dir.Magnitude > 0.01 then
-						info.yaw = math.atan2(-dir.X, -dir.Z)
+				if info.pathKey ~= escortStart then
+					info.pathKey = escortStart
+					info.path = nil
+					local pathString = model:GetAttribute("EscortPath")
+					local y = model:GetAttribute("EscortY") or info.pos.Y
+					if type(pathString) == "string" then
+						local points = {}
+						for pair in string.gmatch(pathString, "[^|]+") do
+							local xs, zs = string.match(pair, "([^,]+),([^,]+)")
+							local px, pz = tonumber(xs), tonumber(zs)
+							if px and pz then
+								table.insert(points, Vector3.new(px, y, pz))
+							end
+						end
+						if #points >= 2 then
+							local lengths, total = {}, 0
+							for i = 2, #points do
+								local seg = (points[i] - points[i - 1]).Magnitude
+								table.insert(lengths, seg)
+								total += seg
+							end
+							info.path = { points = points, lengths = lengths, total = math.max(total, 0.001) }
+						end
 					end
-					walking = alpha < 1
 				end
+
+				local alpha = math.clamp((now - escortStart) / dur, 0, 1)
+				if info.path then
+					local walked = alpha * info.path.total
+					local points = info.path.points
+					for i = 1, #info.path.lengths do
+						local seg = info.path.lengths[i]
+						if walked <= seg or i == #info.path.lengths then
+							local t2 = seg > 0 and math.clamp(walked / seg, 0, 1) or 1
+							info.pos = points[i]:Lerp(points[i + 1], t2)
+							local dir = points[i + 1] - points[i]
+							if dir.Magnitude > 0.01 then
+								info.yaw = math.atan2(-dir.X, -dir.Z)
+							end
+							break
+						end
+						walked -= seg
+					end
+					info.escortTo = points[#points]
+				else
+					local from = model:GetAttribute("EscortFrom")
+					local to = model:GetAttribute("EscortTo")
+					if typeof(from) == "Vector3" and typeof(to) == "Vector3" then
+						info.escortTo = to
+						info.pos = from:Lerp(to, alpha)
+						local dir = to - from
+						if dir.Magnitude > 0.01 then
+							info.yaw = math.atan2(-dir.X, -dir.Z)
+						end
+					end
+				end
+				walking = alpha < 1
+			elseif working then
+				-- HAMMERING a blueprint: plant the feet, swing the arms.
+				bob = math.abs(math.sin(t * 6 + info.seed)) * 0.06
 			elseif cuffed then
 				-- HANDCUFFED at the gate: stand still, shift nervously.
 				bob = math.abs(math.sin(t * 1.4 + info.seed)) * 0.05
@@ -4077,7 +5408,11 @@ function InmateAnimator.start()
 					part.CFrame = root * info.hips[name] * CFrame.Angles(legSwing, 0, 0) * CFrame.new(0, -1, 0)
 				elseif name == "LeftArm" or name == "RightArm" then
 					local armCF
-					if cuffed then
+					if working then
+						-- Alternating hammer swings.
+						local swingPhase = t * 10 + info.seed + (name == "LeftArm" and 0 or math.pi)
+						armCF = CFrame.Angles(-0.6 + math.sin(swingPhase) * 0.55, 0, 0)
+					elseif cuffed then
 						-- Hands bound in front at the waist.
 						armCF = CFrame.Angles(math.rad(-50), 0, name == "LeftArm" and math.rad(12) or math.rad(-12))
 					elseif walking then
@@ -4104,7 +5439,7 @@ return InmateAnimator
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="22">
+        <Item class="ModuleScript" referent="27">
           <Properties>
             <string name="Name">IntakePanel</string>
             <string name="Source"><![CDATA[-- IntakePanel: the warden's version of Prison Architect's Intake report.
@@ -4259,6 +5594,103 @@ function IntakePanel.start()
 end
 
 return IntakePanel
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="28">
+          <Properties>
+            <string name="Name">ObjectivePanel</string>
+            <string name="Source"><![CDATA[-- ObjectivePanel: the current starter objective (PA's grants, simplified)
+-- as a small card in the top-left. Reads the attributes ObjectiveService
+-- publishes: ObjText, ObjProgress, ObjTarget, ObjReward, ObjDone.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Format = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Format"))
+
+local ObjectivePanel = {}
+
+function ObjectivePanel.start()
+	local player = Players.LocalPlayer
+	local playerGui = player:WaitForChild("PlayerGui")
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "LockdownObjective"
+	gui.ResetOnSpawn = false
+
+	local card = Instance.new("Frame")
+	card.Position = UDim2.new(0, 12, 0, 12)
+	card.Size = UDim2.new(0, 250, 0, 74)
+	card.BackgroundColor3 = Color3.fromRGB(20, 24, 20)
+	card.BackgroundTransparency = 0.25
+	card.Visible = false
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 12)
+	corner.Parent = card
+
+	local title = Instance.new("TextLabel")
+	title.Position = UDim2.new(0, 10, 0, 4)
+	title.Size = UDim2.new(1, -20, 0, 16)
+	title.BackgroundTransparency = 1
+	title.Font = Enum.Font.GothamBold
+	title.TextScaled = true
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.TextColor3 = Color3.fromRGB(255, 220, 130)
+	title.Text = "📋 OBJECTIVE"
+	title.Parent = card
+
+	local text = Instance.new("TextLabel")
+	text.Position = UDim2.new(0, 10, 0, 22)
+	text.Size = UDim2.new(1, -20, 0, 30)
+	text.BackgroundTransparency = 1
+	text.Font = Enum.Font.GothamBold
+	text.TextScaled = true
+	text.TextWrapped = true
+	text.TextXAlignment = Enum.TextXAlignment.Left
+	text.TextColor3 = Color3.fromRGB(255, 255, 255)
+	text.Parent = card
+
+	local progress = Instance.new("TextLabel")
+	progress.Position = UDim2.new(0, 10, 0, 54)
+	progress.Size = UDim2.new(1, -20, 0, 16)
+	progress.BackgroundTransparency = 1
+	progress.Font = Enum.Font.Gotham
+	progress.TextScaled = true
+	progress.TextXAlignment = Enum.TextXAlignment.Left
+	progress.TextColor3 = Color3.fromRGB(200, 200, 200)
+	progress.Parent = card
+
+	card.Parent = gui
+	gui.Parent = playerGui
+
+	local function refresh()
+		if player:GetAttribute("ObjDone") == true then
+			card.Visible = true
+			text.Text = "All objectives complete! 🎉"
+			progress.Text = "More coming in later phases."
+			return
+		end
+		local objText = player:GetAttribute("ObjText")
+		if type(objText) ~= "string" then
+			card.Visible = false
+			return
+		end
+		card.Visible = true
+		text.Text = objText
+		local current = player:GetAttribute("ObjProgress") or 0
+		local target = player:GetAttribute("ObjTarget") or 0
+		local reward = player:GetAttribute("ObjReward") or 0
+		progress.Text = ("%d / %d  ·  reward %s"):format(current, target, Format.money(reward))
+	end
+
+	for _, attr in ipairs({ "ObjText", "ObjProgress", "ObjTarget", "ObjReward", "ObjDone" }) do
+		player:GetAttributeChangedSignal(attr):Connect(refresh)
+	end
+	refresh()
+end
+
+return ObjectivePanel
 ]]></string>
           </Properties>
         </Item>

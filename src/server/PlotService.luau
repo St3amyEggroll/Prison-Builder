@@ -20,6 +20,7 @@ local SaveService = require(script.Parent.SaveService)
 local PlacementService = require(script.Parent.PlacementService)
 local RoomService = require(script.Parent.RoomService)
 local IntakeService = require(script.Parent.IntakeService)
+local ConstructionService = require(script.Parent.ConstructionService)
 
 local PlotService = {}
 
@@ -120,6 +121,7 @@ local function assignZone(player)
 	zone.owner = player
 	PlacementService.assignZone(player, zone, data.layout)
 	RoomService.assignZone(player, zone, data.rooms)
+	ConstructionService.assignPlayer(player, zone)
 	IntakeService.assignPlayer(player, zone, data.intake)
 	SaveService.attachSource(player, "layout", PlacementService.snapshotLayout)
 	SaveService.attachSource(player, "rooms", RoomService.snapshotRooms)
@@ -152,6 +154,7 @@ end
 
 local function releaseZone(player)
 	IntakeService.releasePlayer(player)
+	ConstructionService.releasePlayer(player)
 	RoomService.releasePlayer(player)
 	PlacementService.releasePlayer(player)
 	local marker = player:FindFirstChild("BuildZone")

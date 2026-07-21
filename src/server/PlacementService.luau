@@ -13,6 +13,9 @@ local GridMath = require(ReplicatedStorage.Shared.GridMath)
 local Config = require(ReplicatedStorage.Shared.Config)
 local Buildables = require(script.Parent.Buildables)
 local DoorService = require(script.Parent.DoorService)
+local EconomyService = require(script.Parent.EconomyService)
+local ObjectiveService = require(script.Parent.ObjectiveService)
+local ConstructionService = require(script.Parent.ConstructionService)
 
 local PlacementService = {}
 
@@ -59,9 +62,15 @@ function PlacementService.cellAsset(zone, gx, gz)
 	return taken and taken[gx .. ":" .. gz] or nil
 end
 
+local movedListeners = {} -- fns(player) — bootstrap wires room/intake pokes
+function PlacementService.onMoved(fn)
+	table.insert(movedListeners, fn)
+end
+
 -- The one true "make it exist" function — used by live purchases and by
--- save-file rebuilds, so they can never behave differently.
-local function placeInternal(player, zone, asset, gx, gz, rot)
+-- save-file rebuilds, so they can never behave differently. instant=true
+-- (save rebuilds, Config.InstantBuild) skips the blueprint/workman step.
+local function placeInternal(player, zone, asset, gx, gz, rot, instant)
 	local w, d = GridMath.footprint(asset, rot)
 	if not GridMath.inBounds(zone.info, gx, gz, w, d) then
 		return nil, "That spot is outside your plot."
@@ -88,8 +97,12 @@ local function placeInternal(player, zone, asset, gx, gz, rot)
 	model:SetAttribute("Rot", rot)
 	model.Parent = zone.placed
 
-	if asset.door then
-		DoorService.register(model, player)
+	if instant then
+		if asset.door then
+			DoorService.register(model, player)
+		end
+	else
+		ConstructionService.queueBlueprint(player, zone, model, asset)
 	end
 
 	setRegion(zone, gx, gz, w, d, asset.name)
@@ -117,7 +130,7 @@ function PlacementService.assignZone(player, zone, savedLayout)
 			then
 				local asset = Buildables.get(entry.n)
 				if asset then
-					placeInternal(player, zone, asset, math.floor(entry.x), math.floor(entry.z), math.floor(entry.r) % 4)
+					placeInternal(player, zone, asset, math.floor(entry.x), math.floor(entry.z), math.floor(entry.r) % 4, true)
 				end
 			end
 		end
@@ -156,6 +169,26 @@ local function tooFast(player)
 	return false
 end
 
+-- Charge, then place; refund if placement failed. Returns the model plus
+-- an error kind ("cash" means stop trying, anything else means that one
+-- square failed).
+local function paidPlace(player, zone, asset, gx, gz, rot)
+	if not EconomyService.tryCharge(player, asset.price) then
+		return nil, "cash"
+	end
+	local model, err = placeInternal(player, zone, asset, gx, gz, rot, Config.InstantBuild)
+	if not model then
+		EconomyService.credit(player, asset.price)
+		return nil, err
+	end
+	if asset.category == "Walls & Doors" then
+		ObjectiveService.notify(player, "wall_built")
+	end
+	return model
+end
+
+local NEED_CASH = "Not enough cash!"
+
 function PlacementService.handlePlace(player, assetName, gx, gz, rot)
 	local zone = playerZones[player]
 	if not zone then
@@ -172,11 +205,11 @@ function PlacementService.handlePlace(player, assetName, gx, gz, rot)
 		return { ok = false, err = "Unknown asset." }
 	end
 
-	local model, err = placeInternal(player, zone, asset, math.floor(gx), math.floor(gz), math.floor(rot) % 4)
+	local model, err = paidPlace(player, zone, asset, math.floor(gx), math.floor(gz), math.floor(rot) % 4)
 	if not model then
-		return { ok = false, err = err }
+		return { ok = false, err = err == "cash" and NEED_CASH or err }
 	end
-	return { ok = true, model = model }
+	return { ok = true, model = model, spent = Config.FreeBuild and 0 or asset.price }
 end
 
 -- Drag-to-build: place a straight line of a 1x1 asset in one request
@@ -216,18 +249,22 @@ function PlacementService.handlePlaceLine(player, assetName, x1, z1, x2, z2)
 	local pieces = math.min(math.floor((rawCount - 1) / step) + 1, 64)
 
 	local models = {}
+	local broke = false
 	for i = 0, pieces - 1 do
 		local gx = axis == "x" and startX + i * step or startX
 		local gz = axis == "z" and startZ + i * step or startZ
-		local model = placeInternal(player, zone, asset, gx, gz, rot)
+		local model, err = paidPlace(player, zone, asset, gx, gz, rot)
 		if model then
 			table.insert(models, model)
+		elseif err == "cash" then
+			broke = true
+			break
 		end
 	end
 	if #models == 0 then
-		return { ok = false, err = "Nothing free along that line." }
+		return { ok = false, err = broke and NEED_CASH or "Nothing free along that line." }
 	end
-	return { ok = true, placed = #models, models = models }
+	return { ok = true, placed = #models, models = models, broke = broke }
 end
 
 -- Rectangle FILL (Prison Architect flooring): tile the whole dragged
@@ -258,21 +295,24 @@ function PlacementService.handlePlaceRect(player, assetName, x1, z1, x2, z2, rot
 	local maxZ = math.min(zone.info.rows - 1, math.floor(math.max(z1, z2)))
 
 	local models = {}
+	local broke = false
 	for gz = minZ, maxZ, d do
 		for gx = minX, maxX, w do
-			if #models >= 512 then
+			if #models >= 512 or broke then
 				break
 			end
-			local model = placeInternal(player, zone, asset, gx, gz, rot)
+			local model, err = paidPlace(player, zone, asset, gx, gz, rot)
 			if model then
 				table.insert(models, model)
+			elseif err == "cash" then
+				broke = true
 			end
 		end
 	end
 	if #models == 0 then
-		return { ok = false, err = "No room in that rectangle." }
+		return { ok = false, err = broke and NEED_CASH or "No room in that rectangle." }
 	end
-	return { ok = true, placed = #models, models = models }
+	return { ok = true, placed = #models, models = models, broke = broke }
 end
 
 -- The 🏗️ Foundations tool: drag a rectangle, get perimeter walls and an
@@ -311,42 +351,56 @@ function PlacementService.handleFoundation(player, x1, z1, x2, z2)
 	end
 
 	local models = {}
+	local broke = false
 	for z = minZ, maxZ do
 		for x = minX, maxX do
+			if broke then
+				break
+			end
 			local isBorder = x == minX or x == maxX or z == minZ or z == maxZ
-			local model = placeInternal(player, zone, isBorder and wallAsset or floorAsset, x, z, 0)
+			local model, err = paidPlace(player, zone, isBorder and wallAsset or floorAsset, x, z, 0)
 			if model then
 				table.insert(models, model)
+			elseif err == "cash" then
+				broke = true
 			end
 		end
 	end
 	if #models == 0 then
-		return { ok = false, err = "No room for a foundation there." }
+		return { ok = false, err = broke and NEED_CASH or "No room for a foundation there." }
 	end
-	return { ok = true, built = #models, models = models }
+	return { ok = true, built = #models, models = models, broke = broke }
 end
 
-local function deleteOne(player, zone, model)
+-- refundRate: bulldozing pays back Config.RefundRate; Undo passes 1.0.
+-- Blueprints always refund in full (nothing was built yet).
+local function deleteOne(player, zone, model, refundRate)
 	-- The model must be a real placed object inside THIS player's zone.
 	if typeof(model) ~= "Instance" or not model:IsA("Model") or model.Parent ~= zone.placed then
-		return false, "That's not yours to demolish."
+		return false, "That's not yours to demolish.", 0
 	end
 	local id = model:GetAttribute("LayoutId")
+	local isBlueprint = model:GetAttribute("Blueprint") == true
 
 	local layout = layouts[player]
 	for index, entry in ipairs(layout) do
 		if entry.id == id then
 			local asset = Buildables.get(entry.n)
+			local refund = 0
 			if asset then
 				local w, d = GridMath.footprint(asset, entry.r)
 				setRegion(zone, entry.x, entry.z, w, d, nil)
+				if not Config.FreeBuild then
+					refund = math.floor(asset.price * (isBlueprint and 1 or refundRate))
+					EconomyService.credit(player, refund)
+				end
 			end
 			table.remove(layout, index)
 			model:Destroy()
-			return true
+			return true, nil, refund
 		end
 	end
-	return false, "Couldn't find that object."
+	return false, "Couldn't find that object.", 0
 end
 
 function PlacementService.handleDelete(player, model)
@@ -357,11 +411,11 @@ function PlacementService.handleDelete(player, model)
 	if tooFast(player) then
 		return { ok = false, err = "Too fast!" }
 	end
-	local ok, err = deleteOne(player, zone, model)
+	local ok, err, refund = deleteOne(player, zone, model, Config.RefundRate)
 	if not ok then
 		return { ok = false, err = err }
 	end
-	return { ok = true }
+	return { ok = true, refund = refund }
 end
 
 -- Batch demolish, used by Undo to revert a whole line or foundation in
@@ -377,16 +431,18 @@ function PlacementService.handleDeleteMany(player, models)
 	if type(models) ~= "table" or #models > 512 then
 		return { ok = false, err = "Bad request." }
 	end
-	local deleted = 0
+	local deleted, refundTotal = 0, 0
 	for _, model in ipairs(models) do
-		if deleteOne(player, zone, model) then
+		local ok, _, refund = deleteOne(player, zone, model, 1)
+		if ok then
 			deleted += 1
+			refundTotal += refund
 		end
 	end
 	if deleted == 0 then
 		return { ok = false, err = "Nothing to demolish." }
 	end
-	return { ok = true, deleted = deleted }
+	return { ok = true, deleted = deleted, refund = refundTotal }
 end
 
 -- Rectangle BULLDOZE: demolish everything whose footprint touches the
@@ -420,16 +476,83 @@ function PlacementService.handleDeleteRect(player, x1, z1, x2, z2)
 	end
 
 	local items = {}
+	local refundTotal = 0
 	for _, entry in ipairs(victims) do
 		local params = { n = entry.n, x = entry.x, z = entry.z, r = entry.r }
-		if deleteOne(player, zone, entry.model) then
+		local ok, _, refund = deleteOne(player, zone, entry.model, Config.RefundRate)
+		if ok then
 			table.insert(items, params)
+			refundTotal += refund
 		end
 	end
 	if #items == 0 then
 		return { ok = false, err = "Nothing there to bulldoze." }
 	end
-	return { ok = true, deleted = #items, items = items }
+	return { ok = true, deleted = #items, items = items, refund = refundTotal }
+end
+
+-- The Move tool, done properly: free, instant, no blueprint — picking
+-- up your own furniture shouldn't cost half its price.
+function PlacementService.handleMove(player, model, gx, gz, rot)
+	local zone = playerZones[player]
+	if not zone then
+		return { ok = false, err = "You don't have a plot yet." }
+	end
+	if tooFast(player) then
+		return { ok = false, err = "Too fast!" }
+	end
+	if typeof(model) ~= "Instance" or not model:IsA("Model") or model.Parent ~= zone.placed
+		or type(gx) ~= "number" or type(gz) ~= "number" or type(rot) ~= "number"
+	then
+		return { ok = false, err = "Bad request." }
+	end
+	if model:GetAttribute("Blueprint") == true then
+		return { ok = false, err = "That's still under construction!" }
+	end
+	for _, child in ipairs(model:GetChildren()) do
+		if child:IsA("Model") then
+			return { ok = false, err = "Someone lives there — can't move an occupied cell!" }
+		end
+	end
+
+	local id = model:GetAttribute("LayoutId")
+	local layout = layouts[player]
+	for _, entry in ipairs(layout) do
+		if entry.id == id then
+			local asset = Buildables.get(entry.n)
+			if not asset then
+				return { ok = false, err = "Can't move that one." }
+			end
+			gx, gz, rot = math.floor(gx), math.floor(gz), math.floor(rot) % 4
+			local oldW, oldD = GridMath.footprint(asset, entry.r)
+			local newW, newD = GridMath.footprint(asset, rot)
+
+			-- Free the old squares first so moving within your own
+			-- footprint works, then validate the new spot.
+			setRegion(zone, entry.x, entry.z, oldW, oldD, nil)
+			if not GridMath.inBounds(zone.info, gx, gz, newW, newD)
+				or not regionFree(zone, gx, gz, newW, newD)
+			then
+				setRegion(zone, entry.x, entry.z, oldW, oldD, asset.name)
+				return { ok = false, err = "Can't move it there." }
+			end
+
+			model:PivotTo(GridMath.placementPivot(zone.info, asset, gx, gz, rot))
+			model:SetAttribute("GX", gx)
+			model:SetAttribute("GZ", gz)
+			model:SetAttribute("Rot", rot)
+			setRegion(zone, gx, gz, newW, newD, asset.name)
+			entry.x, entry.z, entry.r = gx, gz, rot
+			if asset.door then
+				DoorService.updatePosition(model)
+			end
+			for _, fn in ipairs(movedListeners) do
+				task.spawn(fn, player)
+			end
+			return { ok = true }
+		end
+	end
+	return { ok = false, err = "Couldn't find that object." }
 end
 
 function PlacementService.init()
@@ -441,6 +564,7 @@ function PlacementService.init()
 	remotes.DeleteRequest.OnServerInvoke = PlacementService.handleDelete
 	remotes.DeleteManyRequest.OnServerInvoke = PlacementService.handleDeleteMany
 	remotes.DeleteRectRequest.OnServerInvoke = PlacementService.handleDeleteRect
+	remotes.MoveRequest.OnServerInvoke = PlacementService.handleMove
 end
 
 return PlacementService

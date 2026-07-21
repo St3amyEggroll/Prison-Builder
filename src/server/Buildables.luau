@@ -42,6 +42,7 @@ local PLACEHOLDERS = {
 		-- runs tile with no gaps, corners just work.
 		name = "Wall",
 		category = "Walls & Doors",
+		price = 40,
 		build = function(model)
 			part({ Size = Vector3.new(4, 8, 4), CFrame = CFrame.new(0, 4, 0) }, model)
 		end,
@@ -49,6 +50,7 @@ local PLACEHOLDERS = {
 	{
 		name = "Floor Tile",
 		category = "Flooring",
+		price = 10,
 		build = function(model)
 			part({ Size = Vector3.new(4, 0.4, 4), CFrame = CFrame.new(0, 0.2, 0), Color = DARK }, model)
 		end,
@@ -56,6 +58,7 @@ local PLACEHOLDERS = {
 	{
 		name = "Fence",
 		category = "Walls & Doors",
+		price = 30,
 		build = function(model)
 			for i = 0, 4 do
 				part({
@@ -78,6 +81,7 @@ local PLACEHOLDERS = {
 		-- into a fence run.
 		name = "Security Door",
 		category = "Walls & Doors",
+		price = 150,
 		build = function(model)
 			part({ Size = Vector3.new(0.4, 8, 0.4), CFrame = CFrame.new(-1.8, 4, 0) }, model)
 			part({ Size = Vector3.new(0.4, 8, 0.4), CFrame = CFrame.new(1.8, 4, 0) }, model)
@@ -96,6 +100,7 @@ local PLACEHOLDERS = {
 	{
 		name = "Prison Cell",
 		category = "Objects",
+		price = 500,
 		build = function(model)
 			part({ Size = Vector3.new(12, 0.4, 12), CFrame = CFrame.new(0, 0.2, 0), Color = DARK }, model)
 			part({ Size = Vector3.new(12, 7, 0.5), CFrame = CFrame.new(0, 3.5, 5.75) }, model)
@@ -135,6 +140,7 @@ local PLACEHOLDERS = {
 	{
 		name = "Guard Tower",
 		category = "Objects",
+		price = 400,
 		build = function(model)
 			for _, offset in ipairs({ { -3, -3 }, { 3, -3 }, { -3, 3 }, { 3, 3 } }) do
 				part({
@@ -177,6 +183,7 @@ function Buildables.init()
 				def.build(model)
 				model:SetAttribute("Placeholder", true)
 				model:SetAttribute("Category", def.category)
+				model:SetAttribute("Price", def.price)
 				model.Parent = folder
 			end
 		end

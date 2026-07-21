@@ -68,6 +68,8 @@ function InmateAnimator.start()
 				target = nil,
 				phase = 0,
 				escortTo = nil,
+				pathKey = nil, -- which EscortStart the cached path belongs to
+				path = nil, -- { points = {Vector3...}, lengths = {seg lens}, total }
 			}
 			for _, part in ipairs(model:GetChildren()) do
 				if part:IsA("BasePart") and part.Name ~= "Cuffs" then
@@ -129,22 +131,73 @@ function InmateAnimator.start()
 			local walking = false
 			local bob = 0
 
+			local working = model:GetAttribute("Working") == true
+
 			if escortStart then
-				-- ESCORTED: follow the server's straight line on a shared
-				-- clock, so everyone sees the same walk.
-				local from = model:GetAttribute("EscortFrom")
-				local to = model:GetAttribute("EscortTo")
+				-- WALKING: follow the server's waypoint path on a shared
+				-- clock, so everyone sees the same walk. (Falls back to a
+				-- straight from->to line if no path was stamped.)
 				local dur = model:GetAttribute("EscortDur") or 1
-				if typeof(from) == "Vector3" and typeof(to) == "Vector3" then
-					info.escortTo = to
-					local alpha = math.clamp((now - escortStart) / dur, 0, 1)
-					info.pos = from:Lerp(to, alpha)
-					local dir = to - from
-					if dir.Magnitude > 0.01 then
-						info.yaw = math.atan2(-dir.X, -dir.Z)
+				if info.pathKey ~= escortStart then
+					info.pathKey = escortStart
+					info.path = nil
+					local pathString = model:GetAttribute("EscortPath")
+					local y = model:GetAttribute("EscortY") or info.pos.Y
+					if type(pathString) == "string" then
+						local points = {}
+						for pair in string.gmatch(pathString, "[^|]+") do
+							local xs, zs = string.match(pair, "([^,]+),([^,]+)")
+							local px, pz = tonumber(xs), tonumber(zs)
+							if px and pz then
+								table.insert(points, Vector3.new(px, y, pz))
+							end
+						end
+						if #points >= 2 then
+							local lengths, total = {}, 0
+							for i = 2, #points do
+								local seg = (points[i] - points[i - 1]).Magnitude
+								table.insert(lengths, seg)
+								total += seg
+							end
+							info.path = { points = points, lengths = lengths, total = math.max(total, 0.001) }
+						end
 					end
-					walking = alpha < 1
 				end
+
+				local alpha = math.clamp((now - escortStart) / dur, 0, 1)
+				if info.path then
+					local walked = alpha * info.path.total
+					local points = info.path.points
+					for i = 1, #info.path.lengths do
+						local seg = info.path.lengths[i]
+						if walked <= seg or i == #info.path.lengths then
+							local t2 = seg > 0 and math.clamp(walked / seg, 0, 1) or 1
+							info.pos = points[i]:Lerp(points[i + 1], t2)
+							local dir = points[i + 1] - points[i]
+							if dir.Magnitude > 0.01 then
+								info.yaw = math.atan2(-dir.X, -dir.Z)
+							end
+							break
+						end
+						walked -= seg
+					end
+					info.escortTo = points[#points]
+				else
+					local from = model:GetAttribute("EscortFrom")
+					local to = model:GetAttribute("EscortTo")
+					if typeof(from) == "Vector3" and typeof(to) == "Vector3" then
+						info.escortTo = to
+						info.pos = from:Lerp(to, alpha)
+						local dir = to - from
+						if dir.Magnitude > 0.01 then
+							info.yaw = math.atan2(-dir.X, -dir.Z)
+						end
+					end
+				end
+				walking = alpha < 1
+			elseif working then
+				-- HAMMERING a blueprint: plant the feet, swing the arms.
+				bob = math.abs(math.sin(t * 6 + info.seed)) * 0.06
 			elseif cuffed then
 				-- HANDCUFFED at the gate: stand still, shift nervously.
 				bob = math.abs(math.sin(t * 1.4 + info.seed)) * 0.05
@@ -192,7 +245,11 @@ function InmateAnimator.start()
 					part.CFrame = root * info.hips[name] * CFrame.Angles(legSwing, 0, 0) * CFrame.new(0, -1, 0)
 				elseif name == "LeftArm" or name == "RightArm" then
 					local armCF
-					if cuffed then
+					if working then
+						-- Alternating hammer swings.
+						local swingPhase = t * 10 + info.seed + (name == "LeftArm" and 0 or math.pi)
+						armCF = CFrame.Angles(-0.6 + math.sin(swingPhase) * 0.55, 0, 0)
+					elseif cuffed then
 						-- Hands bound in front at the waist.
 						armCF = CFrame.Angles(math.rad(-50), 0, name == "LeftArm" and math.rad(12) or math.rad(-12))
 					elseif walking then

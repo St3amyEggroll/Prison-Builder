@@ -41,6 +41,7 @@ function AssetCatalog.load(folder)
 				cellsW = math.max(1, math.ceil((boxSize.X - 0.05) / Config.GridSize)),
 				cellsD = math.max(1, math.ceil((boxSize.Z - 0.05) / Config.GridSize)),
 				spawnsInmate = model:GetAttribute("SpawnsInmate") == true,
+				door = model:GetAttribute("Door") == true,
 				category = (function()
 					local raw = model:GetAttribute("Category")
 					return (type(raw) == "string" and raw ~= "") and raw or "Objects"

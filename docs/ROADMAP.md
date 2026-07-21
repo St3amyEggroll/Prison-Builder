@@ -24,16 +24,17 @@ The Prison Architect building experience, reading YOUR map and YOUR assets.
 - [ ] Owner: first custom assets in `Buildables`
 - [ ] Playtest with a friend. Is building fun on its own? Fix until "yes"
 
-## Phase 2 — Buildings & working doors 🏗️
+## ✅ Phase 2 — Buildings & working doors 🏗️ *(shipped)*
 
 Make structures real, not decorative. Unlocks the Foundations tab.
 
-- [ ] Foundations tool: drag a rectangle → perimeter walls + floor build themselves (PA quick-build)
-- [ ] Doors that open — for the warden and staff; inmates blocked (the first real security boundary)
-- [ ] Enclosure detection: walls + a door = a building (indoor/outdoor)
-- [ ] Room requirements, PA-style: a painted Cell says "needs a bed, must be enclosed" until satisfied
-- [ ] Undo (Ctrl+Z) for place/bulldoze
-- [ ] Move tool: pick up a placed object and re-place it
+- [x] Foundations tool: drag a rectangle → perimeter walls + floor build themselves (uses the `Wall` / `Floor Tile` assets)
+- [x] Doors that open — slide down for the warden when they walk close; solid for everyone else (`Door` attribute + `DoorPanel` part convention)
+- [x] Enclosure detection: a room is "enclosed" when every square around it is walls/doors
+- [x] Room requirements, PA-style: the floor label shows "needs: surround with walls + a door, 1× housing" until satisfied, then "✓ ready" — re-checked live as you build
+- [x] Undo (Ctrl+Z / ↩) for placements, lines, foundations, and bulldozes
+- [x] Move tool (✋): pick up a placed object and re-place it (Ctrl+Z puts it back)
+- [ ] Owner playtest: build a real enclosed cell block with a door and watch the labels go green — **← your move!**
 
 ## Phase 3 — Money & construction crews 💰
 

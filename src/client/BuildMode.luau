@@ -1,7 +1,8 @@
 -- BuildMode: the whole building experience on the player's screen,
 -- arranged like Prison Architect's bottom toolbar:
 --
---   [🧱 Walls & Doors] [🟫 Flooring] [🎨 Rooms] [🪑 Objects] [🗑️ Bulldoze] [🏗️] [👮] [💡]
+--   [🏗️ Foundations] [🧱 Walls & Doors] [🟫 Flooring] [🎨 Rooms] [🪑 Objects]
+--   [✋ Move] [🗑️ Bulldoze] [↩ Undo] [👮] [💡]
 --
 -- Category buttons open an item panel above the bar (3D thumbnails for
 -- assets, color chips for rooms). Grayed-out buttons are future phases,
@@ -10,9 +11,12 @@
 -- automatically.
 --
 --   🔨 Build (or B)  ->  build mode: top-down camera + the toolbar
+--   Foundations       ->  drag a rectangle: walls around it, floor inside
 --   Objects           ->  ghost preview snaps to the grid; click places;
 --                         1-square assets PRESS-DRAG into whole lines
 --   Rooms             ->  pick the type FIRST, then drag a rectangle
+--   ✋ Move           ->  pick an object up and re-place it
+--   ↩ / Ctrl+Z       ->  undo placements and demolishes
 --   ↻ / R             ->  rotate 90°   ·   🗑️ Bulldoze -> click to demolish
 --
 -- The server re-validates everything — this file is just the friendly face.
@@ -43,6 +47,8 @@ function BuildMode.start()
 	local placeRequest = remotes:WaitForChild("PlaceRequest")
 	local placeLineRequest = remotes:WaitForChild("PlaceLineRequest")
 	local deleteRequest = remotes:WaitForChild("DeleteRequest")
+	local deleteManyRequest = remotes:WaitForChild("DeleteManyRequest")
+	local foundationRequest = remotes:WaitForChild("FoundationRequest")
 	local roomPaintRequest = remotes:WaitForChild("RoomPaintRequest")
 
 	local buildablesFolder = ReplicatedStorage:WaitForChild(Config.BuildablesFolderName)
@@ -79,7 +85,7 @@ function BuildMode.start()
 	local occupied = {}
 
 	-- State.
-	local mode = "off" -- "off" | "objects" | "rooms" | "delete"
+	local mode = "off" -- "off" | "objects" | "rooms" | "foundation" | "move" | "delete"
 	local currentCategory = categories[1] or "Objects"
 	local selected = nil
 	local selectedRoom = nil
@@ -92,6 +98,17 @@ function BuildMode.start()
 	local stretchBox = nil
 	local hoverHighlight = nil
 	local zoneBox = nil
+
+	-- Undo: a stack of inverse actions (Ctrl+Z or the ↩ button).
+	--   { kind = "place", models = {Model, ...} }        -> demolish them
+	--   { kind = "delete", items = { {n, x, z, r}, ... } } -> re-place them
+	local undoStack = {}
+	local function pushUndo(entry)
+		table.insert(undoStack, entry)
+		if #undoStack > 20 then
+			table.remove(undoStack, 1)
+		end
+	end
 
 	-- Occupancy mirror ---------------------------------------------------
 
@@ -426,7 +443,7 @@ function BuildMode.start()
 	local assetButtons = {} -- asset name -> { button, category }
 	local roomButtons = {}
 	local categoryButtons = {} -- category name -> toolbar button
-	local roomsButton, deleteButton
+	local roomsButton, deleteButton, foundationButton, moveButton
 
 	local function refreshSelectionLook()
 		for name, entry in pairs(assetButtons) do
@@ -442,6 +459,8 @@ function BuildMode.start()
 			button.BackgroundColor3 = (mode == "objects" and currentCategory == name) and SELECTED_BG or BUTTON_BG
 		end
 		roomsButton.BackgroundColor3 = (mode == "rooms") and SELECTED_BG or BUTTON_BG
+		foundationButton.BackgroundColor3 = (mode == "foundation") and SELECTED_BG or BUTTON_BG
+		moveButton.BackgroundColor3 = (mode == "move") and Color3.fromRGB(120, 110, 40) or BUTTON_BG
 		deleteButton.BackgroundColor3 = (mode == "delete") and Color3.fromRGB(140, 50, 50) or BUTTON_BG
 	end
 
@@ -451,7 +470,7 @@ function BuildMode.start()
 		end
 	end
 
-	local selectAsset, selectRoom
+	local selectAsset, selectRoom, tryMove, doUndo
 
 	for order, asset in ipairs(catalogOrdered) do
 		local tile = Instance.new("TextButton")
@@ -630,8 +649,13 @@ function BuildMode.start()
 		end
 	end
 
-	-- Build the toolbar buttons (PA order: build stuff, rooms, objects,
-	-- bulldoze, then the locked future tabs).
+	-- Build the toolbar buttons (PA order: foundations, build stuff,
+	-- rooms, objects, move/bulldoze/undo, then the locked future tabs).
+	foundationButton = toolbarButton("🏗️", "Foundations", true)
+	foundationButton.Activated:Connect(function()
+		setMode("foundation")
+		flashStatus("Drag a rectangle — walls around the edge, floor inside. Add a door after!", GREEN)
+	end)
 	for _, name in ipairs(categories) do
 		if name ~= "Objects" then
 			local button = toolbarButton(Config.CategoryIcons[name] or "📦", name, true)
@@ -652,6 +676,15 @@ function BuildMode.start()
 		end)
 		categoryButtons.Objects = button
 	end
+	moveButton = toolbarButton("✋", "Move", true)
+	moveButton.Activated:Connect(function()
+		if mode == "move" then
+			setMode("objects")
+		else
+			setMode("move")
+			flashStatus("Move: tap an object to pick it up", Color3.fromRGB(255, 230, 120))
+		end
+	end)
 	deleteButton = toolbarButton("🗑️", "Bulldoze", true)
 	deleteButton.Activated:Connect(function()
 		if mode == "delete" then
@@ -660,6 +693,10 @@ function BuildMode.start()
 			setMode("delete")
 			flashStatus("Bulldoze: tap an object to remove it", RED)
 		end
+	end)
+	local undoButton = toolbarButton("↩", "Undo", true)
+	undoButton.Activated:Connect(function()
+		doUndo()
 	end)
 	for _, future in ipairs(Config.ComingSoon) do
 		local button = toolbarButton(future.icon, future.name, false)
@@ -687,6 +724,9 @@ function BuildMode.start()
 			return placeRequest:InvokeServer(selected.name, gx, gz, rot)
 		end)
 		if ok and result and result.ok then
+			if result.model then
+				pushUndo({ kind = "place", models = { result.model } })
+			end
 			flashStatus(selected.name .. " placed!", GREEN)
 		elseif ok and result then
 			flashStatus(result.err or "Couldn't place that.", RED)
@@ -698,9 +738,26 @@ function BuildMode.start()
 			return placeLineRequest:InvokeServer(selected.name, x1, z1, x2, z2)
 		end)
 		if ok and result and result.ok then
+			if result.models then
+				pushUndo({ kind = "place", models = result.models })
+			end
 			flashStatus(("%d × %s placed!"):format(result.placed, selected.name), GREEN)
 		elseif ok and result then
 			flashStatus(result.err or "Couldn't build that line.", RED)
+		end
+	end
+
+	local function tryFoundation(x1, z1, x2, z2)
+		local ok, result = pcall(function()
+			return foundationRequest:InvokeServer(x1, z1, x2, z2)
+		end)
+		if ok and result and result.ok then
+			if result.models then
+				pushUndo({ kind = "place", models = result.models })
+			end
+			flashStatus(("Foundation built — %d pieces. Now add a door!"):format(result.built), GREEN)
+		elseif ok and result then
+			flashStatus(result.err or "Couldn't build that foundation.", RED)
 		end
 	end
 
@@ -741,18 +798,100 @@ function BuildMode.start()
 		return model
 	end
 
+	-- Read a placed model's identity before demolishing, so undo can
+	-- rebuild it exactly.
+	local function modelParams(model)
+		local name = model:GetAttribute("Asset")
+		local gx = model:GetAttribute("GX")
+		local gz = model:GetAttribute("GZ")
+		local r = model:GetAttribute("Rot")
+		if type(name) == "string" and type(gx) == "number" and type(gz) == "number" and type(r) == "number" then
+			return { n = name, x = gx, z = gz, r = r }
+		end
+		return nil
+	end
+
 	local function tryDelete()
 		local model = findPlacedModel()
 		if not model then
 			return
 		end
+		local params = modelParams(model)
 		local ok, result = pcall(function()
 			return deleteRequest:InvokeServer(model)
 		end)
 		if ok and result and result.ok then
+			if params then
+				pushUndo({ kind = "delete", items = { params } })
+			end
 			flashStatus("Demolished!", GREEN)
 		elseif ok and result then
 			flashStatus(result.err or "Couldn't demolish that.", RED)
+		end
+	end
+
+	-- The Move tool: pick an object up (it's demolished but remembered),
+	-- then place it wherever — Ctrl+Z puts it back where it was.
+	tryMove = function()
+		local model = findPlacedModel()
+		if not model then
+			return
+		end
+		local params = modelParams(model)
+		local asset = params and catalogByName[params.n]
+		if not asset then
+			flashStatus("Can't move that one.", RED)
+			return
+		end
+		local ok, result = pcall(function()
+			return deleteRequest:InvokeServer(model)
+		end)
+		if not (ok and result and result.ok) then
+			flashStatus((ok and result and result.err) or "Couldn't pick that up.", RED)
+			return
+		end
+		pushUndo({ kind = "delete", items = { params } })
+		currentCategory = asset.category
+		setMode("objects")
+		selectAsset(asset)
+		rot = params.r
+		flashStatus("Moving " .. asset.name .. " — click to re-place (Ctrl+Z puts it back)", Color3.fromRGB(255, 230, 120))
+	end
+
+	doUndo = function()
+		local entry = table.remove(undoStack)
+		if not entry then
+			flashStatus("Nothing to undo", Color3.fromRGB(220, 220, 220))
+			return
+		end
+		if entry.kind == "place" then
+			local alive = {}
+			for _, model in ipairs(entry.models) do
+				if typeof(model) == "Instance" and model.Parent ~= nil then
+					table.insert(alive, model)
+				end
+			end
+			if #alive == 0 then
+				flashStatus("Nothing to undo", Color3.fromRGB(220, 220, 220))
+				return
+			end
+			local ok, result = pcall(function()
+				return deleteManyRequest:InvokeServer(alive)
+			end)
+			if ok and result and result.ok then
+				flashStatus(("Undid %d placement%s"):format(result.deleted, result.deleted == 1 and "" or "s"), GREEN)
+			end
+		elseif entry.kind == "delete" then
+			local restored = 0
+			for _, item in ipairs(entry.items) do
+				local ok, result = pcall(function()
+					return placeRequest:InvokeServer(item.n, item.x, item.z, item.r)
+				end)
+				if ok and result and result.ok then
+					restored += 1
+				end
+			end
+			flashStatus(restored > 0 and "Restored!" or "Couldn't restore — spot taken?", restored > 0 and GREEN or RED)
 		end
 	end
 
@@ -788,7 +927,7 @@ function BuildMode.start()
 					pressing = true
 					pressStartCell = { cell[1], cell[2] }
 				end
-			elseif mode == "rooms" and selectedRoom ~= nil then
+			elseif (mode == "rooms" and selectedRoom ~= nil) or mode == "foundation" then
 				local gx, gz = cellUnderPointer(1, 1)
 				if gx then
 					pressing = true
@@ -796,11 +935,18 @@ function BuildMode.start()
 				end
 			elseif mode == "delete" then
 				tryDelete()
+			elseif mode == "move" then
+				tryMove()
 			end
 		elseif input.KeyCode == Enum.KeyCode.B then
 			setMode(mode == "off" and "objects" or "off")
 		elseif input.KeyCode == Enum.KeyCode.R and mode == "objects" then
 			rot = (rot + 1) % 4
+		elseif input.KeyCode == Enum.KeyCode.Z and mode ~= "off"
+			and (UserInputService:IsKeyDown(Enum.KeyCode.LeftControl)
+				or UserInputService:IsKeyDown(Enum.KeyCode.RightControl))
+		then
+			doUndo()
 		end
 	end)
 
@@ -830,6 +976,11 @@ function BuildMode.start()
 			local gx, gz = cellUnderPointer(1, 1)
 			if gx then
 				tryPaintRoom(pressStartCell[1], pressStartCell[2], gx, gz)
+			end
+		elseif mode == "foundation" and pressStartCell then
+			local gx, gz = cellUnderPointer(1, 1)
+			if gx then
+				tryFoundation(pressStartCell[1], pressStartCell[2], gx, gz)
 			end
 		end
 		pressStartCell = nil
@@ -862,16 +1013,24 @@ function BuildMode.start()
 					showStretchBox(pressStartCell[1], pressStartCell[2], gx, gz, color)
 				end
 			end
-		elseif mode == "delete" then
+		elseif mode == "foundation" then
+			if pressing and pressStartCell then
+				local gx, gz = cellUnderPointer(1, 1)
+				if gx then
+					showStretchBox(pressStartCell[1], pressStartCell[2], gx, gz, Color3.fromRGB(120, 180, 255))
+				end
+			end
+		elseif mode == "delete" or mode == "move" then
 			local model = findPlacedModel()
 			if model then
+				local color = mode == "delete" and RED or Color3.fromRGB(255, 230, 120)
 				if not hoverHighlight then
 					hoverHighlight = Instance.new("Highlight")
-					hoverHighlight.FillColor = RED
 					hoverHighlight.FillTransparency = 0.6
-					hoverHighlight.OutlineColor = RED
 					hoverHighlight.Parent = gui
 				end
+				hoverHighlight.FillColor = color
+				hoverHighlight.OutlineColor = color
 				hoverHighlight.Adornee = model
 			elseif hoverHighlight then
 				hoverHighlight.Adornee = nil

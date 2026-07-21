@@ -48,8 +48,11 @@ Opening build mode switches to the **top-down Prison Architect camera** (slightl
 | Pan the camera | **WASD** / arrows | two-finger drag |
 | Zoom | scroll wheel | pinch |
 | Rotate camera 45° | **Q** / **E** | — |
-| Pick a toolbar category (PA-style bottom bar) | 🧱 Walls & Doors · 🟫 Flooring · 🎨 Rooms · 🪑 Objects · 🗑️ Bulldoze | same |
+| Pick a toolbar category (PA-style bottom bar) | 🏗️ Foundations · 🧱 Walls & Doors · 🟫 Flooring · 🎨 Rooms · 🪑 Objects · ✋ Move · 🗑️ Bulldoze · ↩ Undo | same |
 | Pick an asset or room type | click its tile | tap its tile |
+| **Foundation** (walls + floor in one go) | 🏗️, then drag a rectangle | same |
+| **Move an object** | ✋, then click it, then place it | same |
+| **Undo** | **Ctrl+Z** or ↩ | ↩ button |
 | Aim the ghost preview | move mouse | drag finger |
 | Place (when ghost is green) | click | tap |
 | **Drag-to-build a line** (walls, fences, floors) | press, drag, release | press, drag, release |

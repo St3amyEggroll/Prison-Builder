@@ -39,9 +39,49 @@ Config.CategoryIcons = {
 
 -- Shown grayed-out like PA's locked tabs — real features in later phases.
 Config.ComingSoon = {
-	{ icon = "🏗️", name = "Foundations", note = "Foundations — coming soon!" },
-	{ icon = "👮", name = "Staff", note = "Staff arrive in Phase 2!" },
+	{ icon = "👮", name = "Staff", note = "Staff arrive in Phase 4!" },
 	{ icon = "💡", name = "Utilities", note = "Utilities — later, maybe. Pipes on a phone is a big ask 😄" },
+}
+
+-- Foundations ------------------------------------------------------------
+
+-- The 🏗️ tool: drag a rectangle, walls go up around the edge with floor
+-- inside (add a door yourself afterward, like PA). It builds using these
+-- assets from the Buildables folder — rename here if yours differ.
+Config.FoundationWallAsset = "Wall"
+Config.FoundationFloorAsset = "Floor Tile"
+Config.FoundationMinSize = 3 -- squares per side (needs an interior)
+Config.FoundationMaxArea = 400 -- squares per drag
+
+-- Doors ------------------------------------------------------------------
+
+-- Assets with attribute Door = true open for the WARDEN when they walk
+-- close (inmates and strangers stay blocked). Parts named "DoorPanel"
+-- inside the model are what slides down; no panel named -> the whole
+-- model fades open instead.
+Config.DoorOpenDistance = 8 -- studs
+Config.DoorCheckInterval = 0.25 -- seconds between proximity checks
+
+-- Room requirements ------------------------------------------------------
+
+-- Painted rooms show what they still need, PA-style. "enclosed" means
+-- every square just outside the room is filled by a "Walls & Doors"
+-- asset (or a Door). attrCounts counts placed objects inside the room
+-- carrying that attribute. minCells is the minimum painted size.
+Config.RoomRequirements = {
+	Cell = { enclosed = true, minCells = 4, attrCounts = { SpawnsInmate = 1 } },
+	Canteen = { enclosed = true, minCells = 9 },
+	Kitchen = { enclosed = true, minCells = 6 },
+	Yard = { minCells = 9 },
+	Shower = { enclosed = true, minCells = 4 },
+	Workshop = { enclosed = true, minCells = 9 },
+	Office = { enclosed = true, minCells = 4 },
+	Storage = { enclosed = true, minCells = 4 },
+}
+
+-- Friendly names for attrCounts requirements in the floor labels.
+Config.RequirementText = {
+	SpawnsInmate = "housing",
 }
 
 -- Rooms ------------------------------------------------------------------

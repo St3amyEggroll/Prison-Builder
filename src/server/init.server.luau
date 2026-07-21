@@ -21,6 +21,7 @@ remotes.Parent = ReplicatedStorage
 
 local SaveService = require(script.SaveService)
 local Buildables = require(script.Buildables)
+local DoorService = require(script.DoorService)
 local PlacementService = require(script.PlacementService)
 local RoomService = require(script.RoomService)
 local IntakeService = require(script.IntakeService)
@@ -28,9 +29,10 @@ local PlotService = require(script.PlotService)
 
 SaveService.init()
 Buildables.init()
+DoorService.init()
 PlacementService.init()
 RoomService.init()
 IntakeService.init()
 PlotService.init()
 
-print("[Lockdown] Server ready — rooms, intake & drag-build")
+print("[Lockdown] Server ready — Phase 2: doors, foundations & room rules")

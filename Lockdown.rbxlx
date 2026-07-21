@@ -53,6 +53,7 @@ function AssetCatalog.load(folder)
 				cellsW = math.max(1, math.ceil((boxSize.X - 0.05) / Config.GridSize)),
 				cellsD = math.max(1, math.ceil((boxSize.Z - 0.05) / Config.GridSize)),
 				spawnsInmate = model:GetAttribute("SpawnsInmate") == true,
+				door = model:GetAttribute("Door") == true,
 				category = (function()
 					local raw = model:GetAttribute("Category")
 					return (type(raw) == "string" and raw ~= "") and raw or "Objects"
@@ -118,9 +119,49 @@ Config.CategoryIcons = {
 
 -- Shown grayed-out like PA's locked tabs — real features in later phases.
 Config.ComingSoon = {
-	{ icon = "🏗️", name = "Foundations", note = "Foundations — coming soon!" },
-	{ icon = "👮", name = "Staff", note = "Staff arrive in Phase 2!" },
+	{ icon = "👮", name = "Staff", note = "Staff arrive in Phase 4!" },
 	{ icon = "💡", name = "Utilities", note = "Utilities — later, maybe. Pipes on a phone is a big ask 😄" },
+}
+
+-- Foundations ------------------------------------------------------------
+
+-- The 🏗️ tool: drag a rectangle, walls go up around the edge with floor
+-- inside (add a door yourself afterward, like PA). It builds using these
+-- assets from the Buildables folder — rename here if yours differ.
+Config.FoundationWallAsset = "Wall"
+Config.FoundationFloorAsset = "Floor Tile"
+Config.FoundationMinSize = 3 -- squares per side (needs an interior)
+Config.FoundationMaxArea = 400 -- squares per drag
+
+-- Doors ------------------------------------------------------------------
+
+-- Assets with attribute Door = true open for the WARDEN when they walk
+-- close (inmates and strangers stay blocked). Parts named "DoorPanel"
+-- inside the model are what slides down; no panel named -> the whole
+-- model fades open instead.
+Config.DoorOpenDistance = 8 -- studs
+Config.DoorCheckInterval = 0.25 -- seconds between proximity checks
+
+-- Room requirements ------------------------------------------------------
+
+-- Painted rooms show what they still need, PA-style. "enclosed" means
+-- every square just outside the room is filled by a "Walls & Doors"
+-- asset (or a Door). attrCounts counts placed objects inside the room
+-- carrying that attribute. minCells is the minimum painted size.
+Config.RoomRequirements = {
+	Cell = { enclosed = true, minCells = 4, attrCounts = { SpawnsInmate = 1 } },
+	Canteen = { enclosed = true, minCells = 9 },
+	Kitchen = { enclosed = true, minCells = 6 },
+	Yard = { minCells = 9 },
+	Shower = { enclosed = true, minCells = 4 },
+	Workshop = { enclosed = true, minCells = 9 },
+	Office = { enclosed = true, minCells = 4 },
+	Storage = { enclosed = true, minCells = 4 },
+}
+
+-- Friendly names for attrCounts requirements in the floor labels.
+Config.RequirementText = {
+	SpawnsInmate = "housing",
 }
 
 -- Rooms ------------------------------------------------------------------
@@ -338,6 +379,7 @@ remotes.Parent = ReplicatedStorage
 
 local SaveService = require(script.SaveService)
 local Buildables = require(script.Buildables)
+local DoorService = require(script.DoorService)
 local PlacementService = require(script.PlacementService)
 local RoomService = require(script.RoomService)
 local IntakeService = require(script.IntakeService)
@@ -345,12 +387,13 @@ local PlotService = require(script.PlotService)
 
 SaveService.init()
 Buildables.init()
+DoorService.init()
 PlacementService.init()
 RoomService.init()
 IntakeService.init()
 PlotService.init()
 
-print("[Lockdown] Server ready — rooms, intake & drag-build")
+print("[Lockdown] Server ready — Phase 2: doors, foundations & room rules")
 ]]></string>
       </Properties>
       <Item class="ModuleScript" referent="8">
@@ -440,12 +483,15 @@ local PLACEHOLDERS = {
 			part({ Size = Vector3.new(0.4, 8, 0.4), CFrame = CFrame.new(-1.8, 4, 0) }, model)
 			part({ Size = Vector3.new(0.4, 8, 0.4), CFrame = CFrame.new(1.8, 4, 0) }, model)
 			part({ Size = Vector3.new(4, 0.5, 0.4), CFrame = CFrame.new(0, 7.75, 0) }, model)
+			-- The sliding slab: DoorService animates parts with this name.
 			part({
+				Name = "DoorPanel",
 				Size = Vector3.new(3.2, 7, 0.4),
 				CFrame = CFrame.new(0, 3.5, 0),
 				Material = Enum.Material.DiamondPlate,
 				Color = Color3.fromRGB(91, 105, 117),
 			}, model)
+			model:SetAttribute("Door", true)
 		end,
 	},
 	{
@@ -551,6 +597,101 @@ return Buildables
       </Item>
       <Item class="ModuleScript" referent="9">
         <Properties>
+          <string name="Name">DoorService</string>
+          <string name="Source"><![CDATA[-- DoorService: makes placed Door assets actually work. When the WARDEN
+-- (the plot's owner) walks up, the door's panels slide down into the
+-- floor and stop colliding; walk away and it closes. Inmates and other
+-- players never trigger it — a closed door is the first real security
+-- boundary in the game.
+--
+-- Conventions (docs/BUILDING_ASSETS.md): the asset has attribute
+-- Door = true; parts named "DoorPanel" are what slides. If a door model
+-- has no DoorPanel parts, the whole model fades open instead — ugly but
+-- functional, so any door the map-maker builds works on day one.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+
+local Config = require(ReplicatedStorage.Shared.Config)
+
+local DoorService = {}
+
+local doors = {} -- model -> { player, panels = {part -> closedCF}, fadeAll, open, position }
+
+local TWEEN = TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+function DoorService.register(model, player)
+	local panels = {}
+	local found = false
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("BasePart") and descendant.Name == "DoorPanel" then
+			panels[descendant] = descendant.CFrame
+			found = true
+		end
+	end
+	if not found then
+		-- Fallback: no named panel, so the whole model will fade/unblock.
+		for _, descendant in ipairs(model:GetDescendants()) do
+			if descendant:IsA("BasePart") then
+				panels[descendant] = descendant.CFrame
+			end
+		end
+	end
+
+	doors[model] = {
+		player = player,
+		panels = panels,
+		fadeAll = not found,
+		open = false,
+		position = model:GetPivot().Position,
+	}
+	model.Destroying:Connect(function()
+		doors[model] = nil
+	end)
+end
+
+local function setOpen(model, door, shouldOpen)
+	door.open = shouldOpen
+	model:SetAttribute("DoorOpen", shouldOpen)
+	for part, closedCF in pairs(door.panels) do
+		part.CanCollide = not shouldOpen
+		if door.fadeAll then
+			TweenService:Create(part, TWEEN, {
+				Transparency = shouldOpen and 0.8 or 0,
+			}):Play()
+		else
+			-- Slide down into the floor, leaving a sliver visible.
+			local target = shouldOpen
+				and closedCF * CFrame.new(0, -(part.Size.Y * 0.92), 0)
+				or closedCF
+			TweenService:Create(part, TWEEN, { CFrame = target }):Play()
+		end
+	end
+end
+
+function DoorService.init()
+	task.spawn(function()
+		while true do
+			task.wait(Config.DoorCheckInterval)
+			for model, door in pairs(doors) do
+				local character = door.player and door.player.Character
+				local root = character and character:FindFirstChild("HumanoidRootPart")
+				local shouldOpen = root ~= nil
+					and (root.Position - door.position).Magnitude < Config.DoorOpenDistance
+				if shouldOpen ~= door.open then
+					setOpen(model, door, shouldOpen)
+				end
+			end
+		end
+	end)
+end
+
+return DoorService
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="10">
+        <Properties>
           <string name="Name">InmateService</string>
           <string name="Source"><![CDATA[-- InmateService: builds inmates as LIGHTWEIGHT CUSTOM RIGS.
 --
@@ -655,7 +796,7 @@ return InmateService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="10">
+      <Item class="ModuleScript" referent="11">
         <Properties>
           <string name="Name">IntakeService</string>
           <string name="Source"><![CDATA[-- IntakeService: how prisoners actually arrive (Prison Architect's
@@ -985,7 +1126,7 @@ return IntakeService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="11">
+      <Item class="ModuleScript" referent="12">
         <Properties>
           <string name="Name">PlacementService</string>
           <string name="Source"><![CDATA[-- PlacementService: the server half of the building system. The client
@@ -1000,7 +1141,9 @@ return IntakeService
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local GridMath = require(ReplicatedStorage.Shared.GridMath)
+local Config = require(ReplicatedStorage.Shared.Config)
 local Buildables = require(script.Parent.Buildables)
+local DoorService = require(script.Parent.DoorService)
 
 local PlacementService = {}
 
@@ -1040,6 +1183,13 @@ local function setRegion(zone, gx, gz, w, d, value)
 	end)
 end
 
+-- Which asset (by name) occupies a grid square — RoomService uses this
+-- for enclosure checks. nil = empty.
+function PlacementService.cellAsset(zone, gx, gz)
+	local taken = occupancy[zone]
+	return taken and taken[gx .. ":" .. gz] or nil
+end
+
 -- The one true "make it exist" function — used by live purchases and by
 -- save-file rebuilds, so they can never behave differently.
 local function placeInternal(player, zone, asset, gx, gz, rot)
@@ -1069,7 +1219,11 @@ local function placeInternal(player, zone, asset, gx, gz, rot)
 	model:SetAttribute("Rot", rot)
 	model.Parent = zone.placed
 
-	setRegion(zone, gx, gz, w, d, true)
+	if asset.door then
+		DoorService.register(model, player)
+	end
+
+	setRegion(zone, gx, gz, w, d, asset.name)
 	table.insert(layouts[player], { n = asset.name, x = gx, z = gz, r = rot, id = id, model = model })
 	return model
 end
@@ -1153,7 +1307,7 @@ function PlacementService.handlePlace(player, assetName, gx, gz, rot)
 	if not model then
 		return { ok = false, err = err }
 	end
-	return { ok = true }
+	return { ok = true, model = model }
 end
 
 -- Drag-to-build: place a straight line of a 1x1 asset in one request
@@ -1187,22 +1341,25 @@ function PlacementService.handlePlaceLine(player, assetName, x1, z1, x2, z2)
 	-- Pieces auto-face along the drag: lengthwise walls form a solid run.
 	local rot = axis == "x" and 0 or 1
 
-	local placed = 0
+	local models = {}
 	for i = 0, count - 1 do
 		local gx = axis == "x" and startX + i or startX
 		local gz = axis == "z" and startZ + i or startZ
 		local model = placeInternal(player, zone, asset, gx, gz, rot)
 		if model then
-			placed += 1
+			table.insert(models, model)
 		end
 	end
-	if placed == 0 then
+	if #models == 0 then
 		return { ok = false, err = "Nothing free along that line." }
 	end
-	return { ok = true, placed = placed }
+	return { ok = true, placed = #models, models = models }
 end
 
-function PlacementService.handleDelete(player, model)
+-- The 🏗️ Foundations tool: drag a rectangle, get perimeter walls and an
+-- interior floor in one go (add a door yourself, like PA). Occupied
+-- squares are skipped rather than failing the whole build.
+function PlacementService.handleFoundation(player, x1, z1, x2, z2)
 	local zone = playerZones[player]
 	if not zone then
 		return { ok = false, err = "You don't have a plot yet." }
@@ -1210,9 +1367,50 @@ function PlacementService.handleDelete(player, model)
 	if tooFast(player) then
 		return { ok = false, err = "Too fast!" }
 	end
+	if type(x1) ~= "number" or type(z1) ~= "number" or type(x2) ~= "number" or type(z2) ~= "number" then
+		return { ok = false, err = "Bad request." }
+	end
+	local wallAsset = Buildables.get(Config.FoundationWallAsset)
+	local floorAsset = Buildables.get(Config.FoundationFloorAsset)
+	if not wallAsset or not floorAsset then
+		return { ok = false, err = ("Foundations need assets named '%s' and '%s' in Buildables."):format(
+			Config.FoundationWallAsset, Config.FoundationFloorAsset) }
+	end
+
+	local minX = math.max(0, math.floor(math.min(x1, x2)))
+	local maxX = math.min(zone.info.cols - 1, math.floor(math.max(x1, x2)))
+	local minZ = math.max(0, math.floor(math.min(z1, z2)))
+	local maxZ = math.min(zone.info.rows - 1, math.floor(math.max(z1, z2)))
+	local width, depth = maxX - minX + 1, maxZ - minZ + 1
+	if width < Config.FoundationMinSize or depth < Config.FoundationMinSize then
+		return { ok = false, err = ("Foundations need at least %d×%d squares."):format(
+			Config.FoundationMinSize, Config.FoundationMinSize) }
+	end
+	if width * depth > Config.FoundationMaxArea then
+		return { ok = false, err = ("Too big — foundations max out at %d squares per drag."):format(
+			Config.FoundationMaxArea) }
+	end
+
+	local models = {}
+	for z = minZ, maxZ do
+		for x = minX, maxX do
+			local isBorder = x == minX or x == maxX or z == minZ or z == maxZ
+			local model = placeInternal(player, zone, isBorder and wallAsset or floorAsset, x, z, 0)
+			if model then
+				table.insert(models, model)
+			end
+		end
+	end
+	if #models == 0 then
+		return { ok = false, err = "No room for a foundation there." }
+	end
+	return { ok = true, built = #models, models = models }
+end
+
+local function deleteOne(player, zone, model)
 	-- The model must be a real placed object inside THIS player's zone.
 	if typeof(model) ~= "Instance" or not model:IsA("Model") or model.Parent ~= zone.placed then
-		return { ok = false, err = "That's not yours to demolish." }
+		return false, "That's not yours to demolish."
 	end
 	local id = model:GetAttribute("LayoutId")
 
@@ -1226,24 +1424,66 @@ function PlacementService.handleDelete(player, model)
 			end
 			table.remove(layout, index)
 			model:Destroy()
-			return { ok = true }
+			return true
 		end
 	end
-	return { ok = false, err = "Couldn't find that object." }
+	return false, "Couldn't find that object."
+end
+
+function PlacementService.handleDelete(player, model)
+	local zone = playerZones[player]
+	if not zone then
+		return { ok = false, err = "You don't have a plot yet." }
+	end
+	if tooFast(player) then
+		return { ok = false, err = "Too fast!" }
+	end
+	local ok, err = deleteOne(player, zone, model)
+	if not ok then
+		return { ok = false, err = err }
+	end
+	return { ok = true }
+end
+
+-- Batch demolish, used by Undo to revert a whole line or foundation in
+-- one request.
+function PlacementService.handleDeleteMany(player, models)
+	local zone = playerZones[player]
+	if not zone then
+		return { ok = false, err = "You don't have a plot yet." }
+	end
+	if tooFast(player) then
+		return { ok = false, err = "Too fast!" }
+	end
+	if type(models) ~= "table" or #models > 512 then
+		return { ok = false, err = "Bad request." }
+	end
+	local deleted = 0
+	for _, model in ipairs(models) do
+		if deleteOne(player, zone, model) then
+			deleted += 1
+		end
+	end
+	if deleted == 0 then
+		return { ok = false, err = "Nothing to demolish." }
+	end
+	return { ok = true, deleted = deleted }
 end
 
 function PlacementService.init()
 	local remotes = ReplicatedStorage:WaitForChild("Remotes")
 	remotes.PlaceRequest.OnServerInvoke = PlacementService.handlePlace
 	remotes.PlaceLineRequest.OnServerInvoke = PlacementService.handlePlaceLine
+	remotes.FoundationRequest.OnServerInvoke = PlacementService.handleFoundation
 	remotes.DeleteRequest.OnServerInvoke = PlacementService.handleDelete
+	remotes.DeleteManyRequest.OnServerInvoke = PlacementService.handleDeleteMany
 end
 
 return PlacementService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="12">
+      <Item class="ModuleScript" referent="13">
         <Properties>
           <string name="Name">PlotService</string>
           <string name="Source"><![CDATA[-- PlotService: finds the build zones in YOUR hand-made map and assigns
@@ -1429,7 +1669,7 @@ return PlotService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="13">
+      <Item class="ModuleScript" referent="14">
         <Properties>
           <string name="Name">RoomService</string>
           <string name="Source"><![CDATA[-- RoomService: Prison Architect-style room designation. The player picks
@@ -1444,6 +1684,9 @@ return PlotService
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config = require(ReplicatedStorage.Shared.Config)
+local GridMath = require(ReplicatedStorage.Shared.GridMath)
+local Buildables = require(script.Parent.Buildables)
+local PlacementService = require(script.Parent.PlacementService)
 
 local RoomService = {}
 
@@ -1497,11 +1740,108 @@ local function renderRow(zone, z)
 	end
 end
 
+-- Is this asset name something that walls a room in? Anything from the
+-- "Walls & Doors" category (doors count — a doorway isn't a hole).
+local function blocksEnclosure(assetName)
+	local asset = assetName and Buildables.get(assetName)
+	return asset ~= nil and (asset.category == "Walls & Doors" or asset.door)
+end
+
+-- Evaluate a painted region against Config.RoomRequirements. Returns
+-- (met, statusText).
+local function evaluateRegion(zone, typeName, regionCells, placedInfos)
+	local req = Config.RoomRequirements[typeName]
+	if not req then
+		return true, "✓"
+	end
+	local missing = {}
+
+	if req.minCells and #regionCells < req.minCells then
+		table.insert(missing, ("bigger room (%d/%d)"):format(#regionCells, req.minCells))
+	end
+
+	if req.enclosed then
+		local inRegion = {}
+		for _, cell in ipairs(regionCells) do
+			inRegion[cell[1] .. ":" .. cell[2]] = true
+		end
+		local enclosed = true
+		for _, cell in ipairs(regionCells) do
+			for _, step in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do
+				local nx, nz = cell[1] + step[1], cell[2] + step[2]
+				if not inRegion[nx .. ":" .. nz] then
+					local outOfBounds = nx < 0 or nx >= zone.info.cols or nz < 0 or nz >= zone.info.rows
+					if outOfBounds or not blocksEnclosure(PlacementService.cellAsset(zone, nx, nz)) then
+						enclosed = false
+					end
+				end
+				if not enclosed then
+					break
+				end
+			end
+			if not enclosed then
+				break
+			end
+		end
+		if not enclosed then
+			table.insert(missing, "surround with walls + a door")
+		end
+	end
+
+	if req.attrCounts then
+		local inRegion = {}
+		for _, cell in ipairs(regionCells) do
+			inRegion[cell[1] .. ":" .. cell[2]] = true
+		end
+		for attrName, wanted in pairs(req.attrCounts) do
+			local count = 0
+			for _, info in ipairs(placedInfos) do
+				if info.model:GetAttribute(attrName) == true then
+					local overlaps = false
+					for x = info.gx, info.gx + info.w - 1 do
+						for z = info.gz, info.gz + info.d - 1 do
+							if inRegion[x .. ":" .. z] then
+								overlaps = true
+							end
+						end
+					end
+					if overlaps then
+						count += 1
+					end
+				end
+			end
+			if count < wanted then
+				local label = Config.RequirementText[attrName] or attrName
+				table.insert(missing, ("%d× %s"):format(wanted - count, label))
+			end
+		end
+	end
+
+	if #missing == 0 then
+		return true, "✓ ready"
+	end
+	return false, "needs: " .. table.concat(missing, ", ")
+end
+
 -- The room's name written flat on the floor, Prison Architect style.
--- One label per contiguous region, found by flood fill.
+-- One label per contiguous region, found by flood fill. Each label also
+-- shows the region's requirement status (PA's "this room needs...").
 local function rebuildLabels(zone)
 	local state = zoneRooms[zone]
 	state.labelsFolder:ClearAllChildren()
+
+	-- Snapshot the placed objects once for the requirement checks.
+	local placedInfos = {}
+	for _, model in ipairs(zone.placed:GetChildren()) do
+		local asset = Buildables.get(model:GetAttribute("Asset") or "")
+		local gx = model:GetAttribute("GX")
+		local gz = model:GetAttribute("GZ")
+		local r = model:GetAttribute("Rot")
+		if asset and type(gx) == "number" and type(gz) == "number" and type(r) == "number" then
+			local w, d = GridMath.footprint(asset, r)
+			table.insert(placedInfos, { model = model, gx = gx, gz = gz, w = w, d = d })
+		end
+	end
 
 	local map = state.map
 	local seen = {}
@@ -1513,9 +1853,11 @@ local function rebuildLabels(zone)
 				-- Flood-fill the whole connected region of this type.
 				seen[startKey] = true
 				local stack = { { x, z } }
+				local regionCells = {}
 				local minX, maxX, minZ, maxZ = x, x, z, z
 				while #stack > 0 do
 					local cell = table.remove(stack)
+					table.insert(regionCells, cell)
 					local cx, cz = cell[1], cell[2]
 					minX, maxX = math.min(minX, cx), math.max(maxX, cx)
 					minZ, maxZ = math.min(minZ, cz), math.max(maxZ, cz)
@@ -1545,12 +1887,14 @@ local function rebuildLabels(zone)
 				labelPart.CFrame = zone.info.corner
 					* CFrame.new((minX + maxX + 1) / 2 * GRID, 0.22, (minZ + maxZ + 1) / 2 * GRID)
 
+				local met, statusText = evaluateRegion(zone, Config.RoomTypes[t].name, regionCells, placedInfos)
+
 				local surface = Instance.new("SurfaceGui")
 				surface.Face = Enum.NormalId.Top
 				surface.PixelsPerStud = 25
 				surface.Parent = labelPart
 				local text = Instance.new("TextLabel")
-				text.Size = UDim2.new(1, 0, 1, 0)
+				text.Size = UDim2.new(1, 0, 0.58, 0)
 				text.BackgroundTransparency = 1
 				text.Font = Enum.Font.GothamBlack
 				text.TextScaled = true
@@ -1559,6 +1903,18 @@ local function rebuildLabels(zone)
 				text.TextStrokeTransparency = 0.6
 				text.Text = string.upper(Config.RoomTypes[t].name)
 				text.Parent = surface
+				local statusLabel = Instance.new("TextLabel")
+				statusLabel.AnchorPoint = Vector2.new(0, 1)
+				statusLabel.Position = UDim2.new(0, 0, 1, 0)
+				statusLabel.Size = UDim2.new(1, 0, 0.4, 0)
+				statusLabel.BackgroundTransparency = 1
+				statusLabel.Font = Enum.Font.GothamBold
+				statusLabel.TextScaled = true
+				statusLabel.TextColor3 = met and Color3.fromRGB(150, 255, 160) or Color3.fromRGB(255, 190, 120)
+				statusLabel.TextTransparency = 0.1
+				statusLabel.TextStrokeTransparency = 0.55
+				statusLabel.Text = statusText
+				statusLabel.Parent = surface
 
 				labelPart.Parent = state.labelsFolder
 			end
@@ -1590,11 +1946,28 @@ function RoomService.assignZone(player, zone, savedRooms)
 	local labelsFolder = Instance.new("Folder")
 	labelsFolder.Name = "RoomLabels"
 	labelsFolder.Parent = zone.part
-	zoneRooms[zone] = { map = {}, tilesFolder = tilesFolder, labelsFolder = labelsFolder, rowParts = {} }
+	local state = { map = {}, tilesFolder = tilesFolder, labelsFolder = labelsFolder, rowParts = {}, connections = {} }
+	zoneRooms[zone] = state
+
+	-- Building or bulldozing can change enclosure and object counts, so
+	-- requirement labels re-evaluate (debounced) on any placement change.
+	local function queueRebuild()
+		if state.rebuildQueued then
+			return
+		end
+		state.rebuildQueued = true
+		task.delay(0.2, function()
+			state.rebuildQueued = false
+			if zoneRooms[zone] == state then
+				rebuildLabels(zone)
+			end
+		end)
+	end
+	table.insert(state.connections, zone.placed.ChildAdded:Connect(queueRebuild))
+	table.insert(state.connections, zone.placed.ChildRemoved:Connect(queueRebuild))
 
 	-- Rebuild the paint from the save (stored as horizontal runs).
 	if type(savedRooms) == "table" then
-		local state = zoneRooms[zone]
 		local touchedRows = {}
 		for _, run in ipairs(savedRooms) do
 			if type(run) == "table"
@@ -1621,6 +1994,9 @@ function RoomService.releasePlayer(player)
 	local zone = playerZones[player]
 	playerZones[player] = nil
 	if zone and zoneRooms[zone] then
+		for _, connection in ipairs(zoneRooms[zone].connections) do
+			connection:Disconnect()
+		end
 		zoneRooms[zone].tilesFolder:Destroy()
 		zoneRooms[zone].labelsFolder:Destroy()
 		zoneRooms[zone] = nil
@@ -1691,7 +2067,7 @@ return RoomService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="14">
+      <Item class="ModuleScript" referent="15">
         <Properties>
           <string name="Name">SaveService</string>
           <string name="Source"><![CDATA[-- SaveService: cloud-saves each player's prison layout so it's rebuilt
@@ -1848,15 +2224,15 @@ return SaveService
       </Item>
     </Item>
   </Item>
-  <Item class="StarterPlayer" referent="15">
+  <Item class="StarterPlayer" referent="16">
     <Properties>
       <string name="Name">StarterPlayer</string>
     </Properties>
-    <Item class="StarterPlayerScripts" referent="16">
+    <Item class="StarterPlayerScripts" referent="17">
       <Properties>
         <string name="Name">StarterPlayerScripts</string>
       </Properties>
-      <Item class="LocalScript" referent="17">
+      <Item class="LocalScript" referent="18">
         <Properties>
           <string name="Name">Client</string>
           <string name="Source"><![CDATA[-- Lockdown client bootstrap. Runs on each player's own device and starts
@@ -1868,7 +2244,7 @@ require(script.IntakePanel).start()
 require(script.InmateAnimator).start()
 ]]></string>
         </Properties>
-        <Item class="ModuleScript" referent="18">
+        <Item class="ModuleScript" referent="19">
           <Properties>
             <string name="Name">BuildCamera</string>
             <string name="Source"><![CDATA[-- BuildCamera: the Prison Architect view. While build mode is open the
@@ -2085,13 +2461,14 @@ return BuildCamera
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="19">
+        <Item class="ModuleScript" referent="20">
           <Properties>
             <string name="Name">BuildMode</string>
             <string name="Source"><![CDATA[-- BuildMode: the whole building experience on the player's screen,
 -- arranged like Prison Architect's bottom toolbar:
 --
---   [🧱 Walls & Doors] [🟫 Flooring] [🎨 Rooms] [🪑 Objects] [🗑️ Bulldoze] [🏗️] [👮] [💡]
+--   [🏗️ Foundations] [🧱 Walls & Doors] [🟫 Flooring] [🎨 Rooms] [🪑 Objects]
+--   [✋ Move] [🗑️ Bulldoze] [↩ Undo] [👮] [💡]
 --
 -- Category buttons open an item panel above the bar (3D thumbnails for
 -- assets, color chips for rooms). Grayed-out buttons are future phases,
@@ -2100,9 +2477,12 @@ return BuildCamera
 -- automatically.
 --
 --   🔨 Build (or B)  ->  build mode: top-down camera + the toolbar
+--   Foundations       ->  drag a rectangle: walls around it, floor inside
 --   Objects           ->  ghost preview snaps to the grid; click places;
 --                         1-square assets PRESS-DRAG into whole lines
 --   Rooms             ->  pick the type FIRST, then drag a rectangle
+--   ✋ Move           ->  pick an object up and re-place it
+--   ↩ / Ctrl+Z       ->  undo placements and demolishes
 --   ↻ / R             ->  rotate 90°   ·   🗑️ Bulldoze -> click to demolish
 --
 -- The server re-validates everything — this file is just the friendly face.
@@ -2133,6 +2513,8 @@ function BuildMode.start()
 	local placeRequest = remotes:WaitForChild("PlaceRequest")
 	local placeLineRequest = remotes:WaitForChild("PlaceLineRequest")
 	local deleteRequest = remotes:WaitForChild("DeleteRequest")
+	local deleteManyRequest = remotes:WaitForChild("DeleteManyRequest")
+	local foundationRequest = remotes:WaitForChild("FoundationRequest")
 	local roomPaintRequest = remotes:WaitForChild("RoomPaintRequest")
 
 	local buildablesFolder = ReplicatedStorage:WaitForChild(Config.BuildablesFolderName)
@@ -2169,7 +2551,7 @@ function BuildMode.start()
 	local occupied = {}
 
 	-- State.
-	local mode = "off" -- "off" | "objects" | "rooms" | "delete"
+	local mode = "off" -- "off" | "objects" | "rooms" | "foundation" | "move" | "delete"
 	local currentCategory = categories[1] or "Objects"
 	local selected = nil
 	local selectedRoom = nil
@@ -2182,6 +2564,17 @@ function BuildMode.start()
 	local stretchBox = nil
 	local hoverHighlight = nil
 	local zoneBox = nil
+
+	-- Undo: a stack of inverse actions (Ctrl+Z or the ↩ button).
+	--   { kind = "place", models = {Model, ...} }        -> demolish them
+	--   { kind = "delete", items = { {n, x, z, r}, ... } } -> re-place them
+	local undoStack = {}
+	local function pushUndo(entry)
+		table.insert(undoStack, entry)
+		if #undoStack > 20 then
+			table.remove(undoStack, 1)
+		end
+	end
 
 	-- Occupancy mirror ---------------------------------------------------
 
@@ -2516,7 +2909,7 @@ function BuildMode.start()
 	local assetButtons = {} -- asset name -> { button, category }
 	local roomButtons = {}
 	local categoryButtons = {} -- category name -> toolbar button
-	local roomsButton, deleteButton
+	local roomsButton, deleteButton, foundationButton, moveButton
 
 	local function refreshSelectionLook()
 		for name, entry in pairs(assetButtons) do
@@ -2532,6 +2925,8 @@ function BuildMode.start()
 			button.BackgroundColor3 = (mode == "objects" and currentCategory == name) and SELECTED_BG or BUTTON_BG
 		end
 		roomsButton.BackgroundColor3 = (mode == "rooms") and SELECTED_BG or BUTTON_BG
+		foundationButton.BackgroundColor3 = (mode == "foundation") and SELECTED_BG or BUTTON_BG
+		moveButton.BackgroundColor3 = (mode == "move") and Color3.fromRGB(120, 110, 40) or BUTTON_BG
 		deleteButton.BackgroundColor3 = (mode == "delete") and Color3.fromRGB(140, 50, 50) or BUTTON_BG
 	end
 
@@ -2541,7 +2936,7 @@ function BuildMode.start()
 		end
 	end
 
-	local selectAsset, selectRoom
+	local selectAsset, selectRoom, tryMove, doUndo
 
 	for order, asset in ipairs(catalogOrdered) do
 		local tile = Instance.new("TextButton")
@@ -2720,8 +3115,13 @@ function BuildMode.start()
 		end
 	end
 
-	-- Build the toolbar buttons (PA order: build stuff, rooms, objects,
-	-- bulldoze, then the locked future tabs).
+	-- Build the toolbar buttons (PA order: foundations, build stuff,
+	-- rooms, objects, move/bulldoze/undo, then the locked future tabs).
+	foundationButton = toolbarButton("🏗️", "Foundations", true)
+	foundationButton.Activated:Connect(function()
+		setMode("foundation")
+		flashStatus("Drag a rectangle — walls around the edge, floor inside. Add a door after!", GREEN)
+	end)
 	for _, name in ipairs(categories) do
 		if name ~= "Objects" then
 			local button = toolbarButton(Config.CategoryIcons[name] or "📦", name, true)
@@ -2742,6 +3142,15 @@ function BuildMode.start()
 		end)
 		categoryButtons.Objects = button
 	end
+	moveButton = toolbarButton("✋", "Move", true)
+	moveButton.Activated:Connect(function()
+		if mode == "move" then
+			setMode("objects")
+		else
+			setMode("move")
+			flashStatus("Move: tap an object to pick it up", Color3.fromRGB(255, 230, 120))
+		end
+	end)
 	deleteButton = toolbarButton("🗑️", "Bulldoze", true)
 	deleteButton.Activated:Connect(function()
 		if mode == "delete" then
@@ -2750,6 +3159,10 @@ function BuildMode.start()
 			setMode("delete")
 			flashStatus("Bulldoze: tap an object to remove it", RED)
 		end
+	end)
+	local undoButton = toolbarButton("↩", "Undo", true)
+	undoButton.Activated:Connect(function()
+		doUndo()
 	end)
 	for _, future in ipairs(Config.ComingSoon) do
 		local button = toolbarButton(future.icon, future.name, false)
@@ -2777,6 +3190,9 @@ function BuildMode.start()
 			return placeRequest:InvokeServer(selected.name, gx, gz, rot)
 		end)
 		if ok and result and result.ok then
+			if result.model then
+				pushUndo({ kind = "place", models = { result.model } })
+			end
 			flashStatus(selected.name .. " placed!", GREEN)
 		elseif ok and result then
 			flashStatus(result.err or "Couldn't place that.", RED)
@@ -2788,9 +3204,26 @@ function BuildMode.start()
 			return placeLineRequest:InvokeServer(selected.name, x1, z1, x2, z2)
 		end)
 		if ok and result and result.ok then
+			if result.models then
+				pushUndo({ kind = "place", models = result.models })
+			end
 			flashStatus(("%d × %s placed!"):format(result.placed, selected.name), GREEN)
 		elseif ok and result then
 			flashStatus(result.err or "Couldn't build that line.", RED)
+		end
+	end
+
+	local function tryFoundation(x1, z1, x2, z2)
+		local ok, result = pcall(function()
+			return foundationRequest:InvokeServer(x1, z1, x2, z2)
+		end)
+		if ok and result and result.ok then
+			if result.models then
+				pushUndo({ kind = "place", models = result.models })
+			end
+			flashStatus(("Foundation built — %d pieces. Now add a door!"):format(result.built), GREEN)
+		elseif ok and result then
+			flashStatus(result.err or "Couldn't build that foundation.", RED)
 		end
 	end
 
@@ -2831,18 +3264,100 @@ function BuildMode.start()
 		return model
 	end
 
+	-- Read a placed model's identity before demolishing, so undo can
+	-- rebuild it exactly.
+	local function modelParams(model)
+		local name = model:GetAttribute("Asset")
+		local gx = model:GetAttribute("GX")
+		local gz = model:GetAttribute("GZ")
+		local r = model:GetAttribute("Rot")
+		if type(name) == "string" and type(gx) == "number" and type(gz) == "number" and type(r) == "number" then
+			return { n = name, x = gx, z = gz, r = r }
+		end
+		return nil
+	end
+
 	local function tryDelete()
 		local model = findPlacedModel()
 		if not model then
 			return
 		end
+		local params = modelParams(model)
 		local ok, result = pcall(function()
 			return deleteRequest:InvokeServer(model)
 		end)
 		if ok and result and result.ok then
+			if params then
+				pushUndo({ kind = "delete", items = { params } })
+			end
 			flashStatus("Demolished!", GREEN)
 		elseif ok and result then
 			flashStatus(result.err or "Couldn't demolish that.", RED)
+		end
+	end
+
+	-- The Move tool: pick an object up (it's demolished but remembered),
+	-- then place it wherever — Ctrl+Z puts it back where it was.
+	tryMove = function()
+		local model = findPlacedModel()
+		if not model then
+			return
+		end
+		local params = modelParams(model)
+		local asset = params and catalogByName[params.n]
+		if not asset then
+			flashStatus("Can't move that one.", RED)
+			return
+		end
+		local ok, result = pcall(function()
+			return deleteRequest:InvokeServer(model)
+		end)
+		if not (ok and result and result.ok) then
+			flashStatus((ok and result and result.err) or "Couldn't pick that up.", RED)
+			return
+		end
+		pushUndo({ kind = "delete", items = { params } })
+		currentCategory = asset.category
+		setMode("objects")
+		selectAsset(asset)
+		rot = params.r
+		flashStatus("Moving " .. asset.name .. " — click to re-place (Ctrl+Z puts it back)", Color3.fromRGB(255, 230, 120))
+	end
+
+	doUndo = function()
+		local entry = table.remove(undoStack)
+		if not entry then
+			flashStatus("Nothing to undo", Color3.fromRGB(220, 220, 220))
+			return
+		end
+		if entry.kind == "place" then
+			local alive = {}
+			for _, model in ipairs(entry.models) do
+				if typeof(model) == "Instance" and model.Parent ~= nil then
+					table.insert(alive, model)
+				end
+			end
+			if #alive == 0 then
+				flashStatus("Nothing to undo", Color3.fromRGB(220, 220, 220))
+				return
+			end
+			local ok, result = pcall(function()
+				return deleteManyRequest:InvokeServer(alive)
+			end)
+			if ok and result and result.ok then
+				flashStatus(("Undid %d placement%s"):format(result.deleted, result.deleted == 1 and "" or "s"), GREEN)
+			end
+		elseif entry.kind == "delete" then
+			local restored = 0
+			for _, item in ipairs(entry.items) do
+				local ok, result = pcall(function()
+					return placeRequest:InvokeServer(item.n, item.x, item.z, item.r)
+				end)
+				if ok and result and result.ok then
+					restored += 1
+				end
+			end
+			flashStatus(restored > 0 and "Restored!" or "Couldn't restore — spot taken?", restored > 0 and GREEN or RED)
 		end
 	end
 
@@ -2878,7 +3393,7 @@ function BuildMode.start()
 					pressing = true
 					pressStartCell = { cell[1], cell[2] }
 				end
-			elseif mode == "rooms" and selectedRoom ~= nil then
+			elseif (mode == "rooms" and selectedRoom ~= nil) or mode == "foundation" then
 				local gx, gz = cellUnderPointer(1, 1)
 				if gx then
 					pressing = true
@@ -2886,11 +3401,18 @@ function BuildMode.start()
 				end
 			elseif mode == "delete" then
 				tryDelete()
+			elseif mode == "move" then
+				tryMove()
 			end
 		elseif input.KeyCode == Enum.KeyCode.B then
 			setMode(mode == "off" and "objects" or "off")
 		elseif input.KeyCode == Enum.KeyCode.R and mode == "objects" then
 			rot = (rot + 1) % 4
+		elseif input.KeyCode == Enum.KeyCode.Z and mode ~= "off"
+			and (UserInputService:IsKeyDown(Enum.KeyCode.LeftControl)
+				or UserInputService:IsKeyDown(Enum.KeyCode.RightControl))
+		then
+			doUndo()
 		end
 	end)
 
@@ -2920,6 +3442,11 @@ function BuildMode.start()
 			local gx, gz = cellUnderPointer(1, 1)
 			if gx then
 				tryPaintRoom(pressStartCell[1], pressStartCell[2], gx, gz)
+			end
+		elseif mode == "foundation" and pressStartCell then
+			local gx, gz = cellUnderPointer(1, 1)
+			if gx then
+				tryFoundation(pressStartCell[1], pressStartCell[2], gx, gz)
 			end
 		end
 		pressStartCell = nil
@@ -2952,16 +3479,24 @@ function BuildMode.start()
 					showStretchBox(pressStartCell[1], pressStartCell[2], gx, gz, color)
 				end
 			end
-		elseif mode == "delete" then
+		elseif mode == "foundation" then
+			if pressing and pressStartCell then
+				local gx, gz = cellUnderPointer(1, 1)
+				if gx then
+					showStretchBox(pressStartCell[1], pressStartCell[2], gx, gz, Color3.fromRGB(120, 180, 255))
+				end
+			end
+		elseif mode == "delete" or mode == "move" then
 			local model = findPlacedModel()
 			if model then
+				local color = mode == "delete" and RED or Color3.fromRGB(255, 230, 120)
 				if not hoverHighlight then
 					hoverHighlight = Instance.new("Highlight")
-					hoverHighlight.FillColor = RED
 					hoverHighlight.FillTransparency = 0.6
-					hoverHighlight.OutlineColor = RED
 					hoverHighlight.Parent = gui
 				end
+				hoverHighlight.FillColor = color
+				hoverHighlight.OutlineColor = color
 				hoverHighlight.Adornee = model
 			elseif hoverHighlight then
 				hoverHighlight.Adornee = nil
@@ -2974,7 +3509,7 @@ return BuildMode
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="20">
+        <Item class="ModuleScript" referent="21">
           <Properties>
             <string name="Name">InmateAnimator</string>
             <string name="Source"><![CDATA[-- InmateAnimator: brings the blocky prisoners to life — entirely on each
@@ -3186,7 +3721,7 @@ return InmateAnimator
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="21">
+        <Item class="ModuleScript" referent="22">
           <Properties>
             <string name="Name">IntakePanel</string>
             <string name="Source"><![CDATA[-- IntakePanel: the warden's version of Prison Architect's Intake report.

@@ -10,6 +10,9 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config = require(ReplicatedStorage.Shared.Config)
+local GridMath = require(ReplicatedStorage.Shared.GridMath)
+local Buildables = require(script.Parent.Buildables)
+local PlacementService = require(script.Parent.PlacementService)
 
 local RoomService = {}
 
@@ -63,11 +66,108 @@ local function renderRow(zone, z)
 	end
 end
 
+-- Is this asset name something that walls a room in? Anything from the
+-- "Walls & Doors" category (doors count — a doorway isn't a hole).
+local function blocksEnclosure(assetName)
+	local asset = assetName and Buildables.get(assetName)
+	return asset ~= nil and (asset.category == "Walls & Doors" or asset.door)
+end
+
+-- Evaluate a painted region against Config.RoomRequirements. Returns
+-- (met, statusText).
+local function evaluateRegion(zone, typeName, regionCells, placedInfos)
+	local req = Config.RoomRequirements[typeName]
+	if not req then
+		return true, "✓"
+	end
+	local missing = {}
+
+	if req.minCells and #regionCells < req.minCells then
+		table.insert(missing, ("bigger room (%d/%d)"):format(#regionCells, req.minCells))
+	end
+
+	if req.enclosed then
+		local inRegion = {}
+		for _, cell in ipairs(regionCells) do
+			inRegion[cell[1] .. ":" .. cell[2]] = true
+		end
+		local enclosed = true
+		for _, cell in ipairs(regionCells) do
+			for _, step in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do
+				local nx, nz = cell[1] + step[1], cell[2] + step[2]
+				if not inRegion[nx .. ":" .. nz] then
+					local outOfBounds = nx < 0 or nx >= zone.info.cols or nz < 0 or nz >= zone.info.rows
+					if outOfBounds or not blocksEnclosure(PlacementService.cellAsset(zone, nx, nz)) then
+						enclosed = false
+					end
+				end
+				if not enclosed then
+					break
+				end
+			end
+			if not enclosed then
+				break
+			end
+		end
+		if not enclosed then
+			table.insert(missing, "surround with walls + a door")
+		end
+	end
+
+	if req.attrCounts then
+		local inRegion = {}
+		for _, cell in ipairs(regionCells) do
+			inRegion[cell[1] .. ":" .. cell[2]] = true
+		end
+		for attrName, wanted in pairs(req.attrCounts) do
+			local count = 0
+			for _, info in ipairs(placedInfos) do
+				if info.model:GetAttribute(attrName) == true then
+					local overlaps = false
+					for x = info.gx, info.gx + info.w - 1 do
+						for z = info.gz, info.gz + info.d - 1 do
+							if inRegion[x .. ":" .. z] then
+								overlaps = true
+							end
+						end
+					end
+					if overlaps then
+						count += 1
+					end
+				end
+			end
+			if count < wanted then
+				local label = Config.RequirementText[attrName] or attrName
+				table.insert(missing, ("%d× %s"):format(wanted - count, label))
+			end
+		end
+	end
+
+	if #missing == 0 then
+		return true, "✓ ready"
+	end
+	return false, "needs: " .. table.concat(missing, ", ")
+end
+
 -- The room's name written flat on the floor, Prison Architect style.
--- One label per contiguous region, found by flood fill.
+-- One label per contiguous region, found by flood fill. Each label also
+-- shows the region's requirement status (PA's "this room needs...").
 local function rebuildLabels(zone)
 	local state = zoneRooms[zone]
 	state.labelsFolder:ClearAllChildren()
+
+	-- Snapshot the placed objects once for the requirement checks.
+	local placedInfos = {}
+	for _, model in ipairs(zone.placed:GetChildren()) do
+		local asset = Buildables.get(model:GetAttribute("Asset") or "")
+		local gx = model:GetAttribute("GX")
+		local gz = model:GetAttribute("GZ")
+		local r = model:GetAttribute("Rot")
+		if asset and type(gx) == "number" and type(gz) == "number" and type(r) == "number" then
+			local w, d = GridMath.footprint(asset, r)
+			table.insert(placedInfos, { model = model, gx = gx, gz = gz, w = w, d = d })
+		end
+	end
 
 	local map = state.map
 	local seen = {}
@@ -79,9 +179,11 @@ local function rebuildLabels(zone)
 				-- Flood-fill the whole connected region of this type.
 				seen[startKey] = true
 				local stack = { { x, z } }
+				local regionCells = {}
 				local minX, maxX, minZ, maxZ = x, x, z, z
 				while #stack > 0 do
 					local cell = table.remove(stack)
+					table.insert(regionCells, cell)
 					local cx, cz = cell[1], cell[2]
 					minX, maxX = math.min(minX, cx), math.max(maxX, cx)
 					minZ, maxZ = math.min(minZ, cz), math.max(maxZ, cz)
@@ -111,12 +213,14 @@ local function rebuildLabels(zone)
 				labelPart.CFrame = zone.info.corner
 					* CFrame.new((minX + maxX + 1) / 2 * GRID, 0.22, (minZ + maxZ + 1) / 2 * GRID)
 
+				local met, statusText = evaluateRegion(zone, Config.RoomTypes[t].name, regionCells, placedInfos)
+
 				local surface = Instance.new("SurfaceGui")
 				surface.Face = Enum.NormalId.Top
 				surface.PixelsPerStud = 25
 				surface.Parent = labelPart
 				local text = Instance.new("TextLabel")
-				text.Size = UDim2.new(1, 0, 1, 0)
+				text.Size = UDim2.new(1, 0, 0.58, 0)
 				text.BackgroundTransparency = 1
 				text.Font = Enum.Font.GothamBlack
 				text.TextScaled = true
@@ -125,6 +229,18 @@ local function rebuildLabels(zone)
 				text.TextStrokeTransparency = 0.6
 				text.Text = string.upper(Config.RoomTypes[t].name)
 				text.Parent = surface
+				local statusLabel = Instance.new("TextLabel")
+				statusLabel.AnchorPoint = Vector2.new(0, 1)
+				statusLabel.Position = UDim2.new(0, 0, 1, 0)
+				statusLabel.Size = UDim2.new(1, 0, 0.4, 0)
+				statusLabel.BackgroundTransparency = 1
+				statusLabel.Font = Enum.Font.GothamBold
+				statusLabel.TextScaled = true
+				statusLabel.TextColor3 = met and Color3.fromRGB(150, 255, 160) or Color3.fromRGB(255, 190, 120)
+				statusLabel.TextTransparency = 0.1
+				statusLabel.TextStrokeTransparency = 0.55
+				statusLabel.Text = statusText
+				statusLabel.Parent = surface
 
 				labelPart.Parent = state.labelsFolder
 			end
@@ -156,11 +272,28 @@ function RoomService.assignZone(player, zone, savedRooms)
 	local labelsFolder = Instance.new("Folder")
 	labelsFolder.Name = "RoomLabels"
 	labelsFolder.Parent = zone.part
-	zoneRooms[zone] = { map = {}, tilesFolder = tilesFolder, labelsFolder = labelsFolder, rowParts = {} }
+	local state = { map = {}, tilesFolder = tilesFolder, labelsFolder = labelsFolder, rowParts = {}, connections = {} }
+	zoneRooms[zone] = state
+
+	-- Building or bulldozing can change enclosure and object counts, so
+	-- requirement labels re-evaluate (debounced) on any placement change.
+	local function queueRebuild()
+		if state.rebuildQueued then
+			return
+		end
+		state.rebuildQueued = true
+		task.delay(0.2, function()
+			state.rebuildQueued = false
+			if zoneRooms[zone] == state then
+				rebuildLabels(zone)
+			end
+		end)
+	end
+	table.insert(state.connections, zone.placed.ChildAdded:Connect(queueRebuild))
+	table.insert(state.connections, zone.placed.ChildRemoved:Connect(queueRebuild))
 
 	-- Rebuild the paint from the save (stored as horizontal runs).
 	if type(savedRooms) == "table" then
-		local state = zoneRooms[zone]
 		local touchedRows = {}
 		for _, run in ipairs(savedRooms) do
 			if type(run) == "table"
@@ -187,6 +320,9 @@ function RoomService.releasePlayer(player)
 	local zone = playerZones[player]
 	playerZones[player] = nil
 	if zone and zoneRooms[zone] then
+		for _, connection in ipairs(zoneRooms[zone].connections) do
+			connection:Disconnect()
+		end
 		zoneRooms[zone].tilesFolder:Destroy()
 		zoneRooms[zone].labelsFolder:Destroy()
 		zoneRooms[zone] = nil

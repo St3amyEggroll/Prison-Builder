@@ -10,7 +10,9 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local GridMath = require(ReplicatedStorage.Shared.GridMath)
+local Config = require(ReplicatedStorage.Shared.Config)
 local Buildables = require(script.Parent.Buildables)
+local DoorService = require(script.Parent.DoorService)
 
 local PlacementService = {}
 
@@ -50,6 +52,13 @@ local function setRegion(zone, gx, gz, w, d, value)
 	end)
 end
 
+-- Which asset (by name) occupies a grid square — RoomService uses this
+-- for enclosure checks. nil = empty.
+function PlacementService.cellAsset(zone, gx, gz)
+	local taken = occupancy[zone]
+	return taken and taken[gx .. ":" .. gz] or nil
+end
+
 -- The one true "make it exist" function — used by live purchases and by
 -- save-file rebuilds, so they can never behave differently.
 local function placeInternal(player, zone, asset, gx, gz, rot)
@@ -79,7 +88,11 @@ local function placeInternal(player, zone, asset, gx, gz, rot)
 	model:SetAttribute("Rot", rot)
 	model.Parent = zone.placed
 
-	setRegion(zone, gx, gz, w, d, true)
+	if asset.door then
+		DoorService.register(model, player)
+	end
+
+	setRegion(zone, gx, gz, w, d, asset.name)
 	table.insert(layouts[player], { n = asset.name, x = gx, z = gz, r = rot, id = id, model = model })
 	return model
 end
@@ -163,7 +176,7 @@ function PlacementService.handlePlace(player, assetName, gx, gz, rot)
 	if not model then
 		return { ok = false, err = err }
 	end
-	return { ok = true }
+	return { ok = true, model = model }
 end
 
 -- Drag-to-build: place a straight line of a 1x1 asset in one request
@@ -197,22 +210,25 @@ function PlacementService.handlePlaceLine(player, assetName, x1, z1, x2, z2)
 	-- Pieces auto-face along the drag: lengthwise walls form a solid run.
 	local rot = axis == "x" and 0 or 1
 
-	local placed = 0
+	local models = {}
 	for i = 0, count - 1 do
 		local gx = axis == "x" and startX + i or startX
 		local gz = axis == "z" and startZ + i or startZ
 		local model = placeInternal(player, zone, asset, gx, gz, rot)
 		if model then
-			placed += 1
+			table.insert(models, model)
 		end
 	end
-	if placed == 0 then
+	if #models == 0 then
 		return { ok = false, err = "Nothing free along that line." }
 	end
-	return { ok = true, placed = placed }
+	return { ok = true, placed = #models, models = models }
 end
 
-function PlacementService.handleDelete(player, model)
+-- The 🏗️ Foundations tool: drag a rectangle, get perimeter walls and an
+-- interior floor in one go (add a door yourself, like PA). Occupied
+-- squares are skipped rather than failing the whole build.
+function PlacementService.handleFoundation(player, x1, z1, x2, z2)
 	local zone = playerZones[player]
 	if not zone then
 		return { ok = false, err = "You don't have a plot yet." }
@@ -220,9 +236,50 @@ function PlacementService.handleDelete(player, model)
 	if tooFast(player) then
 		return { ok = false, err = "Too fast!" }
 	end
+	if type(x1) ~= "number" or type(z1) ~= "number" or type(x2) ~= "number" or type(z2) ~= "number" then
+		return { ok = false, err = "Bad request." }
+	end
+	local wallAsset = Buildables.get(Config.FoundationWallAsset)
+	local floorAsset = Buildables.get(Config.FoundationFloorAsset)
+	if not wallAsset or not floorAsset then
+		return { ok = false, err = ("Foundations need assets named '%s' and '%s' in Buildables."):format(
+			Config.FoundationWallAsset, Config.FoundationFloorAsset) }
+	end
+
+	local minX = math.max(0, math.floor(math.min(x1, x2)))
+	local maxX = math.min(zone.info.cols - 1, math.floor(math.max(x1, x2)))
+	local minZ = math.max(0, math.floor(math.min(z1, z2)))
+	local maxZ = math.min(zone.info.rows - 1, math.floor(math.max(z1, z2)))
+	local width, depth = maxX - minX + 1, maxZ - minZ + 1
+	if width < Config.FoundationMinSize or depth < Config.FoundationMinSize then
+		return { ok = false, err = ("Foundations need at least %d×%d squares."):format(
+			Config.FoundationMinSize, Config.FoundationMinSize) }
+	end
+	if width * depth > Config.FoundationMaxArea then
+		return { ok = false, err = ("Too big — foundations max out at %d squares per drag."):format(
+			Config.FoundationMaxArea) }
+	end
+
+	local models = {}
+	for z = minZ, maxZ do
+		for x = minX, maxX do
+			local isBorder = x == minX or x == maxX or z == minZ or z == maxZ
+			local model = placeInternal(player, zone, isBorder and wallAsset or floorAsset, x, z, 0)
+			if model then
+				table.insert(models, model)
+			end
+		end
+	end
+	if #models == 0 then
+		return { ok = false, err = "No room for a foundation there." }
+	end
+	return { ok = true, built = #models, models = models }
+end
+
+local function deleteOne(player, zone, model)
 	-- The model must be a real placed object inside THIS player's zone.
 	if typeof(model) ~= "Instance" or not model:IsA("Model") or model.Parent ~= zone.placed then
-		return { ok = false, err = "That's not yours to demolish." }
+		return false, "That's not yours to demolish."
 	end
 	local id = model:GetAttribute("LayoutId")
 
@@ -236,17 +293,59 @@ function PlacementService.handleDelete(player, model)
 			end
 			table.remove(layout, index)
 			model:Destroy()
-			return { ok = true }
+			return true
 		end
 	end
-	return { ok = false, err = "Couldn't find that object." }
+	return false, "Couldn't find that object."
+end
+
+function PlacementService.handleDelete(player, model)
+	local zone = playerZones[player]
+	if not zone then
+		return { ok = false, err = "You don't have a plot yet." }
+	end
+	if tooFast(player) then
+		return { ok = false, err = "Too fast!" }
+	end
+	local ok, err = deleteOne(player, zone, model)
+	if not ok then
+		return { ok = false, err = err }
+	end
+	return { ok = true }
+end
+
+-- Batch demolish, used by Undo to revert a whole line or foundation in
+-- one request.
+function PlacementService.handleDeleteMany(player, models)
+	local zone = playerZones[player]
+	if not zone then
+		return { ok = false, err = "You don't have a plot yet." }
+	end
+	if tooFast(player) then
+		return { ok = false, err = "Too fast!" }
+	end
+	if type(models) ~= "table" or #models > 512 then
+		return { ok = false, err = "Bad request." }
+	end
+	local deleted = 0
+	for _, model in ipairs(models) do
+		if deleteOne(player, zone, model) then
+			deleted += 1
+		end
+	end
+	if deleted == 0 then
+		return { ok = false, err = "Nothing to demolish." }
+	end
+	return { ok = true, deleted = deleted }
 end
 
 function PlacementService.init()
 	local remotes = ReplicatedStorage:WaitForChild("Remotes")
 	remotes.PlaceRequest.OnServerInvoke = PlacementService.handlePlace
 	remotes.PlaceLineRequest.OnServerInvoke = PlacementService.handlePlaceLine
+	remotes.FoundationRequest.OnServerInvoke = PlacementService.handleFoundation
 	remotes.DeleteRequest.OnServerInvoke = PlacementService.handleDelete
+	remotes.DeleteManyRequest.OnServerInvoke = PlacementService.handleDeleteMany
 end
 
 return PlacementService

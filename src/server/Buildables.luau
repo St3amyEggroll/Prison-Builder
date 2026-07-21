@@ -82,12 +82,15 @@ local PLACEHOLDERS = {
 			part({ Size = Vector3.new(0.4, 8, 0.4), CFrame = CFrame.new(-1.8, 4, 0) }, model)
 			part({ Size = Vector3.new(0.4, 8, 0.4), CFrame = CFrame.new(1.8, 4, 0) }, model)
 			part({ Size = Vector3.new(4, 0.5, 0.4), CFrame = CFrame.new(0, 7.75, 0) }, model)
+			-- The sliding slab: DoorService animates parts with this name.
 			part({
+				Name = "DoorPanel",
 				Size = Vector3.new(3.2, 7, 0.4),
 				CFrame = CFrame.new(0, 3.5, 0),
 				Material = Enum.Material.DiamondPlate,
 				Color = Color3.fromRGB(91, 105, 117),
 			}, model)
+			model:SetAttribute("Door", true)
 		end,
 	},
 	{

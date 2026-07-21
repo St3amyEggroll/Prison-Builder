@@ -42,7 +42,12 @@ That's the whole contract. No code edits, no naming lists, nothing to register.
 |---|---|---|
 | `Category` | string | Which bottom-toolbar button the asset lives under: `Walls & Doors`, `Flooring`, or `Objects` (the default). **A brand-new name (e.g. `Security`) automatically becomes a new toolbar button** — organize however you like. |
 | `SpawnsInmate` | boolean, ticked | Marks the asset as **housing for one prisoner**. Prisoners arrive via the 🚔 Intake menu, wait handcuffed at your gate, and get escorted into an empty one of these. Put it on cell-type assets. |
+| `Door` | boolean, ticked | The asset is a **working door**: it opens (slides down) when the plot's warden walks close and stays solid for everyone else. Name the sliding part(s) inside the model exactly `DoorPanel` — no part with that name and the whole model fades open instead. Doors also count as walls for room enclosure. |
 | `Price` | number | *Coming with the economy phase* — what it'll cost to place. Safe to add now. |
+
+**Two names the 🏗️ Foundations tool depends on:** it builds using the assets called `Wall` and `Floor Tile`. If you replace those placeholders, keep the names (or tell Claude to point the tool at your names in the config).
+
+**Room requirements read your assets too:** "enclosed" means every square around a painted room is filled by a `Walls & Doors`-category asset (doors count), and a Cell room wants one `SpawnsInmate` asset inside. The room's floor label shows what's missing, PA-style.
 
 **Sizing conventions worth copying from the placeholders:** the Wall fills a *whole* 4-stud grid square (so wall runs tile solid, Prison Architect style), and the Fence/Security Door are thin panels spanning the full 4-stud width (so doors drop cleanly into fence lines). Matching those shapes keeps your assets mixing well with drag-to-build.
 

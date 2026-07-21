@@ -2384,6 +2384,8 @@ local focus = Vector3.new()
 local yaw = 0
 local targetYaw = 0
 local dist = 90
+local targetDist = 90
+local panDragging = false -- middle-mouse held
 local zonePart = nil
 local savedFov = 70
 local connections = {}
@@ -2440,6 +2442,8 @@ function BuildCamera.enter(part)
 	local _, ry, _ = zoneCF:ToEulerAnglesYXZ()
 	yaw, targetYaw = ry, ry
 	dist = math.clamp(math.max(part.Size.X, part.Size.Z) * 1.6, MIN_DIST, MAX_DIST)
+	targetDist = dist
+	panDragging = false
 
 	setCharacterFrozen(true)
 	-- Respawns mid-build-mode need re-freezing.
@@ -2453,6 +2457,9 @@ function BuildCamera.enter(part)
 	end)
 
 	table.insert(connections, RunService.RenderStepped:Connect(function(dt)
+		-- Zoom glides instead of stepping.
+		dist += (targetDist - dist) * math.min(dt * 8, 1)
+
 		-- Keyboard panning, aligned to the camera's current rotation.
 		local pan = Vector3.new()
 		if UserInputService:IsKeyDown(Enum.KeyCode.W) or UserInputService:IsKeyDown(Enum.KeyCode.Up) then
@@ -2467,6 +2474,24 @@ function BuildCamera.enter(part)
 		if UserInputService:IsKeyDown(Enum.KeyCode.D) or UserInputService:IsKeyDown(Enum.KeyCode.Right) then
 			pan += Vector3.new(1, 0, 0)
 		end
+		-- Edge scrolling (PC): nudge the mouse against a screen edge to
+		-- pan, like every city builder since forever.
+		if UserInputService.MouseEnabled and not panDragging then
+			local mouse = UserInputService:GetMouseLocation()
+			local viewport = camera.ViewportSize
+			local margin = 16
+			if mouse.X <= margin then
+				pan += Vector3.new(-1, 0, 0)
+			elseif mouse.X >= viewport.X - margin then
+				pan += Vector3.new(1, 0, 0)
+			end
+			if mouse.Y <= margin then
+				pan += Vector3.new(0, 0, -1)
+			elseif mouse.Y >= viewport.Y - margin then
+				pan += Vector3.new(0, 0, 1)
+			end
+		end
+
 		if pan.Magnitude > 0 then
 			local speed = dist * 0.9 * dt
 			focus = clampFocus(focus + CFrame.Angles(0, yaw, 0):VectorToWorldSpace(pan.Unit * speed))
@@ -2481,7 +2506,13 @@ function BuildCamera.enter(part)
 
 	table.insert(connections, UserInputService.InputChanged:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseWheel then
-			dist = math.clamp(dist - input.Position.Z * 28, MIN_DIST, MAX_DIST)
+			targetDist = math.clamp(targetDist - input.Position.Z * 34, MIN_DIST, MAX_DIST)
+		elseif input.UserInputType == Enum.UserInputType.MouseMovement and panDragging then
+			-- Middle-mouse drag pans, RTS style.
+			local scale = dist / 550
+			focus = clampFocus(focus + CFrame.Angles(0, yaw, 0):VectorToWorldSpace(
+				Vector3.new(-input.Delta.X * scale, 0, -input.Delta.Y * scale)
+			))
 		elseif input.UserInputType == Enum.UserInputType.Touch and touches[input] then
 			local before = {}
 			local count = 0
@@ -2511,7 +2542,7 @@ function BuildCamera.enter(part)
 				local oldGap = (oldA - posB).Magnitude
 				local newGap = (newA - posB).Magnitude
 				if newGap > 1 and oldGap > 1 then
-					dist = math.clamp(dist * (oldGap / newGap), MIN_DIST, MAX_DIST)
+					targetDist = math.clamp(targetDist * (oldGap / newGap), MIN_DIST, MAX_DIST)
 				end
 			end
 			touches[input] = Vector2.new(input.Position.X, input.Position.Y)
@@ -2525,7 +2556,9 @@ function BuildCamera.enter(part)
 		if gameProcessed then
 			return
 		end
-		if input.KeyCode == Enum.KeyCode.Q then
+		if input.UserInputType == Enum.UserInputType.MouseButton3 then
+			panDragging = true
+		elseif input.KeyCode == Enum.KeyCode.Q then
 			targetYaw += math.rad(45)
 		elseif input.KeyCode == Enum.KeyCode.E then
 			targetYaw -= math.rad(45)
@@ -2535,6 +2568,8 @@ function BuildCamera.enter(part)
 	table.insert(connections, UserInputService.InputEnded:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.Touch then
 			touches[input] = nil
+		elseif input.UserInputType == Enum.UserInputType.MouseButton3 then
+			panDragging = false
 		end
 	end))
 end
@@ -2887,6 +2922,36 @@ function BuildMode.start()
 		ghostHighlight.OutlineColor = color
 	end
 
+	-- Inmate name tags clutter the top-down view — hide them (locally)
+	-- while build mode is open, including on inmates that arrive mid-build.
+	local CollectionService = game:GetService("CollectionService")
+	local tagsHidden = false
+	local tagConn = nil
+	local function setInmateTag(model, enabled)
+		local head = model:FindFirstChild("Head")
+		local nameTag = head and head:FindFirstChild("NameTag")
+		if nameTag then
+			nameTag.Enabled = enabled
+		end
+	end
+	local function setNameTagsHidden(hidden)
+		if hidden == tagsHidden then
+			return
+		end
+		tagsHidden = hidden
+		for _, model in ipairs(CollectionService:GetTagged("Inmate")) do
+			task.spawn(setInmateTag, model, not hidden)
+		end
+		if hidden then
+			tagConn = CollectionService:GetInstanceAddedSignal("Inmate"):Connect(function(model)
+				task.delay(0.5, setInmateTag, model, false)
+			end)
+		elseif tagConn then
+			tagConn:Disconnect()
+			tagConn = nil
+		end
+	end
+
 	-- Grid overlay: faint lines over the plot while building, so the
 	-- snapping reads at a glance. Client-side only — nobody else sees it.
 	local gridFolder = nil
@@ -3079,7 +3144,16 @@ function BuildMode.start()
 	local roomsList = makeList()
 	roomsList.Visible = false
 
+	-- The status line has a PERSISTENT hint (what the current tool does)
+	-- and temporary flashes (results/errors) that revert to it.
 	local statusId = 0
+	local statusDefault = ""
+	local function setStatusDefault(text)
+		statusId += 1
+		statusDefault = text
+		status.Text = text
+		status.TextColor3 = Color3.fromRGB(235, 235, 235)
+	end
 	local function flashStatus(text, color)
 		statusId += 1
 		local id = statusId
@@ -3087,7 +3161,8 @@ function BuildMode.start()
 		status.TextColor3 = color or Color3.fromRGB(255, 255, 255)
 		task.delay(2.5, function()
 			if statusId == id then
-				status.Text = ""
+				status.Text = statusDefault
+				status.TextColor3 = Color3.fromRGB(235, 235, 235)
 			end
 		end)
 	end
@@ -3266,6 +3341,21 @@ function BuildMode.start()
 		else
 			hideGrid()
 		end
+		setNameTagsHidden(mode ~= "off")
+
+		if mode == "objects" and not selected then
+			setStatusDefault("Pick an item from the panel below")
+		elseif mode == "rooms" and selectedRoom == nil then
+			setStatusDefault("Pick a room type below, then drag a rectangle")
+		elseif mode == "foundation" then
+			setStatusDefault("Drag a rectangle — walls around the edge, floor inside. Add a door after!")
+		elseif mode == "move" then
+			setStatusDefault("Move: click an object to pick it up")
+		elseif mode == "delete" then
+			setStatusDefault("Bulldoze: click an object, or drag a rectangle to clear an area")
+		elseif mode == "off" then
+			setStatusDefault("")
+		end
 
 		if zoneBox then
 			zoneBox:Destroy()
@@ -3304,10 +3394,13 @@ function BuildMode.start()
 		hideStretchBox()
 		makeGhost(asset)
 		refreshSelectionLook()
-		if asset.cellsW == 1 and asset.cellsD == 1 then
-			flashStatus("Placing " .. asset.name .. " — drag for a whole line! (R rotates)", GREEN)
+		local style = dragStyleOf(asset)
+		if style == "line" then
+			setStatusDefault("Placing " .. asset.name .. " — drag for a whole line! (R rotates)")
+		elseif style == "rect" then
+			setStatusDefault("Placing " .. asset.name .. " — drag to fill an area!")
 		else
-			flashStatus("Placing " .. asset.name .. " (R or ↻ rotates)", GREEN)
+			setStatusDefault("Placing " .. asset.name .. " (R or ↻ rotates)")
 		end
 	end
 
@@ -3322,9 +3415,9 @@ function BuildMode.start()
 		clearHover()
 		refreshSelectionLook()
 		if id == 0 then
-			flashStatus("Eraser — drag a rectangle to clear room paint", Color3.fromRGB(220, 220, 220))
+			setStatusDefault("Eraser — drag a rectangle to clear room paint")
 		else
-			flashStatus("Drag a rectangle to paint: " .. Config.RoomTypes[id].name, Config.RoomTypes[id].color)
+			setStatusDefault("Drag a rectangle to paint: " .. Config.RoomTypes[id].name)
 		end
 	end
 
@@ -3333,7 +3426,6 @@ function BuildMode.start()
 	foundationButton = toolbarButton("🏗️", "Foundations", true)
 	foundationButton.Activated:Connect(function()
 		setMode("foundation")
-		flashStatus("Drag a rectangle — walls around the edge, floor inside. Add a door after!", GREEN)
 	end)
 	for _, name in ipairs(categories) do
 		if name ~= "Objects" then
@@ -3361,7 +3453,6 @@ function BuildMode.start()
 			setMode("objects")
 		else
 			setMode("move")
-			flashStatus("Move: tap an object to pick it up", Color3.fromRGB(255, 230, 120))
 		end
 	end)
 	deleteButton = toolbarButton("🗑️", "Bulldoze", true)
@@ -3370,7 +3461,6 @@ function BuildMode.start()
 			setMode("objects")
 		else
 			setMode("delete")
-			flashStatus("Bulldoze: tap an object to remove it", RED)
 		end
 	end)
 	local undoButton = toolbarButton("↩", "Undo", true)
@@ -4134,6 +4224,9 @@ function IntakePanel.start()
 		housedLabel.Text = ("🔒 Housed: %d / %d"):format(housed, capacity)
 		waitingLabel.Text = ("⛓️ At the gate: %d"):format(waiting)
 		waitingLabel.TextColor3 = waiting > 0 and Color3.fromRGB(255, 200, 120) or Color3.fromRGB(255, 255, 255)
+		-- Badge on the button so a queue at the gate is visible at a glance.
+		toggle.Text = waiting > 0 and ("🚔 Intake (%d)"):format(waiting) or "🚔 Intake"
+		toggle.TextColor3 = waiting > 0 and Color3.fromRGB(255, 210, 130) or Color3.fromRGB(255, 255, 255)
 		autoButton.Text = auto and "Auto-intake: ON" or "Auto-intake: OFF"
 		autoButton.BackgroundColor3 = auto and Color3.fromRGB(60, 110, 60) or Color3.fromRGB(45, 52, 45)
 	end

@@ -27,6 +27,8 @@ local focus = Vector3.new()
 local yaw = 0
 local targetYaw = 0
 local dist = 90
+local targetDist = 90
+local panDragging = false -- middle-mouse held
 local zonePart = nil
 local savedFov = 70
 local connections = {}
@@ -83,6 +85,8 @@ function BuildCamera.enter(part)
 	local _, ry, _ = zoneCF:ToEulerAnglesYXZ()
 	yaw, targetYaw = ry, ry
 	dist = math.clamp(math.max(part.Size.X, part.Size.Z) * 1.6, MIN_DIST, MAX_DIST)
+	targetDist = dist
+	panDragging = false
 
 	setCharacterFrozen(true)
 	-- Respawns mid-build-mode need re-freezing.
@@ -96,6 +100,9 @@ function BuildCamera.enter(part)
 	end)
 
 	table.insert(connections, RunService.RenderStepped:Connect(function(dt)
+		-- Zoom glides instead of stepping.
+		dist += (targetDist - dist) * math.min(dt * 8, 1)
+
 		-- Keyboard panning, aligned to the camera's current rotation.
 		local pan = Vector3.new()
 		if UserInputService:IsKeyDown(Enum.KeyCode.W) or UserInputService:IsKeyDown(Enum.KeyCode.Up) then
@@ -110,6 +117,24 @@ function BuildCamera.enter(part)
 		if UserInputService:IsKeyDown(Enum.KeyCode.D) or UserInputService:IsKeyDown(Enum.KeyCode.Right) then
 			pan += Vector3.new(1, 0, 0)
 		end
+		-- Edge scrolling (PC): nudge the mouse against a screen edge to
+		-- pan, like every city builder since forever.
+		if UserInputService.MouseEnabled and not panDragging then
+			local mouse = UserInputService:GetMouseLocation()
+			local viewport = camera.ViewportSize
+			local margin = 16
+			if mouse.X <= margin then
+				pan += Vector3.new(-1, 0, 0)
+			elseif mouse.X >= viewport.X - margin then
+				pan += Vector3.new(1, 0, 0)
+			end
+			if mouse.Y <= margin then
+				pan += Vector3.new(0, 0, -1)
+			elseif mouse.Y >= viewport.Y - margin then
+				pan += Vector3.new(0, 0, 1)
+			end
+		end
+
 		if pan.Magnitude > 0 then
 			local speed = dist * 0.9 * dt
 			focus = clampFocus(focus + CFrame.Angles(0, yaw, 0):VectorToWorldSpace(pan.Unit * speed))
@@ -124,7 +149,13 @@ function BuildCamera.enter(part)
 
 	table.insert(connections, UserInputService.InputChanged:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseWheel then
-			dist = math.clamp(dist - input.Position.Z * 28, MIN_DIST, MAX_DIST)
+			targetDist = math.clamp(targetDist - input.Position.Z * 34, MIN_DIST, MAX_DIST)
+		elseif input.UserInputType == Enum.UserInputType.MouseMovement and panDragging then
+			-- Middle-mouse drag pans, RTS style.
+			local scale = dist / 550
+			focus = clampFocus(focus + CFrame.Angles(0, yaw, 0):VectorToWorldSpace(
+				Vector3.new(-input.Delta.X * scale, 0, -input.Delta.Y * scale)
+			))
 		elseif input.UserInputType == Enum.UserInputType.Touch and touches[input] then
 			local before = {}
 			local count = 0
@@ -154,7 +185,7 @@ function BuildCamera.enter(part)
 				local oldGap = (oldA - posB).Magnitude
 				local newGap = (newA - posB).Magnitude
 				if newGap > 1 and oldGap > 1 then
-					dist = math.clamp(dist * (oldGap / newGap), MIN_DIST, MAX_DIST)
+					targetDist = math.clamp(targetDist * (oldGap / newGap), MIN_DIST, MAX_DIST)
 				end
 			end
 			touches[input] = Vector2.new(input.Position.X, input.Position.Y)
@@ -168,7 +199,9 @@ function BuildCamera.enter(part)
 		if gameProcessed then
 			return
 		end
-		if input.KeyCode == Enum.KeyCode.Q then
+		if input.UserInputType == Enum.UserInputType.MouseButton3 then
+			panDragging = true
+		elseif input.KeyCode == Enum.KeyCode.Q then
 			targetYaw += math.rad(45)
 		elseif input.KeyCode == Enum.KeyCode.E then
 			targetYaw -= math.rad(45)
@@ -178,6 +211,8 @@ function BuildCamera.enter(part)
 	table.insert(connections, UserInputService.InputEnded:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.Touch then
 			touches[input] = nil
+		elseif input.UserInputType == Enum.UserInputType.MouseButton3 then
+			panDragging = false
 		end
 	end))
 end

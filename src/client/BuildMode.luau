@@ -305,6 +305,36 @@ function BuildMode.start()
 		ghostHighlight.OutlineColor = color
 	end
 
+	-- Inmate name tags clutter the top-down view — hide them (locally)
+	-- while build mode is open, including on inmates that arrive mid-build.
+	local CollectionService = game:GetService("CollectionService")
+	local tagsHidden = false
+	local tagConn = nil
+	local function setInmateTag(model, enabled)
+		local head = model:FindFirstChild("Head")
+		local nameTag = head and head:FindFirstChild("NameTag")
+		if nameTag then
+			nameTag.Enabled = enabled
+		end
+	end
+	local function setNameTagsHidden(hidden)
+		if hidden == tagsHidden then
+			return
+		end
+		tagsHidden = hidden
+		for _, model in ipairs(CollectionService:GetTagged("Inmate")) do
+			task.spawn(setInmateTag, model, not hidden)
+		end
+		if hidden then
+			tagConn = CollectionService:GetInstanceAddedSignal("Inmate"):Connect(function(model)
+				task.delay(0.5, setInmateTag, model, false)
+			end)
+		elseif tagConn then
+			tagConn:Disconnect()
+			tagConn = nil
+		end
+	end
+
 	-- Grid overlay: faint lines over the plot while building, so the
 	-- snapping reads at a glance. Client-side only — nobody else sees it.
 	local gridFolder = nil
@@ -497,7 +527,16 @@ function BuildMode.start()
 	local roomsList = makeList()
 	roomsList.Visible = false
 
+	-- The status line has a PERSISTENT hint (what the current tool does)
+	-- and temporary flashes (results/errors) that revert to it.
 	local statusId = 0
+	local statusDefault = ""
+	local function setStatusDefault(text)
+		statusId += 1
+		statusDefault = text
+		status.Text = text
+		status.TextColor3 = Color3.fromRGB(235, 235, 235)
+	end
 	local function flashStatus(text, color)
 		statusId += 1
 		local id = statusId
@@ -505,7 +544,8 @@ function BuildMode.start()
 		status.TextColor3 = color or Color3.fromRGB(255, 255, 255)
 		task.delay(2.5, function()
 			if statusId == id then
-				status.Text = ""
+				status.Text = statusDefault
+				status.TextColor3 = Color3.fromRGB(235, 235, 235)
 			end
 		end)
 	end
@@ -684,6 +724,21 @@ function BuildMode.start()
 		else
 			hideGrid()
 		end
+		setNameTagsHidden(mode ~= "off")
+
+		if mode == "objects" and not selected then
+			setStatusDefault("Pick an item from the panel below")
+		elseif mode == "rooms" and selectedRoom == nil then
+			setStatusDefault("Pick a room type below, then drag a rectangle")
+		elseif mode == "foundation" then
+			setStatusDefault("Drag a rectangle — walls around the edge, floor inside. Add a door after!")
+		elseif mode == "move" then
+			setStatusDefault("Move: click an object to pick it up")
+		elseif mode == "delete" then
+			setStatusDefault("Bulldoze: click an object, or drag a rectangle to clear an area")
+		elseif mode == "off" then
+			setStatusDefault("")
+		end
 
 		if zoneBox then
 			zoneBox:Destroy()
@@ -722,10 +777,13 @@ function BuildMode.start()
 		hideStretchBox()
 		makeGhost(asset)
 		refreshSelectionLook()
-		if asset.cellsW == 1 and asset.cellsD == 1 then
-			flashStatus("Placing " .. asset.name .. " — drag for a whole line! (R rotates)", GREEN)
+		local style = dragStyleOf(asset)
+		if style == "line" then
+			setStatusDefault("Placing " .. asset.name .. " — drag for a whole line! (R rotates)")
+		elseif style == "rect" then
+			setStatusDefault("Placing " .. asset.name .. " — drag to fill an area!")
 		else
-			flashStatus("Placing " .. asset.name .. " (R or ↻ rotates)", GREEN)
+			setStatusDefault("Placing " .. asset.name .. " (R or ↻ rotates)")
 		end
 	end
 
@@ -740,9 +798,9 @@ function BuildMode.start()
 		clearHover()
 		refreshSelectionLook()
 		if id == 0 then
-			flashStatus("Eraser — drag a rectangle to clear room paint", Color3.fromRGB(220, 220, 220))
+			setStatusDefault("Eraser — drag a rectangle to clear room paint")
 		else
-			flashStatus("Drag a rectangle to paint: " .. Config.RoomTypes[id].name, Config.RoomTypes[id].color)
+			setStatusDefault("Drag a rectangle to paint: " .. Config.RoomTypes[id].name)
 		end
 	end
 
@@ -751,7 +809,6 @@ function BuildMode.start()
 	foundationButton = toolbarButton("🏗️", "Foundations", true)
 	foundationButton.Activated:Connect(function()
 		setMode("foundation")
-		flashStatus("Drag a rectangle — walls around the edge, floor inside. Add a door after!", GREEN)
 	end)
 	for _, name in ipairs(categories) do
 		if name ~= "Objects" then
@@ -779,7 +836,6 @@ function BuildMode.start()
 			setMode("objects")
 		else
 			setMode("move")
-			flashStatus("Move: tap an object to pick it up", Color3.fromRGB(255, 230, 120))
 		end
 	end)
 	deleteButton = toolbarButton("🗑️", "Bulldoze", true)
@@ -788,7 +844,6 @@ function BuildMode.start()
 			setMode("objects")
 		else
 			setMode("delete")
-			flashStatus("Bulldoze: tap an object to remove it", RED)
 		end
 	end)
 	local undoButton = toolbarButton("↩", "Undo", true)

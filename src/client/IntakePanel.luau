@@ -115,6 +115,9 @@ function IntakePanel.start()
 		housedLabel.Text = ("🔒 Housed: %d / %d"):format(housed, capacity)
 		waitingLabel.Text = ("⛓️ At the gate: %d"):format(waiting)
 		waitingLabel.TextColor3 = waiting > 0 and Color3.fromRGB(255, 200, 120) or Color3.fromRGB(255, 255, 255)
+		-- Badge on the button so a queue at the gate is visible at a glance.
+		toggle.Text = waiting > 0 and ("🚔 Intake (%d)"):format(waiting) or "🚔 Intake"
+		toggle.TextColor3 = waiting > 0 and Color3.fromRGB(255, 210, 130) or Color3.fromRGB(255, 255, 255)
 		autoButton.Text = auto and "Auto-intake: ON" or "Auto-intake: OFF"
 		autoButton.BackgroundColor3 = auto and Color3.fromRGB(60, 110, 60) or Color3.fromRGB(45, 52, 45)
 	end

@@ -66,6 +66,14 @@ function InmateService.spawn(baseCF, cellIndex, parent, opts)
 	makePart("LeftLeg", Vector3.new(1, 2, 1), SHOE, root * CFrame.new(-0.5, 1, 0), model)
 	makePart("RightLeg", Vector3.new(1, 2, 1), SHOE, root * CFrame.new(0.5, 1, 0), model)
 	local torso = makePart("Torso", Vector3.new(2, 2, 1), jumpsuit, root * CFrame.new(0, 3, 0), model)
+	if outfit == "inmate" then
+		-- Two dark bands: the classic jailhouse jumpsuit read at a glance.
+		-- Unique names so the animator tracks each (it keys parts by name).
+		for i, yoff in ipairs({ 3.4, 2.6 }) do
+			makePart("Stripe" .. i, Vector3.new(2.05, 0.32, 1.05), Color3.fromRGB(35, 35, 40),
+				root * CFrame.new(0, yoff, 0), model)
+		end
+	end
 	makePart("LeftArm", Vector3.new(1, 2, 1), jumpsuit, root * CFrame.new(-1.5, 3, 0), model)
 	makePart("RightArm", Vector3.new(1, 2, 1), jumpsuit, root * CFrame.new(1.5, 3, 0), model)
 	local head = makePart("Head", Vector3.new(1.2, 1.2, 1.2), SKIN, root * CFrame.new(0, 4.6, 0), model)

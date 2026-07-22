@@ -1335,6 +1335,14 @@ function InmateService.spawn(baseCF, cellIndex, parent, opts)
 	makePart("LeftLeg", Vector3.new(1, 2, 1), SHOE, root * CFrame.new(-0.5, 1, 0), model)
 	makePart("RightLeg", Vector3.new(1, 2, 1), SHOE, root * CFrame.new(0.5, 1, 0), model)
 	local torso = makePart("Torso", Vector3.new(2, 2, 1), jumpsuit, root * CFrame.new(0, 3, 0), model)
+	if outfit == "inmate" then
+		-- Two dark bands: the classic jailhouse jumpsuit read at a glance.
+		-- Unique names so the animator tracks each (it keys parts by name).
+		for i, yoff in ipairs({ 3.4, 2.6 }) do
+			makePart("Stripe" .. i, Vector3.new(2.05, 0.32, 1.05), Color3.fromRGB(35, 35, 40),
+				root * CFrame.new(0, yoff, 0), model)
+		end
+	end
 	makePart("LeftArm", Vector3.new(1, 2, 1), jumpsuit, root * CFrame.new(-1.5, 3, 0), model)
 	makePart("RightArm", Vector3.new(1, 2, 1), jumpsuit, root * CFrame.new(1.5, 3, 0), model)
 	local head = makePart("Head", Vector3.new(1.2, 1.2, 1.2), SKIN, root * CFrame.new(0, 4.6, 0), model)
@@ -4095,6 +4103,8 @@ local targetYaw = 0
 local dist = 90
 local targetDist = 90
 local panDragging = false -- middle-mouse held
+local blendStart = 0 -- os.clock() when build mode was entered
+local blendFrom = nil -- camera CFrame we eased away from
 local zonePart = nil
 local savedFov = 70
 local connections = {}
@@ -4142,6 +4152,9 @@ function BuildCamera.enter(part)
 	touches = {}
 
 	local camera = workspace.CurrentCamera
+	-- Ease in from wherever the character camera was, instead of snapping.
+	blendFrom = camera.CFrame
+	blendStart = os.clock()
 	camera.CameraType = Enum.CameraType.Scriptable
 	savedFov = camera.FieldOfView
 	camera.FieldOfView = FOV
@@ -4188,15 +4201,18 @@ function BuildCamera.enter(part)
 		if UserInputService.MouseEnabled and not panDragging then
 			local mouse = UserInputService:GetMouseLocation()
 			local viewport = camera.ViewportSize
-			local margin = 16
+			local margin = 14
 			if mouse.X <= margin then
 				pan += Vector3.new(-1, 0, 0)
-			elseif mouse.X >= viewport.X - margin then
+			-- Skip the RIGHT edge: the dock buttons live there, so nudging
+			-- toward them shouldn't pan the camera.
+			elseif mouse.X >= viewport.X - margin and mouse.X < viewport.X - 90 then
 				pan += Vector3.new(1, 0, 0)
 			end
+			-- Skip the very bottom too (toolbar), keep the top.
 			if mouse.Y <= margin then
 				pan += Vector3.new(0, 0, -1)
-			elseif mouse.Y >= viewport.Y - margin then
+			elseif mouse.Y >= viewport.Y - margin and mouse.Y < viewport.Y - 80 then
 				pan += Vector3.new(0, 0, 1)
 			end
 		end
@@ -4210,7 +4226,15 @@ function BuildCamera.enter(part)
 
 		local offset = CFrame.Angles(0, yaw, 0) * CFrame.Angles(PITCH, 0, 0)
 		local camPos = focus - offset.LookVector * dist
-		camera.CFrame = CFrame.lookAt(camPos, focus)
+		local target = CFrame.lookAt(camPos, focus)
+		-- Smooth ~0.45s ease from the old camera into the build view.
+		local blend = math.clamp((os.clock() - blendStart) / 0.45, 0, 1)
+		if blend < 1 and blendFrom then
+			local eased = 1 - (1 - blend) * (1 - blend) -- ease-out quad
+			camera.CFrame = blendFrom:Lerp(target, eased)
+		else
+			camera.CFrame = target
+		end
 	end))
 
 	table.insert(connections, UserInputService.InputChanged:Connect(function(input)
@@ -4357,6 +4381,7 @@ local Format = require(ReplicatedStorage.Shared:WaitForChild("Format"))
 local GridMath = require(ReplicatedStorage.Shared:WaitForChild("GridMath"))
 local AssetCatalog = require(ReplicatedStorage.Shared:WaitForChild("AssetCatalog"))
 local BuildCamera = require(script.Parent.BuildCamera)
+local UIKit = require(script.Parent.UIKit)
 
 local BuildMode = {}
 
@@ -4812,20 +4837,9 @@ function BuildMode.start()
 	gui.Name = "LockdownBuild"
 	gui.ResetOnSpawn = false
 
-	local toggle = Instance.new("TextButton")
-	toggle.AnchorPoint = Vector2.new(1, 1)
-	toggle.Position = UDim2.new(1, -14, 1, -14)
-	toggle.Size = UDim2.new(0, 120, 0, 48)
-	toggle.BackgroundColor3 = PANEL_BG
-	toggle.BackgroundTransparency = 0.2
-	toggle.Font = Enum.Font.GothamBold
-	toggle.TextSize = 20
-	toggle.TextColor3 = Color3.fromRGB(255, 255, 255)
-	toggle.Text = "🔨 Build"
-	local toggleCorner = Instance.new("UICorner")
-	toggleCorner.CornerRadius = UDim.new(0, 12)
-	toggleCorner.Parent = toggle
-	toggle.Parent = gui
+	-- The Build button lives in the shared dock; created after setMode
+	-- exists (below) so its callback can reference it.
+	local toggle
 
 	-- The bottom bar (visible whenever build mode is open).
 	local toolbar = Instance.new("Frame")
@@ -5156,7 +5170,16 @@ function BuildMode.start()
 		objectsList.Visible = mode == "objects"
 		roomsList.Visible = mode == "rooms"
 		rotateButton.Visible = mode == "objects"
-		toggle.Text = mode == "off" and "🔨 Build" or "✖ Close"
+		if toggle then
+			UIKit.setActive(toggle, mode ~= "off")
+			local toggleIcon = toggle:FindFirstChild("Icon")
+			if toggleIcon then
+				toggleIcon.Text = mode == "off" and "🔨" or "✖"
+			end
+		end
+		if mode ~= "off" then
+			UIKit.closeAll() -- entering build mode shuts the intake/staff panels
+		end
 		refreshSelectionLook()
 		refreshTileVisibility()
 		refreshPanelSize()
@@ -5296,7 +5319,8 @@ function BuildMode.start()
 		end)
 	end
 
-	toggle.Activated:Connect(function()
+
+	toggle = UIKit.dockButton(playerGui, 1, "🔨", "Build", function()
 		setMode(mode == "off" and "objects" or "off")
 	end)
 	rotateButton.Activated:Connect(function()
@@ -6031,8 +6055,8 @@ function EmergencyBar.start()
 	gui.ResetOnSpawn = false
 
 	local row = Instance.new("Frame")
-	row.AnchorPoint = Vector2.new(1, 1)
-	row.Position = UDim2.new(1, -144, 1, -14)
+	row.AnchorPoint = Vector2.new(0, 1)
+	row.Position = UDim2.new(0, 14, 1, -14)
 	row.AutomaticSize = Enum.AutomaticSize.X
 	row.Size = UDim2.new(0, 0, 0, 48)
 	row.BackgroundTransparency = 1
@@ -6043,13 +6067,13 @@ function EmergencyBar.start()
 	layout.Parent = row
 
 	local note = Instance.new("TextLabel")
-	note.AnchorPoint = Vector2.new(1, 1)
-	note.Position = UDim2.new(1, -144, 1, -66)
+	note.AnchorPoint = Vector2.new(0, 1)
+	note.Position = UDim2.new(0, 14, 1, -66)
 	note.Size = UDim2.new(0, 240, 0, 18)
 	note.BackgroundTransparency = 1
 	note.Font = Enum.Font.GothamBold
 	note.TextScaled = true
-	note.TextXAlignment = Enum.TextXAlignment.Right
+	note.TextXAlignment = Enum.TextXAlignment.Left
 	note.TextColor3 = Color3.fromRGB(255, 170, 150)
 	note.TextStrokeTransparency = 0.5
 	note.Text = ""
@@ -6378,19 +6402,16 @@ return InmateAnimator
         <Item class="ModuleScript" referent="30">
           <Properties>
             <string name="Name">IntakePanel</string>
-            <string name="Source"><![CDATA[-- IntakePanel: the warden's version of Prison Architect's Intake report.
--- A 🚔 button opens a small panel showing the population, with a button
--- to accept one prisoner and a toggle for auto-intake (fill capacity).
--- The numbers update live from attributes the server sets on the Player.
+            <string name="Source"><![CDATA[-- IntakePanel: the warden's intake report — accept prisoners and toggle
+-- auto-intake. Lives in the shared dock (UIKit) so it can't overlap the
+-- other menus, and its dock button shows a badge when prisoners queue.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local IntakePanel = {}
+local UIKit = require(script.Parent.UIKit)
 
-local PANEL_BG = Color3.fromRGB(20, 24, 20)
-local GREEN = Color3.fromRGB(140, 255, 150)
-local RED = Color3.fromRGB(255, 120, 110)
+local IntakePanel = {}
 
 function IntakePanel.start()
 	local player = Players.LocalPlayer
@@ -6400,82 +6421,66 @@ function IntakePanel.start()
 	local gui = Instance.new("ScreenGui")
 	gui.Name = "LockdownIntake"
 	gui.ResetOnSpawn = false
+	gui.DisplayOrder = 6
 
-	local toggle = Instance.new("TextButton")
-	toggle.AnchorPoint = Vector2.new(1, 1)
-	toggle.Position = UDim2.new(1, -14, 1, -70)
-	toggle.Size = UDim2.new(0, 120, 0, 48)
-	toggle.BackgroundColor3 = PANEL_BG
-	toggle.BackgroundTransparency = 0.2
-	toggle.Font = Enum.Font.GothamBold
-	toggle.TextSize = 20
-	toggle.TextColor3 = Color3.fromRGB(255, 255, 255)
-	toggle.Text = "🚔 Intake"
-	local toggleCorner = Instance.new("UICorner")
-	toggleCorner.CornerRadius = UDim.new(0, 12)
-	toggleCorner.Parent = toggle
-	toggle.Parent = gui
-
-	local panel = Instance.new("Frame")
+	local panel = UIKit.card(gui, "IntakePanel")
 	panel.AnchorPoint = Vector2.new(1, 1)
-	panel.Position = UDim2.new(1, -14, 1, -126)
-	panel.Size = UDim2.new(0, 230, 0, 170)
-	panel.BackgroundColor3 = PANEL_BG
-	panel.BackgroundTransparency = 0.15
-	panel.Visible = false
-	local panelCorner = Instance.new("UICorner")
-	panelCorner.CornerRadius = UDim.new(0, 14)
-	panelCorner.Parent = panel
-	panel.Parent = gui
+	panel.Position = UDim2.new(1, -82, 1, -12)
+	panel.Size = UDim2.new(0, 250, 0, 176)
+	UIKit.registerPanel(panel)
 
-	local function makeLabel(y)
-		local label = Instance.new("TextLabel")
-		label.Position = UDim2.new(0, 12, 0, y)
-		label.Size = UDim2.new(1, -24, 0, 22)
-		label.BackgroundTransparency = 1
-		label.Font = Enum.Font.GothamBold
-		label.TextScaled = true
-		label.TextXAlignment = Enum.TextXAlignment.Left
-		label.TextColor3 = Color3.fromRGB(255, 255, 255)
-		label.Parent = panel
-		return label
+	local title = Instance.new("TextLabel")
+	title.Position = UDim2.new(0, 14, 0, 10)
+	title.Size = UDim2.new(1, -28, 0, 20)
+	title.BackgroundTransparency = 1
+	title.Font = Enum.Font.GothamBlack
+	title.TextScaled = true
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.TextColor3 = UIKit.WARN
+	title.Text = "🚔 INTAKE"
+	title.Parent = panel
+
+	local function label(y, color)
+		local l = Instance.new("TextLabel")
+		l.Position = UDim2.new(0, 14, 0, y)
+		l.Size = UDim2.new(1, -28, 0, 20)
+		l.BackgroundTransparency = 1
+		l.Font = Enum.Font.GothamBold
+		l.TextScaled = true
+		l.TextXAlignment = Enum.TextXAlignment.Left
+		l.TextColor3 = color or UIKit.TEXT
+		l.Parent = panel
+		return l
 	end
+	local housedLabel = label(36)
+	local waitingLabel = label(60)
+	local statusLabel = label(84, UIKit.DIM)
 
-	local housedLabel = makeLabel(10)
-	local waitingLabel = makeLabel(36)
-	local statusLabel = makeLabel(62)
-	statusLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-
-	local acceptButton = Instance.new("TextButton")
-	acceptButton.Position = UDim2.new(0, 12, 0, 90)
-	acceptButton.Size = UDim2.new(1, -24, 0, 34)
-	acceptButton.BackgroundColor3 = Color3.fromRGB(60, 110, 60)
-	acceptButton.Font = Enum.Font.GothamBold
-	acceptButton.TextSize = 17
-	acceptButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-	acceptButton.Text = "➕ Accept prisoner"
-	local acceptCorner = Instance.new("UICorner")
-	acceptCorner.CornerRadius = UDim.new(0, 10)
-	acceptCorner.Parent = acceptButton
-	acceptButton.Parent = panel
-
-	local autoButton = Instance.new("TextButton")
-	autoButton.Position = UDim2.new(0, 12, 0, 130)
-	autoButton.Size = UDim2.new(1, -24, 0, 30)
-	autoButton.BackgroundColor3 = Color3.fromRGB(45, 52, 45)
-	autoButton.Font = Enum.Font.GothamBold
-	autoButton.TextSize = 15
-	autoButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-	autoButton.Text = "Auto-intake: …"
-	local autoCorner = Instance.new("UICorner")
-	autoCorner.CornerRadius = UDim.new(0, 10)
-	autoCorner.Parent = autoButton
-	autoButton.Parent = panel
+	local function bigButton(y, color, text)
+		local b = Instance.new("TextButton")
+		b.Position = UDim2.new(0, 14, 0, y)
+		b.Size = UDim2.new(1, -28, 0, 32)
+		b.BackgroundColor3 = color
+		b.AutoButtonColor = true
+		b.Font = Enum.Font.GothamBold
+		b.TextSize = 16
+		b.TextColor3 = Color3.fromRGB(255, 255, 255)
+		b.Text = text
+		UIKit.corner(b, 10)
+		b.Parent = panel
+		return b
+	end
+	local acceptButton = bigButton(108, Color3.fromRGB(52, 120, 66), "➕ Accept prisoner")
+	local autoButton = bigButton(144, UIKit.BG2, "Auto-intake: …")
 
 	gui.Parent = playerGui
 
+	local dockButton = UIKit.dockButton(playerGui, 2, "🚔", "Intake", function()
+		UIKit.showOnly(panel)
+	end)
+
 	local statusId = 0
-	local function flashStatus(text, color)
+	local function flash(text, color)
 		statusId += 1
 		local id = statusId
 		statusLabel.Text = text
@@ -6494,34 +6499,26 @@ function IntakePanel.start()
 		local auto = player:GetAttribute("AutoIntake")
 		housedLabel.Text = ("🔒 Housed: %d / %d"):format(housed, capacity)
 		waitingLabel.Text = ("⛓️ At the gate: %d"):format(waiting)
-		waitingLabel.TextColor3 = waiting > 0 and Color3.fromRGB(255, 200, 120) or Color3.fromRGB(255, 255, 255)
-		-- Badge on the button so a queue at the gate is visible at a glance.
-		toggle.Text = waiting > 0 and ("🚔 Intake (%d)"):format(waiting) or "🚔 Intake"
-		toggle.TextColor3 = waiting > 0 and Color3.fromRGB(255, 210, 130) or Color3.fromRGB(255, 255, 255)
+		waitingLabel.TextColor3 = waiting > 0 and UIKit.WARN or UIKit.TEXT
 		autoButton.Text = auto and "Auto-intake: ON" or "Auto-intake: OFF"
-		autoButton.BackgroundColor3 = auto and Color3.fromRGB(60, 110, 60) or Color3.fromRGB(45, 52, 45)
+		autoButton.BackgroundColor3 = auto and Color3.fromRGB(52, 120, 66) or UIKit.BG2
+		UIKit.setBadge(dockButton, waiting > 0 and tostring(waiting) or nil)
 	end
-
 	for _, attr in ipairs({ "PrisonHoused", "PrisonCapacity", "PrisonWaiting", "AutoIntake" }) do
 		player:GetAttributeChangedSignal(attr):Connect(refresh)
 	end
 	refresh()
-
-	toggle.Activated:Connect(function()
-		panel.Visible = not panel.Visible
-	end)
 
 	acceptButton.Activated:Connect(function()
 		local ok, result = pcall(function()
 			return intakeRequest:InvokeServer("accept")
 		end)
 		if ok and result and result.ok then
-			flashStatus("New prisoner at the gate!", GREEN)
+			flash("New prisoner at the gate!", UIKit.GOOD)
 		elseif ok and result then
-			flashStatus(result.err or "Couldn't accept.", RED)
+			flash(result.err or "Couldn't accept.", UIKit.BAD)
 		end
 	end)
-
 	autoButton.Activated:Connect(function()
 		pcall(function()
 			return intakeRequest:InvokeServer("toggleAuto")
@@ -6619,21 +6616,18 @@ return MoodDisplay
         <Item class="ModuleScript" referent="32">
           <Properties>
             <string name="Name">StaffPanel</string>
-            <string name="Source"><![CDATA[-- StaffPanel: the 👮 Staff hire/fire panel (PA's Staff tab). A button
--- stack in the bottom-right opens a card with a row per staff type —
--- icon, name, live count, wage, and Hire / Fire buttons. Reads the
--- Staff_<Type> and StaffWage attributes the server publishes.
+            <string name="Source"><![CDATA[-- StaffPanel: hire/fire Guards, Cooks, Janitors (PA's Staff tab). Lives in
+-- the shared dock (UIKit) alongside Intake, so only one is open at a time
+-- and nothing overlaps.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
 local Format = require(ReplicatedStorage.Shared:WaitForChild("Format"))
+local UIKit = require(script.Parent.UIKit)
 
 local StaffPanel = {}
-
-local PANEL_BG = Color3.fromRGB(20, 24, 20)
-local RED = Color3.fromRGB(255, 120, 110)
 
 function StaffPanel.start()
 	local player = Players.LocalPlayer
@@ -6643,55 +6637,36 @@ function StaffPanel.start()
 	local gui = Instance.new("ScreenGui")
 	gui.Name = "LockdownStaff"
 	gui.ResetOnSpawn = false
+	gui.DisplayOrder = 6
 
-	local toggle = Instance.new("TextButton")
-	toggle.AnchorPoint = Vector2.new(1, 1)
-	toggle.Position = UDim2.new(1, -14, 1, -126)
-	toggle.Size = UDim2.new(0, 120, 0, 48)
-	toggle.BackgroundColor3 = PANEL_BG
-	toggle.BackgroundTransparency = 0.2
-	toggle.Font = Enum.Font.GothamBold
-	toggle.TextSize = 20
-	toggle.TextColor3 = Color3.fromRGB(255, 255, 255)
-	toggle.Text = "👮 Staff"
-	local toggleCorner = Instance.new("UICorner")
-	toggleCorner.CornerRadius = UDim.new(0, 12)
-	toggleCorner.Parent = toggle
-	toggle.Parent = gui
-
-	local rowH = 52
-	local panel = Instance.new("Frame")
+	local rowH = 50
+	local panel = UIKit.card(gui, "StaffPanel")
 	panel.AnchorPoint = Vector2.new(1, 1)
-	panel.Position = UDim2.new(1, -14, 1, -182)
-	panel.Size = UDim2.new(0, 300, 0, 40 + rowH * #Config.StaffTypes)
-	panel.BackgroundColor3 = PANEL_BG
-	panel.BackgroundTransparency = 0.15
-	panel.Visible = false
-	local panelCorner = Instance.new("UICorner")
-	panelCorner.CornerRadius = UDim.new(0, 14)
-	panelCorner.Parent = panel
+	panel.Position = UDim2.new(1, -82, 1, -12)
+	panel.Size = UDim2.new(0, 310, 0, 44 + rowH * #Config.StaffTypes)
+	UIKit.registerPanel(panel)
 
 	local wageLabel = Instance.new("TextLabel")
-	wageLabel.Position = UDim2.new(0, 12, 0, 8)
-	wageLabel.Size = UDim2.new(1, -24, 0, 22)
+	wageLabel.Position = UDim2.new(0, 14, 0, 10)
+	wageLabel.Size = UDim2.new(1, -28, 0, 22)
 	wageLabel.BackgroundTransparency = 1
-	wageLabel.Font = Enum.Font.GothamBold
+	wageLabel.Font = Enum.Font.GothamBlack
 	wageLabel.TextScaled = true
 	wageLabel.TextXAlignment = Enum.TextXAlignment.Left
-	wageLabel.TextColor3 = Color3.fromRGB(255, 220, 130)
+	wageLabel.TextColor3 = UIKit.WARN
 	wageLabel.Parent = panel
 
 	local countLabels = {}
 	for i, def in ipairs(Config.StaffTypes) do
-		local y = 36 + (i - 1) * rowH
+		local y = 40 + (i - 1) * rowH
 		local info = Instance.new("TextLabel")
-		info.Position = UDim2.new(0, 12, 0, y)
-		info.Size = UDim2.new(0, 170, 0, rowH - 8)
+		info.Position = UDim2.new(0, 14, 0, y)
+		info.Size = UDim2.new(0, 180, 0, rowH - 8)
 		info.BackgroundTransparency = 1
 		info.Font = Enum.Font.GothamBold
 		info.TextScaled = true
 		info.TextXAlignment = Enum.TextXAlignment.Left
-		info.TextColor3 = Color3.fromRGB(255, 255, 255)
+		info.TextColor3 = UIKit.TEXT
 		info.Parent = panel
 		countLabels[def.id] = info
 
@@ -6699,15 +6674,13 @@ function StaffPanel.start()
 			local b = Instance.new("TextButton")
 			b.AnchorPoint = Vector2.new(1, 0.5)
 			b.Position = UDim2.new(1, xoff, 0, y + (rowH - 8) / 2)
-			b.Size = UDim2.new(0, 44, 0, 36)
+			b.Size = UDim2.new(0, 40, 0, 34)
 			b.BackgroundColor3 = color
-			b.Font = Enum.Font.GothamBold
-			b.TextSize = 18
+			b.Font = Enum.Font.GothamBlack
+			b.TextSize = 20
 			b.TextColor3 = Color3.fromRGB(255, 255, 255)
 			b.Text = text
-			local c = Instance.new("UICorner")
-			c.CornerRadius = UDim.new(0, 10)
-			c.Parent = b
+			UIKit.corner(b, 10)
 			b.Activated:Connect(function()
 				pcall(function()
 					return staffRequest:InvokeServer(action, def.id)
@@ -6716,27 +6689,26 @@ function StaffPanel.start()
 			b.Parent = panel
 		end
 		actionButton("−", Color3.fromRGB(120, 50, 50), -14, "fire")
-		actionButton("+", Color3.fromRGB(60, 110, 60), -62, "hire")
+		actionButton("+", Color3.fromRGB(52, 120, 66), -60, "hire")
 	end
 
-	panel.Parent = gui
 	gui.Parent = playerGui
+
+	local dockButton = UIKit.dockButton(playerGui, 3, "👮", "Staff", function()
+		UIKit.showOnly(panel)
+	end)
 
 	local function refresh()
 		local total = player:GetAttribute("StaffWage") or 0
 		local unpaid = player:GetAttribute("StaffUnpaid") == true
-		wageLabel.Text = ("Payroll: %s / %ds%s"):format(Format.money(total), Config.WageInterval, unpaid and "  ⚠ UNPAID" or "")
-		wageLabel.TextColor3 = unpaid and RED or Color3.fromRGB(255, 220, 130)
+		wageLabel.Text = ("Payroll %s / %ds%s"):format(Format.money(total), Config.WageInterval, unpaid and "  ⚠ UNPAID" or "")
+		wageLabel.TextColor3 = unpaid and UIKit.BAD or UIKit.WARN
 		for _, def in ipairs(Config.StaffTypes) do
 			local n = player:GetAttribute("Staff_" .. def.id) or 0
 			countLabels[def.id].Text = ("%s %s: %d  (%s ea)"):format(def.icon, def.id, n, Format.money(def.wage))
 		end
+		UIKit.setBadge(dockButton, unpaid and "!" or nil)
 	end
-
-	toggle.Activated:Connect(function()
-		panel.Visible = not panel.Visible
-		refresh()
-	end)
 	for _, def in ipairs(Config.StaffTypes) do
 		player:GetAttributeChangedSignal("Staff_" .. def.id):Connect(refresh)
 	end
@@ -6746,6 +6718,208 @@ function StaffPanel.start()
 end
 
 return StaffPanel
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="33">
+          <Properties>
+            <string name="Name">UIKit</string>
+            <string name="Source"><![CDATA[-- UIKit: shared look-and-feel so every panel matches, plus two things
+-- that fix the "scattered corners / overlapping panels" mess:
+--   * a single bottom-right DOCK of icon buttons (Build, Intake, Staff…)
+--   * a panel coordinator so opening one panel closes the others.
+--
+-- Every client menu builds through here, so restyling the whole game is
+-- one file.
+
+local UIKit = {}
+
+-- Palette -----------------------------------------------------------------
+UIKit.BG = Color3.fromRGB(22, 26, 24)
+UIKit.BG2 = Color3.fromRGB(38, 44, 40)
+UIKit.ACCENT = Color3.fromRGB(90, 200, 130)
+UIKit.GOOD = Color3.fromRGB(120, 230, 140)
+UIKit.WARN = Color3.fromRGB(255, 200, 120)
+UIKit.BAD = Color3.fromRGB(255, 120, 110)
+UIKit.TEXT = Color3.fromRGB(240, 244, 240)
+UIKit.DIM = Color3.fromRGB(160, 168, 162)
+
+function UIKit.corner(inst, radius)
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0, radius or 12)
+	c.Parent = inst
+	return c
+end
+
+function UIKit.stroke(inst, color, thickness, transparency)
+	local s = Instance.new("UIStroke")
+	s.Color = color or Color3.fromRGB(0, 0, 0)
+	s.Thickness = thickness or 1
+	s.Transparency = transparency or 0.7
+	s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	s.Parent = inst
+	return s
+end
+
+function UIKit.pad(inst, px)
+	local p = Instance.new("UIPadding")
+	local u = UDim.new(0, px)
+	p.PaddingLeft, p.PaddingRight, p.PaddingTop, p.PaddingBottom = u, u, u, u
+	p.Parent = inst
+	return p
+end
+
+-- A soft drop shadow behind a frame (an ImageLabel would need an asset;
+-- a translucent stroke reads clean enough and needs nothing external).
+function UIKit.card(parent, name)
+	local frame = Instance.new("Frame")
+	frame.Name = name or "Card"
+	frame.BackgroundColor3 = UIKit.BG
+	frame.BackgroundTransparency = 0.08
+	frame.BorderSizePixel = 0
+	UIKit.corner(frame, 14)
+	UIKit.stroke(frame, Color3.fromRGB(0, 0, 0), 1, 0.5)
+	frame.Parent = parent
+	return frame
+end
+
+-- Panel coordination ------------------------------------------------------
+
+local panels = {} -- frame -> true
+
+-- Show `panel` and hide every other registered panel. Pass nil to close
+-- them all. Returns the panel's new visibility.
+function UIKit.showOnly(panel)
+	local wasVisible = panel and panel.Visible
+	for other in pairs(panels) do
+		other.Visible = false
+	end
+	if panel and not wasVisible then
+		panel.Visible = true
+		return true
+	end
+	return false
+end
+
+function UIKit.registerPanel(panel)
+	panels[panel] = true
+	panel.Visible = false
+end
+
+function UIKit.closeAll()
+	for other in pairs(panels) do
+		other.Visible = false
+	end
+end
+
+-- The dock ----------------------------------------------------------------
+
+local dockList = nil
+
+local function ensureDock(playerGui)
+	if dockList then
+		return dockList
+	end
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "LockdownDock"
+	gui.ResetOnSpawn = false
+	gui.DisplayOrder = 5
+
+	local holder = Instance.new("Frame")
+	holder.AnchorPoint = Vector2.new(1, 1)
+	holder.Position = UDim2.new(1, -12, 1, -12)
+	holder.Size = UDim2.new(0, 60, 0, 0)
+	holder.AutomaticSize = Enum.AutomaticSize.Y
+	holder.BackgroundTransparency = 1
+	local layout = Instance.new("UIListLayout")
+	layout.FillDirection = Enum.FillDirection.Vertical
+	layout.VerticalAlignment = Enum.VerticalAlignment.Bottom
+	layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	layout.Padding = UDim.new(0, 8)
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Parent = holder
+	holder.Parent = gui
+
+	gui.Parent = playerGui
+	dockList = holder
+	return holder
+end
+
+-- Add a square icon button to the dock. onClick receives the button so it
+-- can flip its own highlight. Returns the button.
+function UIKit.dockButton(playerGui, order, icon, label, onClick)
+	local dock = ensureDock(playerGui)
+	local button = Instance.new("TextButton")
+	button.LayoutOrder = order
+	button.Size = UDim2.new(0, 60, 0, 58)
+	button.BackgroundColor3 = UIKit.BG
+	button.BackgroundTransparency = 0.08
+	button.AutoButtonColor = false
+	button.Text = ""
+	UIKit.corner(button, 12)
+	UIKit.stroke(button, Color3.fromRGB(0, 0, 0), 1, 0.55)
+
+	local iconLabel = Instance.new("TextLabel")
+	iconLabel.Name = "Icon"
+	iconLabel.Size = UDim2.new(1, 0, 0, 30)
+	iconLabel.Position = UDim2.new(0, 0, 0, 5)
+	iconLabel.BackgroundTransparency = 1
+	iconLabel.Font = Enum.Font.GothamBold
+	iconLabel.TextSize = 22
+	iconLabel.Text = icon
+	iconLabel.Parent = button
+
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Size = UDim2.new(1, -4, 0, 16)
+	nameLabel.Position = UDim2.new(0, 2, 1, -18)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Font = Enum.Font.GothamBold
+	nameLabel.TextScaled = true
+	nameLabel.TextColor3 = UIKit.TEXT
+	nameLabel.Text = label
+	nameLabel.Parent = button
+
+	local badge = Instance.new("TextLabel")
+	badge.Name = "Badge"
+	badge.AnchorPoint = Vector2.new(1, 0)
+	badge.Position = UDim2.new(1, -2, 0, 2)
+	badge.Size = UDim2.new(0, 20, 0, 20)
+	badge.BackgroundColor3 = UIKit.BAD
+	badge.Font = Enum.Font.GothamBlack
+	badge.TextScaled = true
+	badge.TextColor3 = Color3.fromRGB(255, 255, 255)
+	badge.Text = ""
+	badge.Visible = false
+	UIKit.corner(badge, 10)
+	badge.Parent = button
+
+	button.Activated:Connect(function()
+		onClick(button)
+	end)
+	button.Parent = dock
+
+	return button
+end
+
+-- Flip a dock button's "active" look.
+function UIKit.setActive(button, active)
+	button.BackgroundColor3 = active and UIKit.ACCENT or UIKit.BG
+	button.BackgroundTransparency = active and 0 or 0.08
+	local icon = button:FindFirstChild("Icon")
+	if icon then
+		icon.TextColor3 = active and Color3.fromRGB(20, 30, 24) or UIKit.TEXT
+	end
+end
+
+function UIKit.setBadge(button, text)
+	local badge = button:FindFirstChild("Badge")
+	if badge then
+		badge.Text = text or ""
+		badge.Visible = text ~= nil and text ~= ""
+	end
+end
+
+return UIKit
 ]]></string>
           </Properties>
         </Item>

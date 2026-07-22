@@ -23,8 +23,8 @@ function EmergencyBar.start()
 	gui.ResetOnSpawn = false
 
 	local row = Instance.new("Frame")
-	row.AnchorPoint = Vector2.new(1, 1)
-	row.Position = UDim2.new(1, -144, 1, -14)
+	row.AnchorPoint = Vector2.new(0, 1)
+	row.Position = UDim2.new(0, 14, 1, -14)
 	row.AutomaticSize = Enum.AutomaticSize.X
 	row.Size = UDim2.new(0, 0, 0, 48)
 	row.BackgroundTransparency = 1
@@ -35,13 +35,13 @@ function EmergencyBar.start()
 	layout.Parent = row
 
 	local note = Instance.new("TextLabel")
-	note.AnchorPoint = Vector2.new(1, 1)
-	note.Position = UDim2.new(1, -144, 1, -66)
+	note.AnchorPoint = Vector2.new(0, 1)
+	note.Position = UDim2.new(0, 14, 1, -66)
 	note.Size = UDim2.new(0, 240, 0, 18)
 	note.BackgroundTransparency = 1
 	note.Font = Enum.Font.GothamBold
 	note.TextScaled = true
-	note.TextXAlignment = Enum.TextXAlignment.Right
+	note.TextXAlignment = Enum.TextXAlignment.Left
 	note.TextColor3 = Color3.fromRGB(255, 170, 150)
 	note.TextStrokeTransparency = 0.5
 	note.Text = ""

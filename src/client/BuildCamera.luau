@@ -29,6 +29,8 @@ local targetYaw = 0
 local dist = 90
 local targetDist = 90
 local panDragging = false -- middle-mouse held
+local blendStart = 0 -- os.clock() when build mode was entered
+local blendFrom = nil -- camera CFrame we eased away from
 local zonePart = nil
 local savedFov = 70
 local connections = {}
@@ -76,6 +78,9 @@ function BuildCamera.enter(part)
 	touches = {}
 
 	local camera = workspace.CurrentCamera
+	-- Ease in from wherever the character camera was, instead of snapping.
+	blendFrom = camera.CFrame
+	blendStart = os.clock()
 	camera.CameraType = Enum.CameraType.Scriptable
 	savedFov = camera.FieldOfView
 	camera.FieldOfView = FOV
@@ -122,15 +127,18 @@ function BuildCamera.enter(part)
 		if UserInputService.MouseEnabled and not panDragging then
 			local mouse = UserInputService:GetMouseLocation()
 			local viewport = camera.ViewportSize
-			local margin = 16
+			local margin = 14
 			if mouse.X <= margin then
 				pan += Vector3.new(-1, 0, 0)
-			elseif mouse.X >= viewport.X - margin then
+			-- Skip the RIGHT edge: the dock buttons live there, so nudging
+			-- toward them shouldn't pan the camera.
+			elseif mouse.X >= viewport.X - margin and mouse.X < viewport.X - 90 then
 				pan += Vector3.new(1, 0, 0)
 			end
+			-- Skip the very bottom too (toolbar), keep the top.
 			if mouse.Y <= margin then
 				pan += Vector3.new(0, 0, -1)
-			elseif mouse.Y >= viewport.Y - margin then
+			elseif mouse.Y >= viewport.Y - margin and mouse.Y < viewport.Y - 80 then
 				pan += Vector3.new(0, 0, 1)
 			end
 		end
@@ -144,7 +152,15 @@ function BuildCamera.enter(part)
 
 		local offset = CFrame.Angles(0, yaw, 0) * CFrame.Angles(PITCH, 0, 0)
 		local camPos = focus - offset.LookVector * dist
-		camera.CFrame = CFrame.lookAt(camPos, focus)
+		local target = CFrame.lookAt(camPos, focus)
+		-- Smooth ~0.45s ease from the old camera into the build view.
+		local blend = math.clamp((os.clock() - blendStart) / 0.45, 0, 1)
+		if blend < 1 and blendFrom then
+			local eased = 1 - (1 - blend) * (1 - blend) -- ease-out quad
+			camera.CFrame = blendFrom:Lerp(target, eased)
+		else
+			camera.CFrame = target
+		end
 	end))
 
 	table.insert(connections, UserInputService.InputChanged:Connect(function(input)

@@ -31,6 +31,7 @@ local Format = require(ReplicatedStorage.Shared:WaitForChild("Format"))
 local GridMath = require(ReplicatedStorage.Shared:WaitForChild("GridMath"))
 local AssetCatalog = require(ReplicatedStorage.Shared:WaitForChild("AssetCatalog"))
 local BuildCamera = require(script.Parent.BuildCamera)
+local UIKit = require(script.Parent.UIKit)
 
 local BuildMode = {}
 
@@ -486,20 +487,9 @@ function BuildMode.start()
 	gui.Name = "LockdownBuild"
 	gui.ResetOnSpawn = false
 
-	local toggle = Instance.new("TextButton")
-	toggle.AnchorPoint = Vector2.new(1, 1)
-	toggle.Position = UDim2.new(1, -14, 1, -14)
-	toggle.Size = UDim2.new(0, 120, 0, 48)
-	toggle.BackgroundColor3 = PANEL_BG
-	toggle.BackgroundTransparency = 0.2
-	toggle.Font = Enum.Font.GothamBold
-	toggle.TextSize = 20
-	toggle.TextColor3 = Color3.fromRGB(255, 255, 255)
-	toggle.Text = "🔨 Build"
-	local toggleCorner = Instance.new("UICorner")
-	toggleCorner.CornerRadius = UDim.new(0, 12)
-	toggleCorner.Parent = toggle
-	toggle.Parent = gui
+	-- The Build button lives in the shared dock; created after setMode
+	-- exists (below) so its callback can reference it.
+	local toggle
 
 	-- The bottom bar (visible whenever build mode is open).
 	local toolbar = Instance.new("Frame")
@@ -830,7 +820,16 @@ function BuildMode.start()
 		objectsList.Visible = mode == "objects"
 		roomsList.Visible = mode == "rooms"
 		rotateButton.Visible = mode == "objects"
-		toggle.Text = mode == "off" and "🔨 Build" or "✖ Close"
+		if toggle then
+			UIKit.setActive(toggle, mode ~= "off")
+			local toggleIcon = toggle:FindFirstChild("Icon")
+			if toggleIcon then
+				toggleIcon.Text = mode == "off" and "🔨" or "✖"
+			end
+		end
+		if mode ~= "off" then
+			UIKit.closeAll() -- entering build mode shuts the intake/staff panels
+		end
 		refreshSelectionLook()
 		refreshTileVisibility()
 		refreshPanelSize()
@@ -970,7 +969,8 @@ function BuildMode.start()
 		end)
 	end
 
-	toggle.Activated:Connect(function()
+
+	toggle = UIKit.dockButton(playerGui, 1, "🔨", "Build", function()
 		setMode(mode == "off" and "objects" or "off")
 	end)
 	rotateButton.Activated:Connect(function()

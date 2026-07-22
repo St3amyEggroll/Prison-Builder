@@ -144,7 +144,37 @@ function CashHud.start(opts)
 	stuckLine.Text = ""
 	stuckLine.Parent = gui
 
+	-- Security alerts (escapes, catches, lockdowns) under it, in red.
+	local alertLine = Instance.new("TextLabel")
+	alertLine.AnchorPoint = Vector2.new(0.5, 0)
+	alertLine.Position = UDim2.new(0.5, 0, 0, 32)
+	alertLine.Size = UDim2.new(0, 480, 0, 20)
+	alertLine.BackgroundTransparency = 1
+	alertLine.Font = Enum.Font.GothamBold
+	alertLine.TextScaled = true
+	alertLine.TextColor3 = Color3.fromRGB(255, 140, 125)
+	alertLine.TextStrokeTransparency = 0.45
+	alertLine.Text = ""
+	alertLine.Parent = gui
+
 	gui.Parent = playerGui
+
+	local alertId = 0
+	player:GetAttributeChangedSignal("SecurityAlert"):Connect(function()
+		local raw = player:GetAttribute("SecurityAlert")
+		if type(raw) ~= "string" then
+			return
+		end
+		-- The server prefixes a counter so repeat alerts still fire.
+		alertId += 1
+		local id = alertId
+		alertLine.Text = string.match(raw, "^%d+|(.*)$") or raw
+		task.delay(6, function()
+			if alertId == id then
+				alertLine.Text = ""
+			end
+		end)
+	end)
 
 	-- Cash count-up + blips off the Balance row -------------------------
 	local shown = cashValue.Value
@@ -200,16 +230,21 @@ function CashHud.start(opts)
 			and "⚠ Arrivals can't reach a cell — is there a door path?" or ""
 	end
 	local function refreshClockSub()
-		clockSub.Text = ("Day %d — %s"):format(
-			player:GetAttribute("PrisonDay") or 1,
-			player:GetAttribute("RegimeActivity") or "FreeTime"
-		)
+		local day = player:GetAttribute("PrisonDay") or 1
+		if player:GetAttribute("PrisonLockdown") == true then
+			clockSub.Text = ("Day %d — LOCKDOWN"):format(day)
+			clockSub.TextColor3 = UIKit.BAD
+		else
+			clockSub.Text = ("Day %d — %s"):format(day, player:GetAttribute("RegimeActivity") or "FreeTime")
+			clockSub.TextColor3 = UIKit.DIM
+		end
 	end
 	for _, attr in ipairs({ "PrisonHoused", "PrisonCapacity", "PrisonWaiting", "IntakeStuck", "PrisonUnrest" }) do
 		player:GetAttributeChangedSignal(attr):Connect(refreshStats)
 	end
 	player:GetAttributeChangedSignal("PrisonDay"):Connect(refreshClockSub)
 	player:GetAttributeChangedSignal("RegimeActivity"):Connect(refreshClockSub)
+	player:GetAttributeChangedSignal("PrisonLockdown"):Connect(refreshClockSub)
 	refreshStats()
 	refreshClockSub()
 

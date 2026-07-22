@@ -144,9 +144,9 @@ local function evaluateRegion(zone, typeName, regionCells, placedInfos, blockedC
 	end
 
 	if #missing == 0 then
-		return true, "✓ ready"
+		return true, ""
 	end
-	return false, "needs: " .. table.concat(missing, ", ")
+	return false, "Needs: " .. table.concat(missing, ", ")
 end
 
 -- The room's name written flat on the floor, Prison Architect style.
@@ -225,7 +225,6 @@ local function rebuildLabels(zone)
 				end
 
 				local widthStuds = (maxX - minX + 1) * GRID
-				local depthStuds = (maxZ - minZ + 1) * GRID
 				local labelPart = Instance.new("Part")
 				labelPart.Name = "RoomLabel"
 				labelPart.Anchored = true
@@ -234,12 +233,9 @@ local function rebuildLabels(zone)
 				labelPart.CanTouch = false
 				labelPart.CastShadow = false
 				labelPart.Transparency = 1
-				labelPart.Size = Vector3.new(math.min(widthStuds, 28), 0.05, math.clamp(depthStuds, 3, 7))
-				-- Rotated 180 so the text reads correctly from the plot's
-				-- front (+Z side), where the build camera starts.
+				labelPart.Size = Vector3.new(1, 1, 1)
 				labelPart.CFrame = zone.info.corner
-					* CFrame.new((minX + maxX + 1) / 2 * GRID, 0.22, (minZ + maxZ + 1) / 2 * GRID)
-					* CFrame.Angles(0, math.pi, 0)
+					* CFrame.new((minX + maxX + 1) / 2 * GRID, 0.4, (minZ + maxZ + 1) / 2 * GRID)
 
 				local typeName = Config.RoomTypes[t].name
 				local met, statusText = evaluateRegion(zone, typeName, regionCells, placedInfos, blockedCells)
@@ -266,32 +262,55 @@ local function rebuildLabels(zone)
 					end
 				end
 
-				local surface = Instance.new("SurfaceGui")
-				surface.Face = Enum.NormalId.Top
-				surface.PixelsPerStud = 25
-				surface.Parent = labelPart
-				local text = Instance.new("TextLabel")
-				text.Size = UDim2.new(1, 0, 0.58, 0)
-				text.BackgroundTransparency = 1
-				text.Font = Enum.Font.GothamBlack
-				text.TextScaled = true
-				text.TextColor3 = Color3.fromRGB(255, 255, 255)
-				text.TextTransparency = 0.15
-				text.TextStrokeTransparency = 0.6
-				text.Text = string.upper(Config.RoomTypes[t].name)
-				text.Parent = surface
-				local statusLabel = Instance.new("TextLabel")
-				statusLabel.AnchorPoint = Vector2.new(0, 1)
-				statusLabel.Position = UDim2.new(0, 0, 1, 0)
-				statusLabel.Size = UDim2.new(1, 0, 0.4, 0)
-				statusLabel.BackgroundTransparency = 1
-				statusLabel.Font = Enum.Font.GothamBold
-				statusLabel.TextScaled = true
-				statusLabel.TextColor3 = met and Color3.fromRGB(150, 255, 160) or Color3.fromRGB(255, 190, 120)
-				statusLabel.TextTransparency = 0.1
-				statusLabel.TextStrokeTransparency = 0.55
-				statusLabel.Text = statusText
-				statusLabel.Parent = surface
+				-- The label: a billboard, so it's always upright and readable
+				-- no matter how the camera is rotated (flat floor text went
+				-- sideways). Sized in studs so it scales naturally with zoom.
+				-- PA rule: a valid room shows just its name; an invalid one
+				-- explains what's missing underneath in amber.
+				local gui = Instance.new("BillboardGui")
+				gui.Name = "Label"
+				gui.Size = UDim2.new(math.clamp(widthStuds * 0.8, 10, 24), 0, 4.4, 0)
+				gui.StudsOffset = Vector3.new(0, 2, 0)
+				gui.MaxDistance = 450
+				gui.LightInfluence = 0
+				gui.Parent = labelPart
+
+				local title = Instance.new("TextLabel")
+				title.Size = UDim2.new(1, 0, met and 0.62 or 0.5, 0)
+				title.Position = UDim2.new(0, 0, met and 0.12 or 0, 0)
+				title.BackgroundTransparency = 1
+				title.Font = Enum.Font.GothamBlack
+				title.TextScaled = true
+				title.TextColor3 = Color3.fromRGB(255, 255, 255)
+				title.TextTransparency = 0.05
+				title.TextStrokeColor3 = Color3.fromRGB(15, 18, 22)
+				title.TextStrokeTransparency = 0.25
+				title.Text = string.upper(typeName)
+				title.Parent = gui
+
+				-- A thin underline in the room's color ties name to paint.
+				local underline = Instance.new("Frame")
+				underline.AnchorPoint = Vector2.new(0.5, 0)
+				underline.Position = UDim2.new(0.5, 0, met and 0.78 or 0.52, 0)
+				underline.Size = UDim2.new(0.4, 0, 0.06, 0)
+				underline.BackgroundColor3 = Config.RoomTypes[t].color
+				underline.BorderSizePixel = 0
+				underline.Parent = gui
+
+				if not met then
+					local needsLabel = Instance.new("TextLabel")
+					needsLabel.AnchorPoint = Vector2.new(0, 1)
+					needsLabel.Position = UDim2.new(0, 0, 1, 0)
+					needsLabel.Size = UDim2.new(1, 0, 0.34, 0)
+					needsLabel.BackgroundTransparency = 1
+					needsLabel.Font = Enum.Font.GothamBold
+					needsLabel.TextScaled = true
+					needsLabel.TextColor3 = Color3.fromRGB(255, 196, 120)
+					needsLabel.TextStrokeColor3 = Color3.fromRGB(15, 18, 22)
+					needsLabel.TextStrokeTransparency = 0.3
+					needsLabel.Text = statusText
+					needsLabel.Parent = gui
+				end
 
 				labelPart.Parent = state.labelsFolder
 			end

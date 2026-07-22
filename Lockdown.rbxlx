@@ -131,8 +131,10 @@ Config.FallbackPrice = 50
 -- Construction -----------------------------------------------------------
 
 -- Placements start as transparent blueprints; workmen walk over and
--- build them (Prison Architect's whole vibe).
-Config.WorkmenPerPlot = 2
+-- build them (Prison Architect's whole vibe). Workmen are STAFF now —
+-- every prison opens with this many on payroll, and more are hired
+-- (click-placed) from the Staff tab.
+Config.StartingWorkmen = 2
 Config.WorkerSpeed = 6 -- studs/sec walking to the job
 Config.BuildTimeBase = 1 -- seconds per job...
 Config.BuildTimePerCell = 0.5 -- ...plus this per grid square of footprint
@@ -197,11 +199,13 @@ Config.UnrestFall = 0.2
 -- Staff -------------------------------------------------------------------
 
 -- Hiring is free; wages charge continuously (per WageInterval slice of a
--- day). Can't pay? Someone quits — PA rules.
+-- day). Can't pay? Someone quits — cheapest first, workmen last (they're
+-- the crew that builds everything). PA's staff menu order: Workman first.
 Config.StaffTypes = {
-	{ id = "Guard", icon = "👮", wage = 150, outfit = "guard" },
-	{ id = "Cook", icon = "🍳", wage = 100, outfit = "cook" },
-	{ id = "Janitor", icon = "🧹", wage = 80, outfit = "janitor" },
+	{ id = "Workman", wage = 40, outfit = "worker" },
+	{ id = "Guard", wage = 150, outfit = "guard" },
+	{ id = "Cook", wage = 100, outfit = "cook" },
+	{ id = "Janitor", wage = 80, outfit = "janitor" },
 }
 Config.WageInterval = 30
 Config.MaxStaffPerType = 10
@@ -222,8 +226,35 @@ Config.ComingSoon = {
 	{ icon = "intelligence", name = "Intelligence", note = "Intelligence — informants & contraband come with Phase 5" },
 	{ icon = "quickbuild", name = "Quick Build", note = "Quick Build — one-click premade rooms come in a later phase" },
 	{ icon = "planning", name = "Planning", note = "Planning — sketch layouts for free comes in a later phase" },
-	{ icon = "emergencies", name = "Emergencies", note = "Emergencies — lockdowns & callouts come with Phase 5" },
 }
+
+-- Security (Phase 5) ------------------------------------------------------
+
+-- Guards patrol on their own: an idle guard rolls PatrolChance every
+-- PatrolInterval seconds and wanders to a random walkable square.
+Config.PatrolInterval = 5
+Config.PatrolChance = 0.5
+Config.PatrolSpeed = 4 -- studs/sec on patrol (they RUN during a chase)
+
+-- Escapes: each check, every housed prisoner rolls a chance built from
+-- prison-wide unrest plus their own desperation (worst need < 20). The
+-- runner sprints for the plot's front row along the walk grid — through
+-- doors, never through walls — so a sealed prison keeps everyone in.
+Config.EscapeCheckInterval = 6
+Config.EscapeUnrestFactor = 0.15 -- per-check chance at 100% unrest
+Config.EscapeDesperationChance = 0.06 -- extra for desperate prisoners
+Config.EscapeCooldown = 45 -- seconds before the same prisoner retries
+Config.EscapeRunSpeed = 5.5 -- studs/sec (faster than an escort walk)
+Config.EscapeFine = 500 -- the fine when one gets away
+
+-- A free (or patrolling) guard chases: they aim for a point 70% along
+-- the runner's path and win if they can reach it nearly in time.
+Config.InterceptFraction = 0.7
+Config.GuardCatchGrace = 1.5 -- seconds of slack the guard is allowed
+
+-- Emergencies.
+Config.RollCallCooldown = 45 -- seconds between roll calls
+Config.LockdownCalm = 0.5 -- unrest drop per second while locked down
 
 -- Foundations ------------------------------------------------------------
 
@@ -497,6 +528,7 @@ for _, name in ipairs({
 	"RoomPaintRequest",
 	"IntakeRequest",
 	"StaffRequest",
+	"EmergencyRequest",
 }) do
 	local remote = Instance.new("RemoteFunction")
 	remote.Name = name
@@ -517,6 +549,7 @@ local RoomService = require(script.RoomService)
 local IntakeService = require(script.IntakeService)
 local StaffService = require(script.StaffService)
 local NeedsService = require(script.NeedsService)
+local SecurityService = require(script.SecurityService)
 local PlotService = require(script.PlotService)
 
 SaveService.init()
@@ -530,6 +563,7 @@ RoomService.init()
 IntakeService.init()
 StaffService.init()
 NeedsService.init()
+SecurityService.init()
 PlotService.init()
 
 -- Cross-system wiring, all in one visible place:
@@ -550,7 +584,7 @@ RoomService.onRoomsChanged(function(player)
 	IntakeService.poke(player)
 end)
 
-print("[Lockdown] Server ready — Phase 4: needs, regime, staff")
+print("[Lockdown] Server ready — Phase 5: security, escapes, emergencies")
 ]]></string>
       </Properties>
       <Item class="ModuleScript" referent="8">
@@ -753,9 +787,11 @@ return Buildables
         <Properties>
           <string name="Name">ConstructionService</string>
           <string name="Source"><![CDATA[-- ConstructionService: Prison Architect's construction feel. Placements
--- arrive as BLUEPRINTS — see-through, blue-glowing, non-solid — and each
--- plot's crew of workmen walk over (pathfinding around walls, through
--- doors) and hammer them into real objects.
+-- arrive as BLUEPRINTS — see-through, blue-glowing, non-solid — and the
+-- WORKMEN ON STAFF walk over (pathfinding around walls, through doors)
+-- and hammer them into real objects. The crew is whatever StaffService
+-- says it is: hire more workmen under Staff and blueprints go up faster;
+-- lose them all to an unpaid payroll and construction simply stops.
 --
 -- A blueprint isn't functional yet: doors don't work, housing doesn't
 -- count as capacity, and it doesn't satisfy room requirements until a
@@ -765,15 +801,15 @@ local Debris = game:GetService("Debris")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config = require(ReplicatedStorage.Shared.Config)
-local InmateService = require(script.Parent.InmateService)
 local DoorService = require(script.Parent.DoorService)
 local PathService = require(script.Parent.PathService)
+local StaffService = require(script.Parent.StaffService)
 
 local ConstructionService = {}
 
 local PIVOT_HEIGHT = 3 -- rig pivot rides 3 studs above the feet
 
--- player -> { zone, folder, workers = { {model, busy} }, queue = { {model, asset, player} } }
+-- player -> { zone, busy = {model = true}, queue = { {model, asset, saved} } }
 local records = {}
 local completionListeners = {} -- fns(player, model, asset)
 
@@ -866,28 +902,13 @@ end
 -- Wiring (called by PlotService) ------------------------------------------
 
 function ConstructionService.assignPlayer(player, zone)
-	local folder = Instance.new("Folder")
-	folder.Name = "Workers"
-	folder.Parent = zone.part
-
-	local rec = { zone = zone, folder = folder, workers = {}, queue = {} }
-	records[player] = rec
-
-	-- The crew waits by the front-left corner of the plot.
-	local size = zone.part.Size
-	for i = 1, Config.WorkmenPerPlot do
-		local post = zone.part.CFrame * CFrame.new(-size.X / 2 + 6 + (i - 1) * 4, size.Y / 2, size.Z / 2 - 4)
-		local model = InmateService.spawn(post, i, folder, { outfit = "worker" })
-		table.insert(rec.workers, { model = model, busy = false })
-	end
+	-- The workman models themselves live with StaffService — this record
+	-- only tracks the job queue and who's mid-hammer.
+	records[player] = { zone = zone, busy = {}, queue = {} }
 end
 
 function ConstructionService.releasePlayer(player)
-	local rec = records[player]
 	records[player] = nil
-	if rec then
-		rec.folder:Destroy()
-	end
 end
 
 function ConstructionService.init()
@@ -903,13 +924,21 @@ function ConstructionService.init()
 					continue
 				end
 
-				for _, worker in ipairs(rec.workers) do
+				-- Prune busy marks for workmen who quit/were fired mid-job.
+				for model in pairs(rec.busy) do
+					if model.Parent == nil then
+						rec.busy[model] = nil
+					end
+				end
+
+				-- The crew is the Workmen on staff, right now.
+				for _, workman in ipairs(StaffService.getStaff(player, "Workman")) do
 					local job = table.remove(rec.queue, 1)
 					if not job then
 						break
 					end
-					if worker.busy or worker.model.Parent == nil then
-						-- Not available: put the job back for the next worker.
+					if rec.busy[workman] then
+						-- Not available: put the job back for the next one.
 						table.insert(rec.queue, 1, job)
 						continue
 					end
@@ -933,7 +962,7 @@ function ConstructionService.init()
 						rec.zone.part.Position.Y + rec.zone.part.Size.Y / 2,
 						boxCF.Position.Z
 					)
-					local fromPos = worker.model:GetPivot().Position - Vector3.new(0, PIVOT_HEIGHT, 0)
+					local fromPos = workman:GetPivot().Position - Vector3.new(0, PIVOT_HEIGHT, 0)
 					local route = PathService.findRoute(rec.zone, fromPos, footprint, targetPos)
 					if not route then
 						table.insert(rec.queue, job)
@@ -946,14 +975,16 @@ function ConstructionService.init()
 						table.remove(route)
 					end
 
-					worker.busy = true
-					local duration = PathService.startWalk(worker.model, route, Config.WorkerSpeed)
+					rec.busy[workman] = true
+					local duration = PathService.startWalk(workman, route, Config.WorkerSpeed)
 					local cells = footprint.w * footprint.d
 					local buildTime = Config.BuildTimeBase + Config.BuildTimePerCell * cells
 
 					task.spawn(function()
 						task.wait(duration)
-						if worker.model.Parent == nil then
+						if workman.Parent == nil then
+							-- They quit mid-walk: the job goes back on the pile.
+							table.insert(rec.queue, 1, job)
 							return
 						end
 						-- Arrive next to the job and start hammering.
@@ -964,14 +995,14 @@ function ConstructionService.init()
 						else
 							standCF = CFrame.new(stand)
 						end
-						PathService.finishWalk(worker.model, standCF * CFrame.new(0, PIVOT_HEIGHT, 0))
-						worker.model:SetAttribute("Working", true)
+						PathService.finishWalk(workman, standCF * CFrame.new(0, PIVOT_HEIGHT, 0))
+						workman:SetAttribute("Working", true)
 						task.wait(buildTime)
-						worker.model:SetAttribute("Working", nil)
+						workman:SetAttribute("Working", nil)
 						if job.model.Parent ~= nil then
 							completeBlueprint(player, job)
 						end
-						worker.busy = false
+						rec.busy[workman] = nil
 					end)
 				end
 			end
@@ -1252,6 +1283,9 @@ function EconomyService.init()
 					-- Miserable prisons pay less: 100% unrest halves grants.
 					local unrest = player:GetAttribute("PrisonUnrest") or 0
 					local amount = math.floor(housed * Config.GrantPerPrisoner * (1 - unrest / 200))
+					if player:GetAttribute("PrisonLockdown") == true then
+						amount = math.floor(amount * 0.5) -- locked-down prisons earn half
+					end
 					EconomyService.credit(player, amount)
 					for _, fn in ipairs(grantedListeners) do
 						task.spawn(fn, player, amount)
@@ -1902,6 +1936,10 @@ local function step(player)
 		hour = frac * 24
 	end
 	local activity = Config.activityAt(hour)
+	local lockdown = player:GetAttribute("PrisonLockdown") == true
+	if lockdown then
+		activity = "Sleep" -- lockdown: everyone to their cells, whatever the hour
+	end
 
 	local housed = IntakeService.getHoused(player)
 	local guardCount = StaffService.count(player, "Guard")
@@ -1930,7 +1968,14 @@ local function step(player)
 		)
 
 		-- Behaviour: go where the regime says, recover the right need there.
-		if not life.walking and workspace:GetServerTimeNow() >= life.walkUntil then
+		-- Runners answer to SecurityService, not the regime — just keep
+		-- their logical position roughly in sync while they sprint.
+		local escaping = model:GetAttribute("Escaping") == true
+		if escaping then
+			life.pos = model:GetPivot().Position - Vector3.new(0, PIVOT_HEIGHT, 0)
+			life.walking = false
+			life.walkUntil = workspace:GetServerTimeNow() + 2
+		elseif not life.walking and workspace:GetServerTimeNow() >= life.walkUntil then
 			local target, need, provided = resolveActivity(player, zone, life, entry.house, activity)
 			if target and (target - life.pos).Magnitude > ARRIVE_DIST then
 				walkTo(zone, model, life, target)
@@ -1965,9 +2010,13 @@ local function step(player)
 		end
 	end
 
-	-- Prison-wide unrest: nudge toward the neglect level.
+	-- Prison-wide unrest: nudge toward the neglect level. A lockdown
+	-- cools things fast (while the neglected needs quietly pile up for
+	-- after — lift it too late and the anger comes right back).
 	local unrest = player:GetAttribute("PrisonUnrest") or 0
-	if prisonerCount > 0 then
+	if lockdown then
+		unrest = math.max(0, unrest - Config.LockdownCalm * Config.NeedTick)
+	elseif prisonerCount > 0 then
 		local pressure = unrestSum / prisonerCount -- 0..40ish
 		if pressure > 8 then
 			unrest = math.min(100, unrest + Config.UnrestRise * Config.NeedTick)
@@ -2212,6 +2261,12 @@ end
 -- Convenience: is this square reachable at all from that position?
 function PathService.canReach(zone, fromPos, footprint, targetPos)
 	return PathService.findRoute(zone, fromPos, footprint, targetPos) ~= nil
+end
+
+-- Public walkability check (StaffService validates click-placement with
+-- it; SecurityService picks patrol squares and escape gates).
+function PathService.isWalkable(zone, x, z)
+	return isWalkable(zone, x, z)
 end
 
 -- Walk speed shared by escorts unless the caller overrides.
@@ -2833,6 +2888,7 @@ local RoomService = require(script.Parent.RoomService)
 local IntakeService = require(script.Parent.IntakeService)
 local StaffService = require(script.Parent.StaffService)
 local NeedsService = require(script.Parent.NeedsService)
+local SecurityService = require(script.Parent.SecurityService)
 local ConstructionService = require(script.Parent.ConstructionService)
 
 local PlotService = {}
@@ -3083,6 +3139,7 @@ local function assignZone(player)
 	IntakeService.assignPlayer(player, zone, data.intake)
 	StaffService.assignPlayer(player, zone, data.staff)
 	NeedsService.assignPlayer(player, zone)
+	SecurityService.assignPlayer(player, zone)
 	SaveService.attachSource(player, "layout", PlacementService.snapshotLayout)
 	SaveService.attachSource(player, "rooms", RoomService.snapshotRooms)
 	SaveService.attachSource(player, "intake", IntakeService.snapshotIntake)
@@ -3117,6 +3174,7 @@ local function assignZone(player)
 end
 
 local function releaseZone(player)
+	SecurityService.releasePlayer(player)
 	NeedsService.releasePlayer(player)
 	StaffService.releasePlayer(player)
 	IntakeService.releasePlayer(player)
@@ -3303,9 +3361,9 @@ local function evaluateRegion(zone, typeName, regionCells, placedInfos, blockedC
 	end
 
 	if #missing == 0 then
-		return true, "✓ ready"
+		return true, ""
 	end
-	return false, "needs: " .. table.concat(missing, ", ")
+	return false, "Needs: " .. table.concat(missing, ", ")
 end
 
 -- The room's name written flat on the floor, Prison Architect style.
@@ -3384,7 +3442,6 @@ local function rebuildLabels(zone)
 				end
 
 				local widthStuds = (maxX - minX + 1) * GRID
-				local depthStuds = (maxZ - minZ + 1) * GRID
 				local labelPart = Instance.new("Part")
 				labelPart.Name = "RoomLabel"
 				labelPart.Anchored = true
@@ -3393,12 +3450,9 @@ local function rebuildLabels(zone)
 				labelPart.CanTouch = false
 				labelPart.CastShadow = false
 				labelPart.Transparency = 1
-				labelPart.Size = Vector3.new(math.min(widthStuds, 28), 0.05, math.clamp(depthStuds, 3, 7))
-				-- Rotated 180 so the text reads correctly from the plot's
-				-- front (+Z side), where the build camera starts.
+				labelPart.Size = Vector3.new(1, 1, 1)
 				labelPart.CFrame = zone.info.corner
-					* CFrame.new((minX + maxX + 1) / 2 * GRID, 0.22, (minZ + maxZ + 1) / 2 * GRID)
-					* CFrame.Angles(0, math.pi, 0)
+					* CFrame.new((minX + maxX + 1) / 2 * GRID, 0.4, (minZ + maxZ + 1) / 2 * GRID)
 
 				local typeName = Config.RoomTypes[t].name
 				local met, statusText = evaluateRegion(zone, typeName, regionCells, placedInfos, blockedCells)
@@ -3425,32 +3479,55 @@ local function rebuildLabels(zone)
 					end
 				end
 
-				local surface = Instance.new("SurfaceGui")
-				surface.Face = Enum.NormalId.Top
-				surface.PixelsPerStud = 25
-				surface.Parent = labelPart
-				local text = Instance.new("TextLabel")
-				text.Size = UDim2.new(1, 0, 0.58, 0)
-				text.BackgroundTransparency = 1
-				text.Font = Enum.Font.GothamBlack
-				text.TextScaled = true
-				text.TextColor3 = Color3.fromRGB(255, 255, 255)
-				text.TextTransparency = 0.15
-				text.TextStrokeTransparency = 0.6
-				text.Text = string.upper(Config.RoomTypes[t].name)
-				text.Parent = surface
-				local statusLabel = Instance.new("TextLabel")
-				statusLabel.AnchorPoint = Vector2.new(0, 1)
-				statusLabel.Position = UDim2.new(0, 0, 1, 0)
-				statusLabel.Size = UDim2.new(1, 0, 0.4, 0)
-				statusLabel.BackgroundTransparency = 1
-				statusLabel.Font = Enum.Font.GothamBold
-				statusLabel.TextScaled = true
-				statusLabel.TextColor3 = met and Color3.fromRGB(150, 255, 160) or Color3.fromRGB(255, 190, 120)
-				statusLabel.TextTransparency = 0.1
-				statusLabel.TextStrokeTransparency = 0.55
-				statusLabel.Text = statusText
-				statusLabel.Parent = surface
+				-- The label: a billboard, so it's always upright and readable
+				-- no matter how the camera is rotated (flat floor text went
+				-- sideways). Sized in studs so it scales naturally with zoom.
+				-- PA rule: a valid room shows just its name; an invalid one
+				-- explains what's missing underneath in amber.
+				local gui = Instance.new("BillboardGui")
+				gui.Name = "Label"
+				gui.Size = UDim2.new(math.clamp(widthStuds * 0.8, 10, 24), 0, 4.4, 0)
+				gui.StudsOffset = Vector3.new(0, 2, 0)
+				gui.MaxDistance = 450
+				gui.LightInfluence = 0
+				gui.Parent = labelPart
+
+				local title = Instance.new("TextLabel")
+				title.Size = UDim2.new(1, 0, met and 0.62 or 0.5, 0)
+				title.Position = UDim2.new(0, 0, met and 0.12 or 0, 0)
+				title.BackgroundTransparency = 1
+				title.Font = Enum.Font.GothamBlack
+				title.TextScaled = true
+				title.TextColor3 = Color3.fromRGB(255, 255, 255)
+				title.TextTransparency = 0.05
+				title.TextStrokeColor3 = Color3.fromRGB(15, 18, 22)
+				title.TextStrokeTransparency = 0.25
+				title.Text = string.upper(typeName)
+				title.Parent = gui
+
+				-- A thin underline in the room's color ties name to paint.
+				local underline = Instance.new("Frame")
+				underline.AnchorPoint = Vector2.new(0.5, 0)
+				underline.Position = UDim2.new(0.5, 0, met and 0.78 or 0.52, 0)
+				underline.Size = UDim2.new(0.4, 0, 0.06, 0)
+				underline.BackgroundColor3 = Config.RoomTypes[t].color
+				underline.BorderSizePixel = 0
+				underline.Parent = gui
+
+				if not met then
+					local needsLabel = Instance.new("TextLabel")
+					needsLabel.AnchorPoint = Vector2.new(0, 1)
+					needsLabel.Position = UDim2.new(0, 0, 1, 0)
+					needsLabel.Size = UDim2.new(1, 0, 0.34, 0)
+					needsLabel.BackgroundTransparency = 1
+					needsLabel.Font = Enum.Font.GothamBold
+					needsLabel.TextScaled = true
+					needsLabel.TextColor3 = Color3.fromRGB(255, 196, 120)
+					needsLabel.TextStrokeColor3 = Color3.fromRGB(15, 18, 22)
+					needsLabel.TextStrokeTransparency = 0.3
+					needsLabel.Text = statusText
+					needsLabel.Parent = gui
+				end
 
 				labelPart.Parent = state.labelsFolder
 			end
@@ -3798,24 +3875,471 @@ return SaveService
       </Item>
       <Item class="ModuleScript" referent="20">
         <Properties>
-          <string name="Name">StaffService</string>
-          <string name="Source"><![CDATA[-- StaffService: hire and fire staff (Guards, Cooks, Janitors), pay their
--- wages, and let them quit when the money runs dry (Prison Architect's
--- rule). Staff are NPCs that mill about the prison; what they DO lives in
--- other systems that ask us "how many guards / any cook?":
---   * Guards  -> NeedsService reads the guard ratio for prisoner Safety.
---   * Cooks   -> NeedsService needs one for the Kitchen->Canteen food chain.
---   * Janitors-> keep hygiene from rotting (a small passive bonus).
+          <string name="Name">SecurityService</string>
+          <string name="Source"><![CDATA[-- SecurityService: Phase 5's teeth — guard patrols, escape attempts, and
+-- the warden's emergency powers (Lockdown, Roll Call).
 --
--- Hiring is free; wages charge every Config.WageInterval seconds. Can't
--- pay the full bill? Someone quits, and the warden gets a warning.
+-- ESCAPES: a prisoner in an angry prison (high unrest) or at the end of
+-- their rope (worst need below 20) may bolt for the plot's front row.
+-- They run the same A* walk grid as everyone else — out through DOORS,
+-- never through walls — so a sealed prison genuinely keeps everyone in.
+-- A free (or patrolling) guard gives chase, aiming for a point 70% along
+-- the runner's path; reach it nearly in time and the runner is caught
+-- and marched back to their cell. No guard fast enough? They're gone:
+-- fine paid, capacity lost, alert raised.
+--
+-- PATROLS: idle guards wander to random walkable squares so the prison
+-- feels watched (and chases start from useful places).
+--
+-- EMERGENCIES: Lockdown confines everyone to their cells (regime forced
+-- to Sleep, no new escapes, unrest cools fast, grants halved while it
+-- lasts — see NeedsService/EconomyService). Roll Call rounds up every
+-- in-progress runner at once, on a cooldown.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config = require(ReplicatedStorage.Shared.Config)
+local Format = require(ReplicatedStorage.Shared.Format)
+local GridMath = require(ReplicatedStorage.Shared.GridMath)
+local Buildables = require(script.Parent.Buildables)
+local PathService = require(script.Parent.PathService)
+local StaffService = require(script.Parent.StaffService)
+local IntakeService = require(script.Parent.IntakeService)
+local EconomyService = require(script.Parent.EconomyService)
+
+local SecurityService = {}
+
+local PIVOT_HEIGHT = 3
+
+-- player -> { zone, walks, guardBusy, escapes, alertCount, escaped, lastRollCall }
+--   walks[model]     = { points, start, duration } (so a walker can be
+--                      stopped mid-stride at the right spot)
+--   guardBusy[model] = "patrol" | "chase" (chases may interrupt patrols)
+--   escapes[model]   = { active, house }
+local records = {}
+
+-- Alerts land in a player attribute; the counter prefix guarantees the
+-- changed-signal fires even for identical texts (client strips it).
+local function alert(player, text)
+	local rec = records[player]
+	if not rec then
+		return
+	end
+	rec.alertCount += 1
+	player:SetAttribute("SecurityAlert", rec.alertCount .. "|" .. text)
+end
+
+-- Walk bookkeeping ---------------------------------------------------------
+
+local function pathLength(points)
+	local total = 0
+	for i = 2, #points do
+		total += (points[i] - points[i - 1]).Magnitude
+	end
+	return total
+end
+
+local function pointAlong(points, dist)
+	for i = 2, #points do
+		local seg = points[i] - points[i - 1]
+		local len = seg.Magnitude
+		if dist <= len or i == #points then
+			if len < 0.001 then
+				return points[i]
+			end
+			return points[i - 1] + seg * math.clamp(dist / len, 0, 1)
+		end
+		dist -= len
+	end
+	return points[#points]
+end
+
+local function rememberWalk(rec, model, points, duration)
+	rec.walks[model] = { points = points, start = workspace:GetServerTimeNow(), duration = duration }
+end
+
+-- Where are this walker's feet right now?
+local function currentFloorPos(rec, model)
+	local walk = rec.walks[model]
+	if walk then
+		local elapsed = workspace:GetServerTimeNow() - walk.start
+		if elapsed < walk.duration then
+			local total = pathLength(walk.points)
+			return pointAlong(walk.points, total * math.clamp(elapsed / walk.duration, 0, 1))
+		end
+	end
+	return model:GetPivot().Position - Vector3.new(0, PIVOT_HEIGHT, 0)
+end
+
+-- Halt a walker exactly where the animation has them and return the spot.
+local function stopWalk(rec, model)
+	local pos = currentFloorPos(rec, model)
+	PathService.finishWalk(model, CFrame.new(pos + Vector3.new(0, PIVOT_HEIGHT, 0)))
+	rec.walks[model] = nil
+	return pos
+end
+
+-- Homes --------------------------------------------------------------------
+
+local function houseFloorPos(house)
+	local boxCF, boxSize = house:GetBoundingBox()
+	return (boxCF * CFrame.new(-1.5, -boxSize.Y / 2, 1)).Position
+end
+
+local function houseFootprint(house)
+	local footprint = { gx = house:GetAttribute("GX") or 0, gz = house:GetAttribute("GZ") or 0, w = 1, d = 1 }
+	local asset = Buildables.get(house:GetAttribute("Asset") or "")
+	if asset then
+		footprint.w, footprint.d = GridMath.footprint(asset, house:GetAttribute("Rot") or 0)
+	end
+	return footprint
+end
+
+-- March a rounded-up prisoner back to their bed.
+local function sendHome(rec, prisoner, house, fromPos)
+	if not (house and house.Parent) then
+		prisoner:SetAttribute("Escaping", nil)
+		return
+	end
+	local route = PathService.findRoute(rec.zone, fromPos, houseFootprint(house), houseFloorPos(house))
+	if not route then
+		prisoner:SetAttribute("Escaping", nil)
+		return
+	end
+	local duration = PathService.startWalk(prisoner, route, Config.EscortSpeed)
+	rememberWalk(rec, prisoner, route, duration)
+	task.delay(duration, function()
+		if prisoner.Parent == nil then
+			return
+		end
+		PathService.finishWalk(prisoner, CFrame.new(houseFloorPos(house) + Vector3.new(0, PIVOT_HEIGHT, 0)))
+		rec.walks[prisoner] = nil
+		prisoner:SetAttribute("Escaping", nil)
+	end)
+end
+
+-- Escapes ------------------------------------------------------------------
+
+-- The runner's goal: any walkable square on the plot's front row (+Z).
+local function frontTarget(zone)
+	local cols, rows = zone.info.cols, zone.info.rows
+	local mid = math.floor(cols / 2)
+	for offset = 0, mid do
+		for _, x in ipairs({ mid - offset, mid + offset }) do
+			if x >= 0 and x < cols and PathService.isWalkable(zone, x, rows - 1) then
+				return x, rows - 1
+			end
+		end
+	end
+	return nil
+end
+
+-- Round up a runner (lockdown / roll call): stop them where they are and
+-- march them home. Returns true if there was an attempt to cancel.
+local function cancelEscape(rec, prisoner)
+	local attempt = rec.escapes[prisoner]
+	if not attempt or not attempt.active then
+		return false
+	end
+	attempt.active = false
+	rec.escapes[prisoner] = nil
+	if prisoner.Parent == nil then
+		return true
+	end
+	local pos = stopWalk(rec, prisoner)
+	sendHome(rec, prisoner, attempt.house, pos)
+	return true
+end
+
+local function tryEscape(player, rec, entry)
+	local prisoner = entry.model
+	if rec.escapes[prisoner] then
+		return
+	end
+	if prisoner:GetAttribute("EscortStart") ~= nil then
+		return -- mid-walk on someone else's clock (regime/escort)
+	end
+	local zone = rec.zone
+	local now = workspace:GetServerTimeNow()
+	prisoner:SetAttribute("EscapeCooldown", now + Config.EscapeCooldown)
+
+	local tx, tz = frontTarget(zone)
+	if not tx then
+		return
+	end
+	local fromPos = prisoner:GetPivot().Position - Vector3.new(0, PIVOT_HEIGHT, 0)
+	local targetPos = GridMath.regionCenter(zone.info, tx, tz, 1, 1).Position
+	local route = PathService.findRoute(zone, fromPos, { gx = tx, gz = tz, w = 1, d = 1 }, targetPos)
+	if not route then
+		return -- sealed tight: the walls are doing their job
+	end
+
+	local attempt = { active = true, house = entry.house }
+	rec.escapes[prisoner] = attempt
+	prisoner:SetAttribute("Escaping", true)
+	local duration = PathService.startWalk(prisoner, route, Config.EscapeRunSpeed)
+	rememberWalk(rec, prisoner, route, duration)
+	local name = prisoner:GetAttribute("NpcName") or "A prisoner"
+	alert(player, "🚨 " .. name .. " is making a run for it!")
+
+	-- Can a guard cut them off? Aim for a point partway along the route.
+	local total = pathLength(route)
+	local interceptPos = pointAlong(route, total * Config.InterceptFraction)
+	local tIntercept = duration * Config.InterceptFraction
+	local chaser, chaseRoute = nil, nil
+	for _, guard in ipairs(StaffService.getStaff(player, "Guard")) do
+		local busy = rec.guardBusy[guard]
+		if busy == nil or busy == "patrol" then -- chases interrupt patrols
+			local gFrom = currentFloorPos(rec, guard)
+			local ix, iz = GridMath.worldToCell(zone.info, interceptPos, 1, 1)
+			local gRoute = PathService.findRoute(zone, gFrom, { gx = ix, gz = iz, w = 1, d = 1 }, interceptPos)
+			if gRoute then
+				local gDur = math.max(0.5, pathLength(gRoute) / Config.EscapeRunSpeed)
+				local tCatch = math.max(tIntercept, gDur)
+				if gDur <= tIntercept + Config.GuardCatchGrace and tCatch < duration then
+					chaser, chaseRoute = guard, gRoute
+					break
+				end
+			end
+		end
+	end
+
+	if chaser then
+		stopWalk(rec, chaser) -- drop whatever patrol they were on
+		rec.guardBusy[chaser] = "chase"
+		local chaseDur = PathService.startWalk(chaser, chaseRoute, Config.EscapeRunSpeed)
+		rememberWalk(rec, chaser, chaseRoute, chaseDur)
+		local tCatch = math.max(tIntercept, chaseDur)
+		task.delay(tCatch, function()
+			if chaser.Parent ~= nil then
+				stopWalk(rec, chaser)
+			end
+			if not attempt.active or prisoner.Parent == nil then
+				-- Already rounded up (lockdown/roll call) or gone.
+				rec.guardBusy[chaser] = nil
+				return
+			end
+			-- CAUGHT.
+			attempt.active = false
+			rec.escapes[prisoner] = nil
+			local pos = stopWalk(rec, prisoner)
+			alert(player, "👮 " .. name .. " was caught and marched back to their cell.")
+			sendHome(rec, prisoner, attempt.house, pos)
+			task.delay(2, function()
+				rec.guardBusy[chaser] = nil
+			end)
+		end)
+	end
+
+	-- The gate: still active when the run completes means they're gone.
+	task.delay(duration, function()
+		if not attempt.active or prisoner.Parent == nil then
+			return
+		end
+		attempt.active = false
+		rec.escapes[prisoner] = nil
+		rec.walks[prisoner] = nil
+		rec.escaped += 1
+		player:SetAttribute("PrisonEscapes", rec.escaped)
+		EconomyService.tryCharge(player, Config.EscapeFine)
+		alert(player, "🚨 " .. name .. " ESCAPED! Fine: " .. Format.money(Config.EscapeFine))
+		prisoner:Destroy()
+		IntakeService.poke(player)
+	end)
+end
+
+-- Emergencies --------------------------------------------------------------
+
+function SecurityService.handleRequest(player, action)
+	local rec = records[player]
+	if not rec then
+		return { ok = false, err = "You don't have a plot yet." }
+	end
+
+	if action == "lockdown" then
+		local on = player:GetAttribute("PrisonLockdown") ~= true
+		player:SetAttribute("PrisonLockdown", on)
+		if on then
+			local rounded = 0
+			for prisoner in pairs(rec.escapes) do
+				if cancelEscape(rec, prisoner) then
+					rounded += 1
+				end
+			end
+			alert(player, rounded > 0
+				and ("🔒 LOCKDOWN — %d runner%s rounded up."):format(rounded, rounded == 1 and "" or "s")
+				or "🔒 LOCKDOWN — everyone to their cells.")
+		else
+			alert(player, "🔓 Lockdown lifted — back to the regime.")
+		end
+		return { ok = true, on = on }
+	elseif action == "rollcall" then
+		local now = workspace:GetServerTimeNow()
+		local remaining = Config.RollCallCooldown - (now - rec.lastRollCall)
+		if remaining > 0 then
+			return { ok = false, err = ("wait %ds"):format(math.ceil(remaining)) }
+		end
+		rec.lastRollCall = now
+		local rounded = 0
+		for prisoner in pairs(rec.escapes) do
+			if cancelEscape(rec, prisoner) then
+				rounded += 1
+			end
+		end
+		local housedCount = #IntakeService.getHoused(player)
+		alert(player, rounded > 0
+			and ("📢 Roll call: %d runner%s rounded up, %d accounted for."):format(
+				rounded, rounded == 1 and "" or "s", housedCount)
+			or ("📢 Roll call: all %d prisoners accounted for."):format(housedCount))
+		return { ok = true }
+	end
+	return { ok = false, err = "Bad request." }
+end
+
+-- Wiring -------------------------------------------------------------------
+
+function SecurityService.assignPlayer(player, zone)
+	records[player] = {
+		zone = zone,
+		walks = {},
+		guardBusy = {},
+		escapes = {},
+		alertCount = 0,
+		escaped = 0,
+		lastRollCall = 0,
+	}
+	player:SetAttribute("PrisonLockdown", false)
+	player:SetAttribute("PrisonEscapes", 0)
+end
+
+function SecurityService.releasePlayer(player)
+	records[player] = nil
+end
+
+function SecurityService.init()
+	local remotes = ReplicatedStorage:WaitForChild("Remotes")
+	remotes.EmergencyRequest.OnServerInvoke = SecurityService.handleRequest
+
+	-- Patrols: idle guards wander — presence is deterrence (and chases
+	-- start from useful places).
+	task.spawn(function()
+		while true do
+			task.wait(Config.PatrolInterval)
+			for player, rec in pairs(records) do
+				for model in pairs(rec.guardBusy) do
+					if model.Parent == nil then
+						rec.guardBusy[model] = nil
+					end
+				end
+				for model in pairs(rec.walks) do
+					if model.Parent == nil then
+						rec.walks[model] = nil
+					end
+				end
+				local zone = rec.zone
+				for _, guard in ipairs(StaffService.getStaff(player, "Guard")) do
+					if rec.guardBusy[guard] == nil
+						and guard:GetAttribute("EscortStart") == nil
+						and math.random() < Config.PatrolChance
+					then
+						for _ = 1, 6 do
+							local x = math.random(0, zone.info.cols - 1)
+							local z = math.random(0, zone.info.rows - 1)
+							if PathService.isWalkable(zone, x, z) then
+								local fromPos = guard:GetPivot().Position - Vector3.new(0, PIVOT_HEIGHT, 0)
+								local targetPos = GridMath.regionCenter(zone.info, x, z, 1, 1).Position
+								local route = PathService.findRoute(
+									zone, fromPos, { gx = x, gz = z, w = 1, d = 1 }, targetPos)
+								if route then
+									rec.guardBusy[guard] = "patrol"
+									local duration = PathService.startWalk(guard, route, Config.PatrolSpeed)
+									rememberWalk(rec, guard, route, duration)
+									task.delay(duration, function()
+										if guard.Parent == nil then
+											return
+										end
+										-- A chase may have taken over this guard
+										-- mid-patrol — only land the patrol if
+										-- this walk is still theirs.
+										local walk = rec.walks[guard]
+										if walk and walk.points == route then
+											PathService.finishWalk(guard,
+												CFrame.new(targetPos + Vector3.new(0, PIVOT_HEIGHT, 0)))
+											rec.walks[guard] = nil
+											rec.guardBusy[guard] = nil
+										end
+									end)
+								end
+								break
+							end
+						end
+					end
+				end
+			end
+		end
+	end)
+
+	-- Escape checks.
+	task.spawn(function()
+		while true do
+			task.wait(Config.EscapeCheckInterval)
+			local now = workspace:GetServerTimeNow()
+			for player, rec in pairs(records) do
+				if not player:IsDescendantOf(Players) then
+					continue
+				end
+				if player:GetAttribute("PrisonLockdown") == true then
+					continue -- confined to cells: nobody runs
+				end
+				local unrest = player:GetAttribute("PrisonUnrest") or 0
+				for _, entry in ipairs(IntakeService.getHoused(player)) do
+					local prisoner = entry.model
+					if rec.escapes[prisoner] == nil and now >= (prisoner:GetAttribute("EscapeCooldown") or 0) then
+						local chance = Config.EscapeUnrestFactor * (unrest / 100)
+						if (prisoner:GetAttribute("MoodValue") or 100) < 20 then
+							chance += Config.EscapeDesperationChance
+						end
+						if chance > 0 and math.random() < chance then
+							tryEscape(player, rec, entry)
+						end
+					end
+				end
+			end
+		end
+	end)
+end
+
+return SecurityService
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="21">
+        <Properties>
+          <string name="Name">StaffService</string>
+          <string name="Source"><![CDATA[-- StaffService: hire and fire staff (Workmen, Guards, Cooks, Janitors),
+-- pay their wages, and let them quit when the money runs dry (Prison
+-- Architect's rule). Staff are NPCs; what they DO lives in other systems
+-- that ask us for their people:
+--   * Workmen -> ConstructionService pulls the crew that builds blueprints.
+--   * Guards  -> NeedsService reads the guard ratio for prisoner Safety;
+--                SecurityService patrols them and sends them chasing.
+--   * Cooks   -> NeedsService needs one for the Kitchen->Canteen food chain.
+--   * Janitors-> keep hygiene from rotting (a small passive bonus).
+--
+-- Hiring is free and CLICK-PLACED, PA style: the client sends the grid
+-- square the warden clicked and the new hire appears right there. Wages
+-- charge every Config.WageInterval seconds; an unpayable bill makes the
+-- cheapest staff quit (workmen last — they build everything).
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Config = require(ReplicatedStorage.Shared.Config)
+local GridMath = require(ReplicatedStorage.Shared.GridMath)
 local EconomyService = require(script.Parent.EconomyService)
 local InmateService = require(script.Parent.InmateService)
+local PathService = require(script.Parent.PathService)
 
 local StaffService = {}
 
@@ -3832,7 +4356,7 @@ local function typeDef(typeId)
 end
 
 local function staffPost(zone, index)
-	-- Staff gather along the front-right of the plot, opposite the crew.
+	-- The fallback spot (saves, auto-hires): along the plot's front-right.
 	local size = zone.part.Size
 	local col = index % 5
 	local row = math.floor(index / 5)
@@ -3862,14 +4386,38 @@ function StaffService.hasCook(player)
 	return StaffService.count(player, "Cook") > 0
 end
 
-local function spawnStaff(player, def)
+-- The live models of one staff type (pruned of destroyed ones) — this is
+-- how ConstructionService gets its crew and SecurityService its guards.
+function StaffService.getStaff(player, typeId)
+	local rec = records[player]
+	local out = {}
+	if rec then
+		local list = rec.staff[typeId]
+		if list then
+			for i = #list, 1, -1 do
+				if list[i].Parent == nil then
+					table.remove(list, i)
+				end
+			end
+			for _, model in ipairs(list) do
+				table.insert(out, model)
+			end
+		end
+	end
+	return out
+end
+
+local function spawnStaff(player, def, cf)
 	local rec = records[player]
 	rec.spawnCounter += 1
-	local total = 0
-	for _, def2 in ipairs(Config.StaffTypes) do
-		total += #(rec.staff[def2.id] or {})
+	if not cf then
+		local total = 0
+		for _, def2 in ipairs(Config.StaffTypes) do
+			total += #(rec.staff[def2.id] or {})
+		end
+		cf = staffPost(rec.zone, total)
 	end
-	local model = InmateService.spawn(staffPost(rec.zone, total), rec.spawnCounter, rec.folder, { outfit = def.outfit })
+	local model = InmateService.spawn(cf, rec.spawnCounter, rec.folder, { outfit = def.outfit })
 	rec.staff[def.id] = rec.staff[def.id] or {}
 	table.insert(rec.staff[def.id], model)
 end
@@ -3896,12 +4444,24 @@ function StaffService.assignPlayer(player, zone, savedStaff)
 
 	records[player] = { zone = zone, folder = folder, staff = {}, spawnCounter = 0 }
 
+	local sawWorkmen = false
 	if type(savedStaff) == "table" then
 		for _, def in ipairs(Config.StaffTypes) do
 			local n = math.clamp(math.floor(tonumber(savedStaff[def.id]) or 0), 0, Config.MaxStaffPerType)
 			for _ = 1, n do
 				spawnStaff(player, def)
 			end
+		end
+		-- Pre-Workman saves have no Workman key at all — grant the
+		-- starting crew below so old prisons can still build.
+		sawWorkmen = savedStaff.Workman ~= nil
+	end
+	if not sawWorkmen then
+		-- Every prison opens with a small crew on payroll: they're what
+		-- turns blueprints into buildings. Hire more under Staff.
+		local workman = typeDef("Workman")
+		for _ = 1, Config.StartingWorkmen do
+			spawnStaff(player, workman)
 		end
 	end
 	publish(player)
@@ -3928,7 +4488,7 @@ end
 
 -- Player requests ---------------------------------------------------------
 
-function StaffService.handleRequest(player, action, typeId)
+function StaffService.handleRequest(player, action, typeId, gx, gz)
 	local rec = records[player]
 	if not rec then
 		return { ok = false, err = "You don't have a plot yet." }
@@ -3942,7 +4502,27 @@ function StaffService.handleRequest(player, action, typeId)
 		if #(rec.staff[def.id] or {}) >= Config.MaxStaffPerType then
 			return { ok = false, err = "You already have the max " .. def.id .. "s." }
 		end
-		spawnStaff(player, def)
+		-- Click-placement: the client sends the grid square the warden
+		-- clicked; the hire appears there (PA's drop-the-staff feel).
+		local cf = nil
+		if gx ~= nil or gz ~= nil then
+			if type(gx) ~= "number" or type(gz) ~= "number" then
+				return { ok = false, err = "Bad request." }
+			end
+			gx, gz = math.floor(gx), math.floor(gz)
+			local zone = rec.zone
+			if gx < 0 or gx >= zone.info.cols or gz < 0 or gz >= zone.info.rows then
+				return { ok = false, err = "Outside your plot." }
+			end
+			if zone.unlocked and not zone.unlocked[gx .. ":" .. gz] then
+				return { ok = false, err = "You don't own that land yet." }
+			end
+			if not PathService.isWalkable(zone, gx, gz) then
+				return { ok = false, err = "Something's in the way there." }
+			end
+			cf = GridMath.regionCenter(zone.info, gx, gz, 1, 1)
+		end
+		spawnStaff(player, def, cf)
 		publish(player)
 		return { ok = true }
 	elseif action == "fire" then
@@ -3960,7 +4540,7 @@ function StaffService.init()
 	remotes.StaffRequest.OnServerInvoke = StaffService.handleRequest
 
 	-- The payroll: charge wages, and if the till can't cover it, someone
-	-- quits until the bill fits.
+	-- quits until the bill fits (cheapest type first — see StaffTypes).
 	task.spawn(function()
 		while true do
 			task.wait(Config.WageInterval)
@@ -3978,7 +4558,6 @@ function StaffService.init()
 						if EconomyService.tryCharge(player, total) then
 							player:SetAttribute("StaffUnpaid", false)
 						else
-							-- Can't pay: quit the priciest staff, warn, retry.
 							local quit = false
 							for i = #Config.StaffTypes, 1, -1 do
 								if fireStaff(player, Config.StaffTypes[i].id) then
@@ -3988,7 +4567,6 @@ function StaffService.init()
 							end
 							player:SetAttribute("StaffUnpaid", true)
 							publish(player)
-							-- Charge the reduced bill if we now can.
 							local reduced = bill()
 							if quit and reduced > 0 then
 								EconomyService.tryCharge(player, reduced)
@@ -4005,7 +4583,7 @@ return StaffService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="21">
+      <Item class="ModuleScript" referent="22">
         <Properties>
           <string name="Name">TimeService</string>
           <string name="Source"><![CDATA[-- TimeService: the game clock. One shared time-of-day for the whole
@@ -4047,33 +4625,51 @@ return TimeService
       </Item>
     </Item>
   </Item>
-  <Item class="StarterPlayer" referent="22">
+  <Item class="StarterPlayer" referent="23">
     <Properties>
       <string name="Name">StarterPlayer</string>
     </Properties>
-    <Item class="StarterPlayerScripts" referent="23">
+    <Item class="StarterPlayerScripts" referent="24">
       <Properties>
         <string name="Name">StarterPlayerScripts</string>
       </Properties>
-      <Item class="LocalScript" referent="24">
+      <Item class="LocalScript" referent="25">
         <Properties>
           <string name="Name">Client</string>
           <string name="Source"><![CDATA[-- Lockdown client bootstrap. Runs on each player's own device and starts
 -- what they personally see: build mode (the PA toolbar + top-down
 -- camera), the PA HUD readouts, the intake popup (opened from the
--- Prisoners readout — that's the wiring below), the Staff tab, and NPC
--- animation.
+-- Prisoners readout), the Staff tab (which arms BuildMode's click-to-
+-- place hiring — that's the `build` wiring below), the Emergencies tab,
+-- and NPC animation.
 
-require(script.BuildMode).start()
+local StarterGui = game:GetService("StarterGui")
+
+-- PA has no floating player list — and Roblox's sat right on top of the
+-- clock panel. (SetCoreGuiEnabled can fail while CoreGui boots; retry.)
+task.spawn(function()
+	for _ = 1, 10 do
+		local ok = pcall(function()
+			StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, false)
+		end)
+		if ok then
+			return
+		end
+		task.wait(1)
+	end
+end)
+
+local build = require(script.BuildMode).start()
 local IntakePanel = require(script.IntakePanel)
 IntakePanel.start()
-require(script.StaffPanel).start()
+require(script.StaffPanel).start(build)
+require(script.EmergencyPanel).start()
 require(script.CashHud).start({ onPrisoners = IntakePanel.toggle })
 require(script.InmateAnimator).start()
 require(script.MoodDisplay).start()
 ]]></string>
         </Properties>
-        <Item class="ModuleScript" referent="25">
+        <Item class="ModuleScript" referent="26">
           <Properties>
             <string name="Name">BuildCamera</string>
             <string name="Source"><![CDATA[-- BuildCamera: the Prison Architect view. While build mode is open the
@@ -4349,7 +4945,7 @@ return BuildCamera
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="26">
+        <Item class="ModuleScript" referent="27">
           <Properties>
             <string name="Name">BuildMode</string>
             <string name="Source"><![CDATA[-- BuildMode: the whole building experience on the player's screen,
@@ -4409,6 +5005,7 @@ function BuildMode.start()
 	local deleteRectRequest = remotes:WaitForChild("DeleteRectRequest")
 	local moveRequest = remotes:WaitForChild("MoveRequest")
 	local roomPaintRequest = remotes:WaitForChild("RoomPaintRequest")
+	local staffRequest = remotes:WaitForChild("StaffRequest")
 
 	-- Mirror of the wallet, for the can-you-afford-it ghost tint.
 	local cashNow = 0
@@ -4465,6 +5062,8 @@ function BuildMode.start()
 	local zoneBox = nil
 	local movingModel = nil -- the object currently carried by the Move tool
 	local movingFrom = nil -- its original {n, x, z, r}, for undo
+	local pendingStaff = nil -- staff def being click-placed (mode "staff")
+	local staffGhost = nil
 
 	-- Undo: a stack of inverse actions (Ctrl+Z or the ↩ button).
 	--   { kind = "place", models = {Model, ...} }        -> demolish them
@@ -4638,6 +5237,31 @@ function BuildMode.start()
 			ghost, ghostHighlight = nil, nil
 		end
 		ghostCell = nil
+	end
+
+	-- The staff-placement marker: a glowing pillar in the hire's color
+	-- that rides the cursor until you click them down.
+	local function destroyStaffGhost()
+		if staffGhost then
+			staffGhost:Destroy()
+			staffGhost = nil
+		end
+	end
+
+	local function makeStaffGhost(def)
+		destroyStaffGhost()
+		local marker = Instance.new("Part")
+		marker.Name = "StaffGhost"
+		marker.Anchored = true
+		marker.CanCollide = false
+		marker.CanQuery = false
+		marker.CanTouch = false
+		marker.CastShadow = false
+		marker.Material = Enum.Material.Neon
+		marker.Transparency = 0.45
+		marker.Color = def.tint or Color3.fromRGB(210, 225, 240)
+		marker.Size = Vector3.new(2, 5, 2)
+		staffGhost = marker
 	end
 
 	local function makeGhost(asset)
@@ -4925,6 +5549,8 @@ function BuildMode.start()
 			return "move"
 		elseif mode == "delete" then
 			return "bulldoze"
+		elseif mode == "staff" then
+			return "staff"
 		end
 		return nil
 	end
@@ -5048,6 +5674,10 @@ function BuildMode.start()
 		if mode ~= "rooms" then
 			selectedRoom = nil
 		end
+		if mode ~= "staff" then
+			pendingStaff = nil
+			destroyStaffGhost()
+		end
 		if mode == "off" or wasOff then
 			-- Crossing the build/walk boundary closes every open menu
 			-- (tab clicks re-open the one they want right after).
@@ -5072,6 +5702,8 @@ function BuildMode.start()
 			setStatusDefault("Move: click an object to pick it up")
 		elseif mode == "delete" then
 			setStatusDefault("Bulldoze: click an object, or drag a rectangle to clear an area")
+		elseif mode == "staff" then
+			setStatusDefault("Click a square to place your new hire · right-click to stop")
 		elseif mode == "off" then
 			setStatusDefault("")
 		end
@@ -5552,6 +6184,19 @@ function BuildMode.start()
 				else
 					tryDelete()
 				end
+			elseif mode == "staff" and pendingStaff then
+				local gx, gz = cellUnderPointer(1, 1)
+				if gx then
+					local ok, result = pcall(function()
+						return staffRequest:InvokeServer("hire", pendingStaff.id, gx, gz)
+					end)
+					if ok and result and result.ok then
+						playSound("electronicpingshort.wav", 0.5)
+						flashStatus(pendingStaff.id .. " hired!", GREEN)
+					elseif ok and result then
+						flashStatus(result.err or "Can't place them there.", RED)
+					end
+				end
 			elseif mode == "move" then
 				tryMove()
 			end
@@ -5564,6 +6209,8 @@ function BuildMode.start()
 				destroyGhost()
 				refreshSelectionLook()
 				setStatusDefault("Move: click an object to pick it up")
+			elseif mode == "staff" then
+				setMode("objects")
 			elseif mode == "objects" and selected then
 				selected = nil
 				destroyGhost()
@@ -5687,6 +6334,16 @@ function BuildMode.start()
 			if gx then
 				showStretchBox(pressStartCell[1], pressStartCell[2], gx, gz, RED)
 			end
+		elseif mode == "staff" then
+			if staffGhost and zone then
+				local gx, gz = cellUnderPointer(1, 1)
+				if gx then
+					staffGhost.CFrame = GridMath.regionCenter(zone.info, gx, gz, 1, 1) * CFrame.new(0, 2.5, 0)
+					staffGhost.Parent = workspace
+				else
+					staffGhost.Parent = nil
+				end
+			end
 		elseif mode == "move" and movingModel then
 			updateGhost()
 		elseif mode == "delete" or mode == "move" then
@@ -5706,13 +6363,30 @@ function BuildMode.start()
 			end
 		end
 	end)
+
+	-- What other UI modules need from build mode. StaffPanel arms PA's
+	-- click-to-place hiring through this: pick a staff type, then click
+	-- them down wherever you want them to start.
+	local controller = {}
+	function controller.placeStaff(def)
+		if not zone then
+			flashStatus("No build plot assigned yet!", RED)
+			return
+		end
+		setMode("staff")
+		pendingStaff = def
+		makeStaffGhost(def)
+		PAToolbar.openMenu("staff")
+		setStatusDefault("Place " .. def.id .. " — click a square · right-click to stop")
+	end
+	return controller
 end
 
 return BuildMode
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="27">
+        <Item class="ModuleScript" referent="28">
           <Properties>
             <string name="Name">CashHud</string>
             <string name="Source"><![CDATA[-- CashHud: Prison Architect's readouts, in PA's exact places.
@@ -5861,7 +6535,37 @@ function CashHud.start(opts)
 	stuckLine.Text = ""
 	stuckLine.Parent = gui
 
+	-- Security alerts (escapes, catches, lockdowns) under it, in red.
+	local alertLine = Instance.new("TextLabel")
+	alertLine.AnchorPoint = Vector2.new(0.5, 0)
+	alertLine.Position = UDim2.new(0.5, 0, 0, 32)
+	alertLine.Size = UDim2.new(0, 480, 0, 20)
+	alertLine.BackgroundTransparency = 1
+	alertLine.Font = Enum.Font.GothamBold
+	alertLine.TextScaled = true
+	alertLine.TextColor3 = Color3.fromRGB(255, 140, 125)
+	alertLine.TextStrokeTransparency = 0.45
+	alertLine.Text = ""
+	alertLine.Parent = gui
+
 	gui.Parent = playerGui
+
+	local alertId = 0
+	player:GetAttributeChangedSignal("SecurityAlert"):Connect(function()
+		local raw = player:GetAttribute("SecurityAlert")
+		if type(raw) ~= "string" then
+			return
+		end
+		-- The server prefixes a counter so repeat alerts still fire.
+		alertId += 1
+		local id = alertId
+		alertLine.Text = string.match(raw, "^%d+|(.*)$") or raw
+		task.delay(6, function()
+			if alertId == id then
+				alertLine.Text = ""
+			end
+		end)
+	end)
 
 	-- Cash count-up + blips off the Balance row -------------------------
 	local shown = cashValue.Value
@@ -5917,16 +6621,21 @@ function CashHud.start(opts)
 			and "⚠ Arrivals can't reach a cell — is there a door path?" or ""
 	end
 	local function refreshClockSub()
-		clockSub.Text = ("Day %d — %s"):format(
-			player:GetAttribute("PrisonDay") or 1,
-			player:GetAttribute("RegimeActivity") or "FreeTime"
-		)
+		local day = player:GetAttribute("PrisonDay") or 1
+		if player:GetAttribute("PrisonLockdown") == true then
+			clockSub.Text = ("Day %d — LOCKDOWN"):format(day)
+			clockSub.TextColor3 = UIKit.BAD
+		else
+			clockSub.Text = ("Day %d — %s"):format(day, player:GetAttribute("RegimeActivity") or "FreeTime")
+			clockSub.TextColor3 = UIKit.DIM
+		end
 	end
 	for _, attr in ipairs({ "PrisonHoused", "PrisonCapacity", "PrisonWaiting", "IntakeStuck", "PrisonUnrest" }) do
 		player:GetAttributeChangedSignal(attr):Connect(refreshStats)
 	end
 	player:GetAttributeChangedSignal("PrisonDay"):Connect(refreshClockSub)
 	player:GetAttributeChangedSignal("RegimeActivity"):Connect(refreshClockSub)
+	player:GetAttributeChangedSignal("PrisonLockdown"):Connect(refreshClockSub)
 	refreshStats()
 	refreshClockSub()
 
@@ -5955,7 +6664,105 @@ return CashHud
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="28">
+        <Item class="ModuleScript" referent="29">
+          <Properties>
+            <string name="Name">EmergencyPanel</string>
+            <string name="Source"><![CDATA[-- EmergencyPanel: PA's Emergencies tab — live as of Phase 5. Lockdown
+-- toggles (confine everyone to cells, cool unrest, half grants); Roll
+-- Call is a one-shot round-up on a cooldown. The contraband tools stay
+-- listed but dim until that system exists. The tab wears a red alert dot
+-- the whole time a lockdown is active.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local UIKit = require(script.Parent.UIKit)
+local PAIcons = require(script.Parent.PAIcons)
+local PAToolbar = require(script.Parent.PAToolbar)
+
+local EmergencyPanel = {}
+
+function EmergencyPanel.start()
+	local player = Players.LocalPlayer
+	local emergencyRequest = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("EmergencyRequest")
+
+	local menu = PAToolbar.menu("emergencies", "Emergencies", 260)
+
+	local lockdownRow = PAToolbar.row(menu.list, {
+		order = 1,
+		name = "Lockdown",
+		right = "OFF",
+		onClick = function()
+			pcall(function()
+				return emergencyRequest:InvokeServer("lockdown")
+			end)
+		end,
+	})
+	PAIcons.draw(lockdownRow.icon, "emergencies", UIKit.BAD, 4)
+	lockdownRow.right.TextColor3 = UIKit.DIM
+
+	local rollcallRow
+	rollcallRow = PAToolbar.row(menu.list, {
+		order = 2,
+		name = "Roll Call",
+		right = "",
+		onClick = function()
+			local ok, result = pcall(function()
+				return emergencyRequest:InvokeServer("rollcall")
+			end)
+			if ok and result and not result.ok and result.err then
+				rollcallRow.right.Text = result.err
+				rollcallRow.right.TextColor3 = UIKit.WARN
+				task.delay(2.5, function()
+					rollcallRow.right.Text = ""
+				end)
+			end
+		end,
+	})
+	PAIcons.draw(rollcallRow.icon, "deployment", UIKit.ICON, 4)
+	rollcallRow.right.Size = UDim2.new(0, 120, 0, 18)
+
+	-- Waiting on the contraband system.
+	for i, entry in ipairs({
+		{ name = "Shakedown", icon = "intelligence" },
+		{ name = "Tunnel Search", icon = "utilities" },
+	}) do
+		local row = PAToolbar.row(menu.list, { order = 2 + i, name = entry.name, right = "soon" })
+		row.name.TextColor3 = UIKit.DIM
+		row.right.TextColor3 = UIKit.DIM
+		PAIcons.draw(row.icon, entry.icon, UIKit.ICON_DARK, 4)
+	end
+	menu.fit()
+
+	PAToolbar.addTab({
+		id = "emergencies",
+		icon = "emergencies",
+		label = "Emergencies",
+		order = 27,
+		onClick = function()
+			PAToolbar.toggleMenu("emergencies")
+		end,
+	})
+	menu.panel:GetPropertyChangedSignal("Visible"):Connect(function()
+		PAToolbar.setPressed("emergencies", menu.panel.Visible)
+	end)
+
+	local function refresh()
+		local on = player:GetAttribute("PrisonLockdown") == true
+		lockdownRow.right.Text = on and "ON" or "OFF"
+		lockdownRow.right.TextColor3 = on and UIKit.BAD or UIKit.DIM
+		lockdownRow.setSelected(on)
+		PAToolbar.setAlert("emergencies", on)
+	end
+	player:GetAttributeChangedSignal("PrisonLockdown"):Connect(refresh)
+	refresh()
+end
+
+return EmergencyPanel
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="30">
           <Properties>
             <string name="Name">InmateAnimator</string>
             <string name="Source"><![CDATA[-- InmateAnimator: brings the blocky prisoners to life — entirely on each
@@ -6236,7 +7043,7 @@ return InmateAnimator
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="29">
+        <Item class="ModuleScript" referent="31">
           <Properties>
             <string name="Name">IntakePanel</string>
             <string name="Source"><![CDATA[-- IntakePanel: the warden's intake report — accept prisoners by hand or
@@ -6364,7 +7171,7 @@ return IntakePanel
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="30">
+        <Item class="ModuleScript" referent="32">
           <Properties>
             <string name="Name">MoodDisplay</string>
             <string name="Source"><![CDATA[-- MoodDisplay: a small mood face that floats over unhappy prisoners so
@@ -6447,7 +7254,7 @@ return MoodDisplay
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="31">
+        <Item class="ModuleScript" referent="33">
           <Properties>
             <string name="Name">PAIcons</string>
             <string name="Source"><![CDATA[-- PAIcons: the toolbar's icon art, drawn in code.
@@ -6612,7 +7419,7 @@ return PAIcons
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="32">
+        <Item class="ModuleScript" referent="34">
           <Properties>
             <string name="Name">PAToolbar</string>
             <string name="Source"><![CDATA[-- PAToolbar: Prison Architect's bottom-left toolbar, rebuilt for Roblox.
@@ -6938,13 +7745,15 @@ return PAToolbar
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="33">
+        <Item class="ModuleScript" referent="35">
           <Properties>
             <string name="Name">StaffPanel</string>
             <string name="Source"><![CDATA[-- StaffPanel: PA's Staff tab, living in the toolbar like the original.
--- Its menu lists each staff type as a PA row — click the row to hire
--- one, the − to let one go. The payroll footer shows the running wage
--- bill, and the tab grows a red alert dot the moment payroll is missed.
+-- Its menu lists each staff type as a PA row — click a row to pick that
+-- hire up, then CLICK THEM DOWN wherever you want them (BuildMode's
+-- staff-placement mode handles the ghost and the click). The − lets one
+-- go, the payroll footer shows the running wage bill, and the tab grows
+-- a red alert dot the moment payroll is missed.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -6957,14 +7766,16 @@ local PAToolbar = require(script.Parent.PAToolbar)
 
 local StaffPanel = {}
 
--- Icon tints so the three trades read apart at a glance.
+-- Icon tints so the trades read apart at a glance.
 local TINTS = {
+	Workman = Color3.fromRGB(255, 205, 105),
 	Guard = Color3.fromRGB(126, 156, 224),
 	Cook = Color3.fromRGB(236, 236, 236),
 	Janitor = Color3.fromRGB(120, 196, 140),
 }
 
-function StaffPanel.start()
+-- `build` is BuildMode's controller (wired in the client bootstrap).
+function StaffPanel.start(build)
 	local player = Players.LocalPlayer
 	local staffRequest = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("StaffRequest")
 
@@ -6976,9 +7787,7 @@ function StaffPanel.start()
 			name = def.id,
 			right = Format.money(def.wage),
 			onClick = function()
-				pcall(function()
-					return staffRequest:InvokeServer("hire", def.id)
-				end)
+				build.placeStaff({ id = def.id, tint = TINTS[def.id] })
 			end,
 		})
 		PAIcons.draw(handle.icon, "staff", TINTS[def.id] or UIKit.ICON, 2)
@@ -7059,7 +7868,7 @@ return StaffPanel
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="34">
+        <Item class="ModuleScript" referent="36">
           <Properties>
             <string name="Name">UIKit</string>
             <string name="Source"><![CDATA[-- UIKit: the shared Prison Architect look. One palette, a few builders,

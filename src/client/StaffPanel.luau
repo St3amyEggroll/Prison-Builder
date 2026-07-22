@@ -1,7 +1,9 @@
 -- StaffPanel: PA's Staff tab, living in the toolbar like the original.
--- Its menu lists each staff type as a PA row — click the row to hire
--- one, the − to let one go. The payroll footer shows the running wage
--- bill, and the tab grows a red alert dot the moment payroll is missed.
+-- Its menu lists each staff type as a PA row — click a row to pick that
+-- hire up, then CLICK THEM DOWN wherever you want them (BuildMode's
+-- staff-placement mode handles the ghost and the click). The − lets one
+-- go, the payroll footer shows the running wage bill, and the tab grows
+-- a red alert dot the moment payroll is missed.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -14,14 +16,16 @@ local PAToolbar = require(script.Parent.PAToolbar)
 
 local StaffPanel = {}
 
--- Icon tints so the three trades read apart at a glance.
+-- Icon tints so the trades read apart at a glance.
 local TINTS = {
+	Workman = Color3.fromRGB(255, 205, 105),
 	Guard = Color3.fromRGB(126, 156, 224),
 	Cook = Color3.fromRGB(236, 236, 236),
 	Janitor = Color3.fromRGB(120, 196, 140),
 }
 
-function StaffPanel.start()
+-- `build` is BuildMode's controller (wired in the client bootstrap).
+function StaffPanel.start(build)
 	local player = Players.LocalPlayer
 	local staffRequest = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("StaffRequest")
 
@@ -33,9 +37,7 @@ function StaffPanel.start()
 			name = def.id,
 			right = Format.money(def.wage),
 			onClick = function()
-				pcall(function()
-					return staffRequest:InvokeServer("hire", def.id)
-				end)
+				build.placeStaff({ id = def.id, tint = TINTS[def.id] })
 			end,
 		})
 		PAIcons.draw(handle.icon, "staff", TINTS[def.id] or UIKit.ICON, 2)

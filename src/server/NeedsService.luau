@@ -131,6 +131,10 @@ local function step(player)
 		hour = frac * 24
 	end
 	local activity = Config.activityAt(hour)
+	local lockdown = player:GetAttribute("PrisonLockdown") == true
+	if lockdown then
+		activity = "Sleep" -- lockdown: everyone to their cells, whatever the hour
+	end
 
 	local housed = IntakeService.getHoused(player)
 	local guardCount = StaffService.count(player, "Guard")
@@ -159,7 +163,14 @@ local function step(player)
 		)
 
 		-- Behaviour: go where the regime says, recover the right need there.
-		if not life.walking and workspace:GetServerTimeNow() >= life.walkUntil then
+		-- Runners answer to SecurityService, not the regime — just keep
+		-- their logical position roughly in sync while they sprint.
+		local escaping = model:GetAttribute("Escaping") == true
+		if escaping then
+			life.pos = model:GetPivot().Position - Vector3.new(0, PIVOT_HEIGHT, 0)
+			life.walking = false
+			life.walkUntil = workspace:GetServerTimeNow() + 2
+		elseif not life.walking and workspace:GetServerTimeNow() >= life.walkUntil then
 			local target, need, provided = resolveActivity(player, zone, life, entry.house, activity)
 			if target and (target - life.pos).Magnitude > ARRIVE_DIST then
 				walkTo(zone, model, life, target)
@@ -194,9 +205,13 @@ local function step(player)
 		end
 	end
 
-	-- Prison-wide unrest: nudge toward the neglect level.
+	-- Prison-wide unrest: nudge toward the neglect level. A lockdown
+	-- cools things fast (while the neglected needs quietly pile up for
+	-- after — lift it too late and the anger comes right back).
 	local unrest = player:GetAttribute("PrisonUnrest") or 0
-	if prisonerCount > 0 then
+	if lockdown then
+		unrest = math.max(0, unrest - Config.LockdownCalm * Config.NeedTick)
+	elseif prisonerCount > 0 then
 		local pressure = unrestSum / prisonerCount -- 0..40ish
 		if pressure > 8 then
 			unrest = math.min(100, unrest + Config.UnrestRise * Config.NeedTick)

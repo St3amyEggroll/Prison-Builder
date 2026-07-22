@@ -194,6 +194,12 @@ function PathService.canReach(zone, fromPos, footprint, targetPos)
 	return PathService.findRoute(zone, fromPos, footprint, targetPos) ~= nil
 end
 
+-- Public walkability check (StaffService validates click-placement with
+-- it; SecurityService picks patrol squares and escape gates).
+function PathService.isWalkable(zone, x, z)
+	return isWalkable(zone, x, z)
+end
+
 -- Walk speed shared by escorts unless the caller overrides.
 PathService.DefaultSpeed = Config.EscortSpeed
 

@@ -21,6 +21,7 @@ for _, name in ipairs({
 	"RoomPaintRequest",
 	"IntakeRequest",
 	"StaffRequest",
+	"EmergencyRequest",
 }) do
 	local remote = Instance.new("RemoteFunction")
 	remote.Name = name
@@ -41,6 +42,7 @@ local RoomService = require(script.RoomService)
 local IntakeService = require(script.IntakeService)
 local StaffService = require(script.StaffService)
 local NeedsService = require(script.NeedsService)
+local SecurityService = require(script.SecurityService)
 local PlotService = require(script.PlotService)
 
 SaveService.init()
@@ -54,6 +56,7 @@ RoomService.init()
 IntakeService.init()
 StaffService.init()
 NeedsService.init()
+SecurityService.init()
 PlotService.init()
 
 -- Cross-system wiring, all in one visible place:
@@ -74,4 +77,4 @@ RoomService.onRoomsChanged(function(player)
 	IntakeService.poke(player)
 end)
 
-print("[Lockdown] Server ready — Phase 4: needs, regime, staff")
+print("[Lockdown] Server ready — Phase 5: security, escapes, emergencies")

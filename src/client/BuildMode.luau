@@ -55,6 +55,7 @@ function BuildMode.start()
 	local deleteRectRequest = remotes:WaitForChild("DeleteRectRequest")
 	local moveRequest = remotes:WaitForChild("MoveRequest")
 	local roomPaintRequest = remotes:WaitForChild("RoomPaintRequest")
+	local staffRequest = remotes:WaitForChild("StaffRequest")
 
 	-- Mirror of the wallet, for the can-you-afford-it ghost tint.
 	local cashNow = 0
@@ -111,6 +112,8 @@ function BuildMode.start()
 	local zoneBox = nil
 	local movingModel = nil -- the object currently carried by the Move tool
 	local movingFrom = nil -- its original {n, x, z, r}, for undo
+	local pendingStaff = nil -- staff def being click-placed (mode "staff")
+	local staffGhost = nil
 
 	-- Undo: a stack of inverse actions (Ctrl+Z or the ↩ button).
 	--   { kind = "place", models = {Model, ...} }        -> demolish them
@@ -284,6 +287,31 @@ function BuildMode.start()
 			ghost, ghostHighlight = nil, nil
 		end
 		ghostCell = nil
+	end
+
+	-- The staff-placement marker: a glowing pillar in the hire's color
+	-- that rides the cursor until you click them down.
+	local function destroyStaffGhost()
+		if staffGhost then
+			staffGhost:Destroy()
+			staffGhost = nil
+		end
+	end
+
+	local function makeStaffGhost(def)
+		destroyStaffGhost()
+		local marker = Instance.new("Part")
+		marker.Name = "StaffGhost"
+		marker.Anchored = true
+		marker.CanCollide = false
+		marker.CanQuery = false
+		marker.CanTouch = false
+		marker.CastShadow = false
+		marker.Material = Enum.Material.Neon
+		marker.Transparency = 0.45
+		marker.Color = def.tint or Color3.fromRGB(210, 225, 240)
+		marker.Size = Vector3.new(2, 5, 2)
+		staffGhost = marker
 	end
 
 	local function makeGhost(asset)
@@ -571,6 +599,8 @@ function BuildMode.start()
 			return "move"
 		elseif mode == "delete" then
 			return "bulldoze"
+		elseif mode == "staff" then
+			return "staff"
 		end
 		return nil
 	end
@@ -694,6 +724,10 @@ function BuildMode.start()
 		if mode ~= "rooms" then
 			selectedRoom = nil
 		end
+		if mode ~= "staff" then
+			pendingStaff = nil
+			destroyStaffGhost()
+		end
 		if mode == "off" or wasOff then
 			-- Crossing the build/walk boundary closes every open menu
 			-- (tab clicks re-open the one they want right after).
@@ -718,6 +752,8 @@ function BuildMode.start()
 			setStatusDefault("Move: click an object to pick it up")
 		elseif mode == "delete" then
 			setStatusDefault("Bulldoze: click an object, or drag a rectangle to clear an area")
+		elseif mode == "staff" then
+			setStatusDefault("Click a square to place your new hire · right-click to stop")
 		elseif mode == "off" then
 			setStatusDefault("")
 		end
@@ -1198,6 +1234,19 @@ function BuildMode.start()
 				else
 					tryDelete()
 				end
+			elseif mode == "staff" and pendingStaff then
+				local gx, gz = cellUnderPointer(1, 1)
+				if gx then
+					local ok, result = pcall(function()
+						return staffRequest:InvokeServer("hire", pendingStaff.id, gx, gz)
+					end)
+					if ok and result and result.ok then
+						playSound("electronicpingshort.wav", 0.5)
+						flashStatus(pendingStaff.id .. " hired!", GREEN)
+					elseif ok and result then
+						flashStatus(result.err or "Can't place them there.", RED)
+					end
+				end
 			elseif mode == "move" then
 				tryMove()
 			end
@@ -1210,6 +1259,8 @@ function BuildMode.start()
 				destroyGhost()
 				refreshSelectionLook()
 				setStatusDefault("Move: click an object to pick it up")
+			elseif mode == "staff" then
+				setMode("objects")
 			elseif mode == "objects" and selected then
 				selected = nil
 				destroyGhost()
@@ -1333,6 +1384,16 @@ function BuildMode.start()
 			if gx then
 				showStretchBox(pressStartCell[1], pressStartCell[2], gx, gz, RED)
 			end
+		elseif mode == "staff" then
+			if staffGhost and zone then
+				local gx, gz = cellUnderPointer(1, 1)
+				if gx then
+					staffGhost.CFrame = GridMath.regionCenter(zone.info, gx, gz, 1, 1) * CFrame.new(0, 2.5, 0)
+					staffGhost.Parent = workspace
+				else
+					staffGhost.Parent = nil
+				end
+			end
 		elseif mode == "move" and movingModel then
 			updateGhost()
 		elseif mode == "delete" or mode == "move" then
@@ -1352,6 +1413,23 @@ function BuildMode.start()
 			end
 		end
 	end)
+
+	-- What other UI modules need from build mode. StaffPanel arms PA's
+	-- click-to-place hiring through this: pick a staff type, then click
+	-- them down wherever you want them to start.
+	local controller = {}
+	function controller.placeStaff(def)
+		if not zone then
+			flashStatus("No build plot assigned yet!", RED)
+			return
+		end
+		setMode("staff")
+		pendingStaff = def
+		makeStaffGhost(def)
+		PAToolbar.openMenu("staff")
+		setStatusDefault("Place " .. def.id .. " — click a square · right-click to stop")
+	end
+	return controller
 end
 
 return BuildMode

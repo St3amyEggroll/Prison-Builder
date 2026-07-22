@@ -43,8 +43,10 @@ Config.FallbackPrice = 50
 -- Construction -----------------------------------------------------------
 
 -- Placements start as transparent blueprints; workmen walk over and
--- build them (Prison Architect's whole vibe).
-Config.WorkmenPerPlot = 2
+-- build them (Prison Architect's whole vibe). Workmen are STAFF now —
+-- every prison opens with this many on payroll, and more are hired
+-- (click-placed) from the Staff tab.
+Config.StartingWorkmen = 2
 Config.WorkerSpeed = 6 -- studs/sec walking to the job
 Config.BuildTimeBase = 1 -- seconds per job...
 Config.BuildTimePerCell = 0.5 -- ...plus this per grid square of footprint
@@ -109,11 +111,13 @@ Config.UnrestFall = 0.2
 -- Staff -------------------------------------------------------------------
 
 -- Hiring is free; wages charge continuously (per WageInterval slice of a
--- day). Can't pay? Someone quits — PA rules.
+-- day). Can't pay? Someone quits — cheapest first, workmen last (they're
+-- the crew that builds everything). PA's staff menu order: Workman first.
 Config.StaffTypes = {
-	{ id = "Guard", icon = "👮", wage = 150, outfit = "guard" },
-	{ id = "Cook", icon = "🍳", wage = 100, outfit = "cook" },
-	{ id = "Janitor", icon = "🧹", wage = 80, outfit = "janitor" },
+	{ id = "Workman", wage = 40, outfit = "worker" },
+	{ id = "Guard", wage = 150, outfit = "guard" },
+	{ id = "Cook", wage = 100, outfit = "cook" },
+	{ id = "Janitor", wage = 80, outfit = "janitor" },
 }
 Config.WageInterval = 30
 Config.MaxStaffPerType = 10
@@ -134,8 +138,35 @@ Config.ComingSoon = {
 	{ icon = "intelligence", name = "Intelligence", note = "Intelligence — informants & contraband come with Phase 5" },
 	{ icon = "quickbuild", name = "Quick Build", note = "Quick Build — one-click premade rooms come in a later phase" },
 	{ icon = "planning", name = "Planning", note = "Planning — sketch layouts for free comes in a later phase" },
-	{ icon = "emergencies", name = "Emergencies", note = "Emergencies — lockdowns & callouts come with Phase 5" },
 }
+
+-- Security (Phase 5) ------------------------------------------------------
+
+-- Guards patrol on their own: an idle guard rolls PatrolChance every
+-- PatrolInterval seconds and wanders to a random walkable square.
+Config.PatrolInterval = 5
+Config.PatrolChance = 0.5
+Config.PatrolSpeed = 4 -- studs/sec on patrol (they RUN during a chase)
+
+-- Escapes: each check, every housed prisoner rolls a chance built from
+-- prison-wide unrest plus their own desperation (worst need < 20). The
+-- runner sprints for the plot's front row along the walk grid — through
+-- doors, never through walls — so a sealed prison keeps everyone in.
+Config.EscapeCheckInterval = 6
+Config.EscapeUnrestFactor = 0.15 -- per-check chance at 100% unrest
+Config.EscapeDesperationChance = 0.06 -- extra for desperate prisoners
+Config.EscapeCooldown = 45 -- seconds before the same prisoner retries
+Config.EscapeRunSpeed = 5.5 -- studs/sec (faster than an escort walk)
+Config.EscapeFine = 500 -- the fine when one gets away
+
+-- A free (or patrolling) guard chases: they aim for a point 70% along
+-- the runner's path and win if they can reach it nearly in time.
+Config.InterceptFraction = 0.7
+Config.GuardCatchGrace = 1.5 -- seconds of slack the guard is allowed
+
+-- Emergencies.
+Config.RollCallCooldown = 45 -- seconds between roll calls
+Config.LockdownCalm = 0.5 -- unrest drop per second while locked down
 
 -- Foundations ------------------------------------------------------------
 

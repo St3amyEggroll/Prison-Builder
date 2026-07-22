@@ -1,7 +1,9 @@
 -- ConstructionService: Prison Architect's construction feel. Placements
--- arrive as BLUEPRINTS — see-through, blue-glowing, non-solid — and each
--- plot's crew of workmen walk over (pathfinding around walls, through
--- doors) and hammer them into real objects.
+-- arrive as BLUEPRINTS — see-through, blue-glowing, non-solid — and the
+-- WORKMEN ON STAFF walk over (pathfinding around walls, through doors)
+-- and hammer them into real objects. The crew is whatever StaffService
+-- says it is: hire more workmen under Staff and blueprints go up faster;
+-- lose them all to an unpaid payroll and construction simply stops.
 --
 -- A blueprint isn't functional yet: doors don't work, housing doesn't
 -- count as capacity, and it doesn't satisfy room requirements until a
@@ -11,15 +13,15 @@ local Debris = game:GetService("Debris")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config = require(ReplicatedStorage.Shared.Config)
-local InmateService = require(script.Parent.InmateService)
 local DoorService = require(script.Parent.DoorService)
 local PathService = require(script.Parent.PathService)
+local StaffService = require(script.Parent.StaffService)
 
 local ConstructionService = {}
 
 local PIVOT_HEIGHT = 3 -- rig pivot rides 3 studs above the feet
 
--- player -> { zone, folder, workers = { {model, busy} }, queue = { {model, asset, player} } }
+-- player -> { zone, busy = {model = true}, queue = { {model, asset, saved} } }
 local records = {}
 local completionListeners = {} -- fns(player, model, asset)
 
@@ -112,28 +114,13 @@ end
 -- Wiring (called by PlotService) ------------------------------------------
 
 function ConstructionService.assignPlayer(player, zone)
-	local folder = Instance.new("Folder")
-	folder.Name = "Workers"
-	folder.Parent = zone.part
-
-	local rec = { zone = zone, folder = folder, workers = {}, queue = {} }
-	records[player] = rec
-
-	-- The crew waits by the front-left corner of the plot.
-	local size = zone.part.Size
-	for i = 1, Config.WorkmenPerPlot do
-		local post = zone.part.CFrame * CFrame.new(-size.X / 2 + 6 + (i - 1) * 4, size.Y / 2, size.Z / 2 - 4)
-		local model = InmateService.spawn(post, i, folder, { outfit = "worker" })
-		table.insert(rec.workers, { model = model, busy = false })
-	end
+	-- The workman models themselves live with StaffService — this record
+	-- only tracks the job queue and who's mid-hammer.
+	records[player] = { zone = zone, busy = {}, queue = {} }
 end
 
 function ConstructionService.releasePlayer(player)
-	local rec = records[player]
 	records[player] = nil
-	if rec then
-		rec.folder:Destroy()
-	end
 end
 
 function ConstructionService.init()
@@ -149,13 +136,21 @@ function ConstructionService.init()
 					continue
 				end
 
-				for _, worker in ipairs(rec.workers) do
+				-- Prune busy marks for workmen who quit/were fired mid-job.
+				for model in pairs(rec.busy) do
+					if model.Parent == nil then
+						rec.busy[model] = nil
+					end
+				end
+
+				-- The crew is the Workmen on staff, right now.
+				for _, workman in ipairs(StaffService.getStaff(player, "Workman")) do
 					local job = table.remove(rec.queue, 1)
 					if not job then
 						break
 					end
-					if worker.busy or worker.model.Parent == nil then
-						-- Not available: put the job back for the next worker.
+					if rec.busy[workman] then
+						-- Not available: put the job back for the next one.
 						table.insert(rec.queue, 1, job)
 						continue
 					end
@@ -179,7 +174,7 @@ function ConstructionService.init()
 						rec.zone.part.Position.Y + rec.zone.part.Size.Y / 2,
 						boxCF.Position.Z
 					)
-					local fromPos = worker.model:GetPivot().Position - Vector3.new(0, PIVOT_HEIGHT, 0)
+					local fromPos = workman:GetPivot().Position - Vector3.new(0, PIVOT_HEIGHT, 0)
 					local route = PathService.findRoute(rec.zone, fromPos, footprint, targetPos)
 					if not route then
 						table.insert(rec.queue, job)
@@ -192,14 +187,16 @@ function ConstructionService.init()
 						table.remove(route)
 					end
 
-					worker.busy = true
-					local duration = PathService.startWalk(worker.model, route, Config.WorkerSpeed)
+					rec.busy[workman] = true
+					local duration = PathService.startWalk(workman, route, Config.WorkerSpeed)
 					local cells = footprint.w * footprint.d
 					local buildTime = Config.BuildTimeBase + Config.BuildTimePerCell * cells
 
 					task.spawn(function()
 						task.wait(duration)
-						if worker.model.Parent == nil then
+						if workman.Parent == nil then
+							-- They quit mid-walk: the job goes back on the pile.
+							table.insert(rec.queue, 1, job)
 							return
 						end
 						-- Arrive next to the job and start hammering.
@@ -210,14 +207,14 @@ function ConstructionService.init()
 						else
 							standCF = CFrame.new(stand)
 						end
-						PathService.finishWalk(worker.model, standCF * CFrame.new(0, PIVOT_HEIGHT, 0))
-						worker.model:SetAttribute("Working", true)
+						PathService.finishWalk(workman, standCF * CFrame.new(0, PIVOT_HEIGHT, 0))
+						workman:SetAttribute("Working", true)
 						task.wait(buildTime)
-						worker.model:SetAttribute("Working", nil)
+						workman:SetAttribute("Working", nil)
 						if job.model.Parent ~= nil then
 							completeBlueprint(player, job)
 						end
-						worker.busy = false
+						rec.busy[workman] = nil
 					end)
 				end
 			end

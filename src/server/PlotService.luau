@@ -24,6 +24,7 @@ local RoomService = require(script.Parent.RoomService)
 local IntakeService = require(script.Parent.IntakeService)
 local StaffService = require(script.Parent.StaffService)
 local NeedsService = require(script.Parent.NeedsService)
+local SecurityService = require(script.Parent.SecurityService)
 local ConstructionService = require(script.Parent.ConstructionService)
 
 local PlotService = {}
@@ -274,6 +275,7 @@ local function assignZone(player)
 	IntakeService.assignPlayer(player, zone, data.intake)
 	StaffService.assignPlayer(player, zone, data.staff)
 	NeedsService.assignPlayer(player, zone)
+	SecurityService.assignPlayer(player, zone)
 	SaveService.attachSource(player, "layout", PlacementService.snapshotLayout)
 	SaveService.attachSource(player, "rooms", RoomService.snapshotRooms)
 	SaveService.attachSource(player, "intake", IntakeService.snapshotIntake)
@@ -308,6 +310,7 @@ local function assignZone(player)
 end
 
 local function releaseZone(player)
+	SecurityService.releasePlayer(player)
 	NeedsService.releasePlayer(player)
 	StaffService.releasePlayer(player)
 	IntakeService.releasePlayer(player)

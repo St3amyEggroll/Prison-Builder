@@ -98,41 +98,31 @@ local PLACEHOLDERS = {
 		end,
 	},
 	{
-		name = "Prison Cell",
+		-- Cells aren't prefab objects anymore — you BUILD them: walls, a
+		-- door, floor, paint the Cell room, and put a Bed inside. The bed
+		-- is what houses a prisoner (SpawnsInmate), but only once its Cell
+		-- room shows ✓ ready.
+		name = "Bed",
 		category = "Objects",
-		price = 500,
+		price = 150,
 		build = function(model)
-			part({ Size = Vector3.new(12, 0.4, 12), CFrame = CFrame.new(0, 0.2, 0), Color = DARK }, model)
-			part({ Size = Vector3.new(12, 7, 0.5), CFrame = CFrame.new(0, 3.5, 5.75) }, model)
-			part({ Size = Vector3.new(0.5, 7, 11), CFrame = CFrame.new(-5.75, 3.5, 0) }, model)
-			part({ Size = Vector3.new(0.5, 7, 11), CFrame = CFrame.new(5.75, 3.5, 0) }, model)
-			-- Barred front with a doorway gap on the right.
-			for i = 0, 3 do
-				part({
-					Size = Vector3.new(0.35, 6.6, 0.35),
-					CFrame = CFrame.new(-5 + i * 1.9, 3.3, -5.75),
-					Material = Enum.Material.Metal,
-					Color = METAL,
-				}, model)
-			end
 			part({
-				Size = Vector3.new(12, 0.4, 0.4),
-				CFrame = CFrame.new(0, 6.8, -5.75),
-				Material = Enum.Material.Metal,
-				Color = METAL,
-			}, model)
-			-- Bed.
-			part({
-				Size = Vector3.new(2.8, 0.5, 5.6),
-				CFrame = CFrame.new(4, 0.65, 2),
+				Size = Vector3.new(3.4, 0.6, 7),
+				CFrame = CFrame.new(0, 0.5, 0),
 				Material = Enum.Material.Metal,
 				Color = Color3.fromRGB(70, 70, 75),
 			}, model)
 			part({
-				Size = Vector3.new(2.6, 0.6, 5.4),
-				CFrame = CFrame.new(4, 1.2, 2),
+				Size = Vector3.new(3.2, 0.6, 6.6),
+				CFrame = CFrame.new(0, 1.1, 0),
 				Material = Enum.Material.Fabric,
 				Color = Color3.fromRGB(235, 235, 230),
+			}, model)
+			part({
+				Size = Vector3.new(2.6, 0.35, 1.5),
+				CFrame = CFrame.new(0, 1.55, -2.4),
+				Material = Enum.Material.Fabric,
+				Color = Color3.fromRGB(255, 170, 60),
 			}, model)
 			model:SetAttribute("SpawnsInmate", true)
 		end,

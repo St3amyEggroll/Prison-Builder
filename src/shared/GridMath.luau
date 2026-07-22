@@ -60,6 +60,22 @@ function GridMath.inBounds(zoneInfo, gx, gz, w, d)
 	return gx >= 0 and gz >= 0 and gx + w <= zoneInfo.cols and gz + d <= zoneInfo.rows
 end
 
+-- Which grid squares a flat marker Part covers (land parcels, lock
+-- overlays). The part must not be rotated relative to its zone.
+function GridMath.partRect(zoneInfo, part)
+	local localPos = zoneInfo.corner:PointToObjectSpace(part.Position)
+	local halfX, halfZ = part.Size.X / 2, part.Size.Z / 2
+	local x1 = math.floor((localPos.X - halfX) / GRID + 0.05)
+	local z1 = math.floor((localPos.Z - halfZ) / GRID + 0.05)
+	local x2 = math.ceil((localPos.X + halfX) / GRID - 0.05) - 1
+	local z2 = math.ceil((localPos.Z + halfZ) / GRID - 0.05) - 1
+	x1 = math.clamp(x1, 0, zoneInfo.cols - 1)
+	z1 = math.clamp(z1, 0, zoneInfo.rows - 1)
+	x2 = math.clamp(math.max(x1, x2), 0, zoneInfo.cols - 1)
+	z2 = math.clamp(math.max(z1, z2), 0, zoneInfo.rows - 1)
+	return x1, z1, x2, z2
+end
+
 -- Turn a drag from square (x1,z1) to (x2,z2) into a straight line of
 -- squares along the dominant axis (PA-style wall dragging). Returns the
 -- line's start square, the axis ("x" or "z"), and how many squares.

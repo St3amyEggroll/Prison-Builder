@@ -51,6 +51,15 @@ The economy returns, plus PA's construction feel — and pathfinding, pulled for
 - [x] Move tool reworked: true server-side move — free, instant, Ctrl+Z moves it back
 - [ ] Owner playtest: watch a workman build your wall line, and an arrival walk the corridor to their cell — **← your move!**
 
+### Owner feedback round (post-Phase 3) ✅
+- [x] **Cells are BUILT, not placed**: the Prison Cell object became a **Bed**; capacity = beds inside ✓-ready Cell rooms (painted + enclosed + door)
+- [x] **Buyable land**: zones split into parcels you lay out in Studio (free starting parcel + `Price`-tagged expansions, click the 🔒 slab to buy; purchases save). Fallback map now 2 big 240-stud plots with demo parcels
+- [x] Grid cursor: a bright square always shows which cell you're aiming at
+- [x] Right-click cancels construction jobs (queued or mid-build, full refund) when nothing's selected; still clears your selection otherwise
+- [x] Worker teleport fixed (walk routes ended inside the object; now they stop beside it)
+- [x] Undo button removed from the toolbar (Ctrl+Z remains for PC)
+- [x] Objectives system removed per owner
+
 ## Phase 4 — Prisoner life: needs, regime & staff 👮
 
 The sim under the hood. Unlocks the Staff tab.

@@ -52,14 +52,16 @@ Opening build mode switches to the **top-down Prison Architect camera** (slightl
 | Pick an asset or room type | click its tile | tap its tile |
 | **Foundation** (walls + floor in one go) | 🏗️, then drag a rectangle | same |
 | **Move an object** | ✋, then click it, then place it | same |
-| **Undo** | **Ctrl+Z** or ↩ | ↩ button |
 | Aim the ghost preview | move mouse | drag finger |
 | Place (when ghost is green) | click | tap |
 | **Drag-to-build**: walls/doors/fences drag in **lines**, flooring **fills the rectangle** | press, drag, release | press, drag, release |
 | **Drag-to-bulldoze** a whole area | 🗑️, then drag a rectangle | same |
-| Cancel current selection | right-click | pick another tile |
+| Cancel current selection | right-click (with something selected) | pick another tile |
 | **Paint a room** (pick type first!) | press, drag a rectangle, release | same |
 | Rotate object 90° | **R** or ↻ | ↻ button |
+| Cancel a construction job (queued or building) | right-click the blueprint | — |
+| Undo | **Ctrl+Z** | — |
+| Buy a land parcel | click its 🔒 price tag slab | tap it |
 | Demolish mode | 🗑️ button, then click objects | 🗑️ button, then tap |
 | Prisoner intake | 🚔 button → accept / auto-intake | same |
 

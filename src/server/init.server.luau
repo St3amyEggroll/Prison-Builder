@@ -30,7 +30,6 @@ remotes.Parent = ReplicatedStorage
 
 local SaveService = require(script.SaveService)
 local EconomyService = require(script.EconomyService)
-local ObjectiveService = require(script.ObjectiveService)
 local Buildables = require(script.Buildables)
 local DoorService = require(script.DoorService)
 local PathService = require(script.PathService)
@@ -42,7 +41,6 @@ local PlotService = require(script.PlotService)
 
 SaveService.init()
 EconomyService.init()
-ObjectiveService.init()
 Buildables.init()
 DoorService.init()
 ConstructionService.init()
@@ -59,9 +57,13 @@ ConstructionService.onCompleted(function(player)
 	RoomService.poke(player)
 	IntakeService.poke(player)
 end)
--- ...and so does moving something.
+-- ...and so does moving something...
 PlacementService.onMoved(function(player)
 	RoomService.poke(player)
+	IntakeService.poke(player)
+end)
+-- ...and capacity = beds in ✓-ready Cell rooms, so room changes matter.
+RoomService.onRoomsChanged(function(player)
 	IntakeService.poke(player)
 end)
 

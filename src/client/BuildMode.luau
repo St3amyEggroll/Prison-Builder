@@ -101,6 +101,7 @@ function BuildMode.start()
 	-- My zone (the server drops a "BuildZone" pointer into the Player).
 	local zone = nil
 	local occupied = {}
+	local lockedRects = {} -- land not bought yet, mirrored from the overlays
 
 	-- State.
 	local mode = "off" -- "off" | "objects" | "rooms" | "foundation" | "move" | "delete"
@@ -171,10 +172,19 @@ function BuildMode.start()
 		end
 	end
 
+	local function cellLocked(x, z)
+		for _, r in ipairs(lockedRects) do
+			if x >= r[1] and x <= r[3] and z >= r[2] and z <= r[4] then
+				return true
+			end
+		end
+		return false
+	end
+
 	local function regionFree(gx, gz, w, d)
 		for x = gx, gx + w - 1 do
 			for z = gz, gz + d - 1 do
-				if occupied[x .. ":" .. z] then
+				if occupied[x .. ":" .. z] or cellLocked(x, z) then
 					return false
 				end
 			end
@@ -197,6 +207,36 @@ function BuildMode.start()
 		end)
 		zone.placed.ChildRemoved:Connect(function(model)
 			markModel(model, nil)
+		end)
+
+		-- Mirror the locked-land overlays into grid rects (they vanish as
+		-- parcels get bought).
+		local function rebuildLockedRects()
+			lockedRects = {}
+			local folder = zone.part:FindFirstChild("LockedLand")
+			if folder then
+				for _, overlay in ipairs(folder:GetChildren()) do
+					if overlay:IsA("BasePart") then
+						local x1, z1, x2, z2 = GridMath.partRect(zone.info, overlay)
+						table.insert(lockedRects, { x1, z1, x2, z2 })
+					end
+				end
+			end
+		end
+		rebuildLockedRects()
+		local lockedFolder = zone.part:FindFirstChild("LockedLand")
+		if lockedFolder then
+			lockedFolder.ChildRemoved:Connect(function()
+				task.defer(rebuildLockedRects)
+			end)
+		end
+		zone.part.ChildAdded:Connect(function(child)
+			if child.Name == "LockedLand" then
+				task.defer(rebuildLockedRects)
+				child.ChildRemoved:Connect(function()
+					task.defer(rebuildLockedRects)
+				end)
+			end
 		end)
 	end
 
@@ -276,6 +316,45 @@ function BuildMode.start()
 		highlight.Parent = model
 		ghost = model
 		ghostHighlight = highlight
+	end
+
+	-- The grid cursor: a bright square on whichever cell the pointer is
+	-- over, in every build tool — so you always know what you're aiming at.
+	local cursorBox = nil
+	local function updateCursor()
+		if mode == "off" or not zone then
+			if cursorBox then
+				cursorBox.Parent = nil
+			end
+			return
+		end
+		local gx, gz = cellUnderPointer(1, 1)
+		if not gx then
+			if cursorBox then
+				cursorBox.Parent = nil
+			end
+			return
+		end
+		if not cursorBox then
+			cursorBox = Instance.new("Part")
+			cursorBox.Name = "GridCursor"
+			cursorBox.Anchored = true
+			cursorBox.CanCollide = false
+			cursorBox.CanQuery = false
+			cursorBox.CanTouch = false
+			cursorBox.CastShadow = false
+			cursorBox.Transparency = 1
+			cursorBox.Size = Vector3.new(GRID, 0.3, GRID)
+			local box = Instance.new("SelectionBox")
+			box.Adornee = cursorBox
+			box.Color3 = Color3.fromRGB(255, 255, 160)
+			box.LineThickness = 0.05
+			box.SurfaceColor3 = Color3.fromRGB(255, 255, 160)
+			box.SurfaceTransparency = 0.85
+			box.Parent = cursorBox
+		end
+		cursorBox.CFrame = GridMath.regionCenter(zone.info, gx, gz, 1, 1) * CFrame.new(0, 0.2, 0)
+		cursorBox.Parent = workspace
 	end
 
 	local function hideStretchBox()
@@ -884,10 +963,6 @@ function BuildMode.start()
 			setMode("delete")
 		end
 	end)
-	local undoButton = toolbarButton("↩", "Undo", true)
-	undoButton.Activated:Connect(function()
-		doUndo()
-	end)
 	for _, future in ipairs(Config.ComingSoon) do
 		local button = toolbarButton(future.icon, future.name, false)
 		button.Activated:Connect(function()
@@ -1225,6 +1300,20 @@ function BuildMode.start()
 			elseif mode == "rooms" and selectedRoom ~= nil then
 				selectedRoom = nil
 				refreshSelectionLook()
+			else
+				-- Nothing selected: right-clicking a blueprint cancels that
+				-- construction job (queued or mid-hammer), full refund.
+				local model = findPlacedModel()
+				if model and model:GetAttribute("Blueprint") == true then
+					local ok, result = pcall(function()
+						return deleteRequest:InvokeServer(model)
+					end)
+					if ok and result and result.ok then
+						playSound("snap.mp3", 0.5)
+						flashStatus("Construction cancelled" ..
+							((result.refund and result.refund > 0) and (" +" .. Format.money(result.refund)) or ""), ORANGE)
+					end
+				end
 			end
 		elseif input.KeyCode == Enum.KeyCode.B then
 			setMode(mode == "off" and "objects" or "off")
@@ -1284,6 +1373,7 @@ function BuildMode.start()
 	end)
 
 	RunService.RenderStepped:Connect(function()
+		updateCursor()
 		if mode == "objects" then
 			updateGhost()
 			if pressing and pressStartCell and selected and ghostCell then

@@ -16,11 +16,21 @@ That's the whole contract. No code edits, no naming lists, nothing to register.
 1. Build whatever you want in Workspace — terrain, roads, mountains, the works. It's all yours.
 2. In the Explorer, hover **Workspace** → click the **+** → add a **Folder** → rename it exactly `PlotZones`.
 3. Add flat **Part**s inside that folder — one per player who can build (4–6 is a good start). For each part:
-   - Make it big (something like **128 × 1 × 128** studs) and flat.
+   - **Recommended size: 240 × 1 × 240 studs** (= a 60×60 build grid; every 4 studs is one grid square, so any multiple of 4 works — up to ~400×400 if you want huge prisons).
    - **Anchor it** (Properties → Anchored ✓). Very important — unanchored zones fall through the world!
    - Any position and any rotation is fine; the build grid adapts to each zone automatically.
    - Keep the space **above** it clear — that's where players build.
    - **The Part's +Z side is the plot's FRONT** — handcuffed new prisoners appear there waiting for intake. Rotate the Part so its front faces your road/entrance. (Quick check: in Studio, select the Part and press Play — arrivals gather on the front side.)
+
+### 💰 Buyable land (expansions you lay out yourself)
+
+Split each plot into parcels the player unlocks with cash:
+
+1. **Inside the zone Part** (as children of it, in the Explorer), add more flat Parts — call them `Land` (any name works). Make them thin (~0.5 studs tall), sitting on top of the zone, **sizes in multiples of 4 studs** (e.g. 120 × 0.5 × 120), and **don't rotate them relative to the zone**.
+2. **One parcel gets NO `Price` attribute** (or Price = 0): that's the **free starting land**. Put it touching the **front (+Z) edge** — that's where arrivals queue and the work crew stands.
+3. Every other parcel gets a number attribute **`Price`** (e.g. 2000). In-game they show as dark slabs with a "🔒 Buy land — $2,000" tag; the owner clicks one to buy it, and it opens up for building instantly. Purchases save.
+4. Parcels shouldn't overlap. Any part of the zone **not covered** by a parcel can never be built on (useful as decorative border).
+5. No parcels at all? The whole zone is buildable from the start — that also keeps old maps working.
 4. Add a **SpawnLocation** (Home tab → Part dropdown, or search the toolbox) wherever players should first appear. When a player claims a zone, they're automatically walked to its edge.
 
 > **No PlotZones folder yet?** The game builds a simple flat test map by itself so it always runs. The moment your folder exists with at least one Part, your map takes over completely.
@@ -41,7 +51,7 @@ That's the whole contract. No code edits, no naming lists, nothing to register.
 | Attribute | Type | What it does |
 |---|---|---|
 | `Category` | string | Which bottom-toolbar button the asset lives under: `Walls & Doors`, `Flooring`, or `Objects` (the default). **A brand-new name (e.g. `Security`) automatically becomes a new toolbar button** — organize however you like. |
-| `SpawnsInmate` | boolean, ticked | Marks the asset as **housing for one prisoner**. Prisoners arrive via the 🚔 Intake menu, wait handcuffed at your gate, and get escorted into an empty one of these. Put it on cell-type assets. |
+| `SpawnsInmate` | boolean, ticked | Marks the asset as **a bed — housing for one prisoner**. It only counts once it sits inside a **✓-ready Cell room** (painted Cell, enclosed by walls + a door). Cells are BUILT now, not placed as one object. |
 | `Door` | boolean, ticked | The asset is a **working door**: it opens (slides down) when the plot's warden walks close and stays solid for everyone else. Name the sliding part(s) inside the model exactly `DoorPanel` — no part with that name and the whole model fades open instead. Doors also count as walls for room enclosure. |
 | `Price` | number | **Live!** What placing it costs (no attribute = the category default: walls $40, flooring $10, objects $250). Bulldozing refunds half; undo refunds all. |
 
@@ -53,7 +63,7 @@ That's the whole contract. No code edits, no naming lists, nothing to register.
 
 ## 🔄 Replacing the placeholders
 
-The menu starts with 6 placeholder assets I made (Wall, Floor Tile, Fence, Security Door, Prison Cell, Guard Tower) so the system is testable before your art exists. They politely get out of your way:
+The menu starts with 6 placeholder assets I made (Wall, Floor Tile, Fence, Security Door, Bed, Guard Tower) so the system is testable before your art exists. They politely get out of your way:
 
 - Name your model **the same** as a placeholder (e.g. `Wall`) → yours is used, mine never appears.
 - Want them ALL gone? Select the `Buildables` folder → Attributes → add `NoPlaceholders` (boolean) → tick it.

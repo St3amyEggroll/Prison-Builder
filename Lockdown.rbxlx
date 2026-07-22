@@ -116,6 +116,8 @@ Config.GrantInterval = 30
 Config.GrantPerPrisoner = 60
 
 -- An asset's price = its "Price" attribute, else its category's default.
+Config.DefaultLandPrice = 2000 -- buyable parcels without a Price attribute
+
 Config.DefaultPrices = {
 	["Walls & Doors"] = 40,
 	["Flooring"] = 10,
@@ -133,18 +135,6 @@ Config.BuildTimeBase = 1 -- seconds per job...
 Config.BuildTimePerCell = 0.5 -- ...plus this per grid square of footprint
 Config.WorkerNames = { "Hammer Hank", "Nailgun Ned", "Plank Paul", "Rivet Rita", "Sawdust Sam", "Bolt Betty" }
 
--- Objectives -------------------------------------------------------------
-
--- Sequential starter goals, PA-grants style. kinds:
---   counter -> ObjectiveService counts named events
---   attr    -> watches a published player attribute
-Config.Objectives = {
-	{ id = "walls", text = "Build 10 walls or fences", kind = "counter", event = "wall_built", target = 10, reward = 400 },
-	{ id = "cellroom", text = "Paint a Cell room", kind = "counter", event = "cell_painted", target = 1, reward = 300 },
-	{ id = "readycell", text = "Get a Cell room to ✓ ready", kind = "attr", attr = "ReadyRooms_Cell", target = 1, reward = 800 },
-	{ id = "house3", text = "House 3 prisoners", kind = "attr", attr = "PrisonHoused", target = 3, reward = 1200 },
-	{ id = "earn", text = "Earn $5,000 in prisoner grants", kind = "counter", event = "granted", target = 5000, reward = 2500 },
-}
 
 -- Building ---------------------------------------------------------------
 
@@ -217,7 +207,7 @@ Config.RoomRequirements = {
 
 -- Friendly names for attrCounts requirements in the floor labels.
 Config.RequirementText = {
-	SpawnsInmate = "housing",
+	SpawnsInmate = "bed",
 }
 
 -- Rooms ------------------------------------------------------------------
@@ -261,8 +251,8 @@ Config.AutosaveInterval = 60
 -- Only used when Workspace has no PlotZones folder yet: the code builds
 -- a simple flat test map so the game always runs. The moment your real
 -- map (with a PlotZones folder) exists, none of this happens.
-Config.FallbackZoneCount = 4
-Config.FallbackZoneSize = 128
+Config.FallbackZoneCount = 2
+Config.FallbackZoneSize = 240
 
 -- Flavor ----------------------------------------------------------------
 
@@ -375,6 +365,22 @@ function GridMath.inBounds(zoneInfo, gx, gz, w, d)
 	return gx >= 0 and gz >= 0 and gx + w <= zoneInfo.cols and gz + d <= zoneInfo.rows
 end
 
+-- Which grid squares a flat marker Part covers (land parcels, lock
+-- overlays). The part must not be rotated relative to its zone.
+function GridMath.partRect(zoneInfo, part)
+	local localPos = zoneInfo.corner:PointToObjectSpace(part.Position)
+	local halfX, halfZ = part.Size.X / 2, part.Size.Z / 2
+	local x1 = math.floor((localPos.X - halfX) / GRID + 0.05)
+	local z1 = math.floor((localPos.Z - halfZ) / GRID + 0.05)
+	local x2 = math.ceil((localPos.X + halfX) / GRID - 0.05) - 1
+	local z2 = math.ceil((localPos.Z + halfZ) / GRID - 0.05) - 1
+	x1 = math.clamp(x1, 0, zoneInfo.cols - 1)
+	z1 = math.clamp(z1, 0, zoneInfo.rows - 1)
+	x2 = math.clamp(math.max(x1, x2), 0, zoneInfo.cols - 1)
+	z2 = math.clamp(math.max(z1, z2), 0, zoneInfo.rows - 1)
+	return x1, z1, x2, z2
+end
+
 -- Turn a drag from square (x1,z1) to (x2,z2) into a straight line of
 -- squares along the dominant axis (PA-style wall dragging). Returns the
 -- line's start square, the axis ("x" or "z"), and how many squares.
@@ -444,7 +450,6 @@ remotes.Parent = ReplicatedStorage
 
 local SaveService = require(script.SaveService)
 local EconomyService = require(script.EconomyService)
-local ObjectiveService = require(script.ObjectiveService)
 local Buildables = require(script.Buildables)
 local DoorService = require(script.DoorService)
 local PathService = require(script.PathService)
@@ -456,7 +461,6 @@ local PlotService = require(script.PlotService)
 
 SaveService.init()
 EconomyService.init()
-ObjectiveService.init()
 Buildables.init()
 DoorService.init()
 ConstructionService.init()
@@ -473,9 +477,13 @@ ConstructionService.onCompleted(function(player)
 	RoomService.poke(player)
 	IntakeService.poke(player)
 end)
--- ...and so does moving something.
+-- ...and so does moving something...
 PlacementService.onMoved(function(player)
 	RoomService.poke(player)
+	IntakeService.poke(player)
+end)
+-- ...and capacity = beds in ✓-ready Cell rooms, so room changes matter.
+RoomService.onRoomsChanged(function(player)
 	IntakeService.poke(player)
 end)
 
@@ -585,41 +593,31 @@ local PLACEHOLDERS = {
 		end,
 	},
 	{
-		name = "Prison Cell",
+		-- Cells aren't prefab objects anymore — you BUILD them: walls, a
+		-- door, floor, paint the Cell room, and put a Bed inside. The bed
+		-- is what houses a prisoner (SpawnsInmate), but only once its Cell
+		-- room shows ✓ ready.
+		name = "Bed",
 		category = "Objects",
-		price = 500,
+		price = 150,
 		build = function(model)
-			part({ Size = Vector3.new(12, 0.4, 12), CFrame = CFrame.new(0, 0.2, 0), Color = DARK }, model)
-			part({ Size = Vector3.new(12, 7, 0.5), CFrame = CFrame.new(0, 3.5, 5.75) }, model)
-			part({ Size = Vector3.new(0.5, 7, 11), CFrame = CFrame.new(-5.75, 3.5, 0) }, model)
-			part({ Size = Vector3.new(0.5, 7, 11), CFrame = CFrame.new(5.75, 3.5, 0) }, model)
-			-- Barred front with a doorway gap on the right.
-			for i = 0, 3 do
-				part({
-					Size = Vector3.new(0.35, 6.6, 0.35),
-					CFrame = CFrame.new(-5 + i * 1.9, 3.3, -5.75),
-					Material = Enum.Material.Metal,
-					Color = METAL,
-				}, model)
-			end
 			part({
-				Size = Vector3.new(12, 0.4, 0.4),
-				CFrame = CFrame.new(0, 6.8, -5.75),
-				Material = Enum.Material.Metal,
-				Color = METAL,
-			}, model)
-			-- Bed.
-			part({
-				Size = Vector3.new(2.8, 0.5, 5.6),
-				CFrame = CFrame.new(4, 0.65, 2),
+				Size = Vector3.new(3.4, 0.6, 7),
+				CFrame = CFrame.new(0, 0.5, 0),
 				Material = Enum.Material.Metal,
 				Color = Color3.fromRGB(70, 70, 75),
 			}, model)
 			part({
-				Size = Vector3.new(2.6, 0.6, 5.4),
-				CFrame = CFrame.new(4, 1.2, 2),
+				Size = Vector3.new(3.2, 0.6, 6.6),
+				CFrame = CFrame.new(0, 1.1, 0),
 				Material = Enum.Material.Fabric,
 				Color = Color3.fromRGB(235, 235, 230),
+			}, model)
+			part({
+				Size = Vector3.new(2.6, 0.35, 1.5),
+				CFrame = CFrame.new(0, 1.55, -2.4),
+				Material = Enum.Material.Fabric,
+				Color = Color3.fromRGB(255, 170, 60),
 			}, model)
 			model:SetAttribute("SpawnsInmate", true)
 		end,
@@ -878,6 +876,12 @@ function ConstructionService.init()
 						table.insert(rec.queue, job)
 						continue
 					end
+					-- Walk to the square BESIDE the job, never into it — the
+					-- route's final point is the blueprint's center, and ending
+					-- the walk there desynced client/server (the teleport bug).
+					if #route > 1 then
+						table.remove(route)
+					end
 
 					worker.busy = true
 					local duration = PathService.startWalk(worker.model, route, Config.WorkerSpeed)
@@ -890,7 +894,7 @@ function ConstructionService.init()
 							return
 						end
 						-- Arrive next to the job and start hammering.
-						local stand = route[#route - 1] or route[#route]
+						local stand = route[#route]
 						local standCF
 						if (stand - targetPos).Magnitude > 0.05 then
 							standCF = CFrame.lookAt(stand, targetPos)
@@ -1366,6 +1370,7 @@ local function housingAssets(zone)
 	for _, model in ipairs(zone.placed:GetChildren()) do
 		if model:IsA("Model") and model:GetAttribute("SpawnsInmate") == true
 			and model:GetAttribute("Blueprint") ~= true -- unbuilt = no capacity
+			and model:GetAttribute("InReadyCellRoom") == true -- bed must sit in a ✓-ready Cell room
 		then
 			table.insert(houses, model)
 		end
@@ -1671,132 +1676,6 @@ return IntakeService
       </Item>
       <Item class="ModuleScript" referent="14">
         <Properties>
-          <string name="Name">ObjectiveService</string>
-          <string name="Source"><![CDATA[-- ObjectiveService: PA-style starter grants, simplified into a sequential
--- chain. One objective is active at a time; completing it pays out and
--- advances to the next. Progress cloud-saves.
---
--- Two objective kinds (defined in Config.Objectives):
---   counter -> other systems report events ("wall_built", "granted"...)
---   attr    -> watches a published player attribute (PrisonHoused, ...)
---
--- The client panel reads everything from player attributes: ObjText,
--- ObjProgress, ObjTarget, ObjReward, ObjDone (all finished).
-
-local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-
-local Config = require(ReplicatedStorage.Shared.Config)
-local SaveService = require(script.Parent.SaveService)
-local EconomyService = require(script.Parent.EconomyService)
-
-local ObjectiveService = {}
-
-local states = {} -- player -> { index, progress, st }
-
-local function publish(player)
-	local state = states[player]
-	if not state then
-		return
-	end
-	local objective = Config.Objectives[state.index]
-	if not objective then
-		player:SetAttribute("ObjText", nil)
-		player:SetAttribute("ObjDone", true)
-		return
-	end
-	player:SetAttribute("ObjText", objective.text)
-	player:SetAttribute("ObjProgress", math.min(state.progress, objective.target))
-	player:SetAttribute("ObjTarget", objective.target)
-	player:SetAttribute("ObjReward", objective.reward)
-	player:SetAttribute("ObjDone", false)
-end
-
-local function checkComplete(player)
-	local state = states[player]
-	if not state then
-		return
-	end
-	local objective = Config.Objectives[state.index]
-	while objective and state.progress >= objective.target do
-		EconomyService.credit(player, objective.reward)
-		state.index += 1
-		state.progress = 0
-		-- Persist through SaveService's state table.
-		state.st.objectives = { i = state.index, p = 0 }
-		objective = Config.Objectives[state.index]
-	end
-	publish(player)
-end
-
--- Counter-kind progress, reported by the other systems.
-function ObjectiveService.notify(player, event, amount)
-	local state = states[player]
-	if not state then
-		return
-	end
-	local objective = Config.Objectives[state.index]
-	if objective and objective.kind == "counter" and objective.event == event then
-		state.progress += amount or 1
-		state.st.objectives = { i = state.index, p = state.progress }
-		checkComplete(player)
-	end
-end
-
-local function onPlayerAdded(player)
-	local st = SaveService.waitForData(player)
-	if not st or not player:IsDescendantOf(game) then
-		return
-	end
-	local saved = type(st.objectives) == "table" and st.objectives or {}
-	states[player] = {
-		index = math.clamp(math.floor(tonumber(saved.i) or 1), 1, #Config.Objectives + 1),
-		progress = math.max(0, math.floor(tonumber(saved.p) or 0)),
-		st = st,
-	}
-	publish(player)
-end
-
-function ObjectiveService.init()
-	Players.PlayerAdded:Connect(function(player)
-		task.spawn(onPlayerAdded, player)
-	end)
-	for _, player in ipairs(Players:GetPlayers()) do
-		task.spawn(onPlayerAdded, player)
-	end
-	Players.PlayerRemoving:Connect(function(player)
-		states[player] = nil
-	end)
-
-	-- Grant income feeds the "earn $X" objective.
-	EconomyService.onGranted(function(player, amount)
-		ObjectiveService.notify(player, "granted", amount)
-	end)
-
-	-- Attr-kind objectives poll their published stat.
-	task.spawn(function()
-		while true do
-			task.wait(2)
-			for player, state in pairs(states) do
-				local objective = Config.Objectives[state.index]
-				if objective and objective.kind == "attr" then
-					local value = player:GetAttribute(objective.attr)
-					if type(value) == "number" and value ~= state.progress then
-						state.progress = value
-						checkComplete(player)
-					end
-				end
-			end
-		end
-	end)
-end
-
-return ObjectiveService
-]]></string>
-        </Properties>
-      </Item>
-      <Item class="ModuleScript" referent="15">
-        <Properties>
           <string name="Name">PathService</string>
           <string name="Source"><![CDATA[-- PathService: A* pathfinding over the build grid, plus the shared
 -- "walk an NPC along a path" machinery that prisoners and workmen use.
@@ -1830,6 +1709,9 @@ end
 local function isWalkable(zone, x, z)
 	if x < 0 or x >= zone.info.cols or z < 0 or z >= zone.info.rows then
 		return false
+	end
+	if zone.unlocked and not zone.unlocked[x .. ":" .. z] then
+		return false -- land they haven't bought yet
 	end
 	local assetName = cellLookup and cellLookup(zone, x, z)
 	if not assetName then
@@ -1998,7 +1880,7 @@ return PathService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="16">
+      <Item class="ModuleScript" referent="15">
         <Properties>
           <string name="Name">PlacementService</string>
           <string name="Source"><![CDATA[-- PlacementService: the server half of the building system. The client
@@ -2017,7 +1899,6 @@ local Config = require(ReplicatedStorage.Shared.Config)
 local Buildables = require(script.Parent.Buildables)
 local DoorService = require(script.Parent.DoorService)
 local EconomyService = require(script.Parent.EconomyService)
-local ObjectiveService = require(script.Parent.ObjectiveService)
 local ConstructionService = require(script.Parent.ConstructionService)
 
 local PlacementService = {}
@@ -2080,6 +1961,17 @@ local function placeInternal(player, zone, asset, gx, gz, rot, instant)
 	end
 	if not regionFree(zone, gx, gz, w, d) then
 		return nil, "Something is already there."
+	end
+	if zone.unlocked then
+		local owned = true
+		eachCell(gx, gz, w, d, function(key)
+			if not zone.unlocked[key] then
+				owned = false
+			end
+		end)
+		if not owned then
+			return nil, "You don't own that land — buy it first!"
+		end
 	end
 
 	nextId += 1
@@ -2183,9 +2075,6 @@ local function paidPlace(player, zone, asset, gx, gz, rot)
 	if not model then
 		EconomyService.credit(player, asset.price)
 		return nil, err
-	end
-	if asset.category == "Walls & Doors" then
-		ObjectiveService.notify(player, "wall_built")
 	end
 	return model
 end
@@ -2574,7 +2463,7 @@ return PlacementService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="17">
+      <Item class="ModuleScript" referent="16">
         <Properties>
           <string name="Name">PlotService</string>
           <string name="Source"><![CDATA[-- PlotService: finds the build zones in YOUR hand-made map and assigns
@@ -2594,8 +2483,10 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Lighting = game:GetService("Lighting")
 
 local Config = require(ReplicatedStorage.Shared.Config)
+local Format = require(ReplicatedStorage.Shared.Format)
 local GridMath = require(ReplicatedStorage.Shared.GridMath)
 local SaveService = require(script.Parent.SaveService)
+local EconomyService = require(script.Parent.EconomyService)
 local PlacementService = require(script.Parent.PlacementService)
 local RoomService = require(script.Parent.RoomService)
 local IntakeService = require(script.Parent.IntakeService)
@@ -2614,7 +2505,7 @@ local function buildFallbackMap()
 	local ground = Instance.new("Part")
 	ground.Name = "Ground"
 	ground.Anchored = true
-	ground.Size = Vector3.new(900, 4, 500)
+	ground.Size = Vector3.new(1200, 4, 750)
 	ground.CFrame = CFrame.new(0, -2, 0)
 	ground.Material = Enum.Material.Grass
 	ground.Color = Color3.fromRGB(106, 153, 85)
@@ -2624,7 +2515,7 @@ local function buildFallbackMap()
 	spawnLocation.Name = "Spawn"
 	spawnLocation.Anchored = true
 	spawnLocation.Size = Vector3.new(12, 1, 12)
-	spawnLocation.CFrame = CFrame.new(0, 0.5, 160)
+	spawnLocation.CFrame = CFrame.new(0, 0.5, 170)
 	spawnLocation.Neutral = true
 	spawnLocation.Duration = 0
 	spawnLocation.Parent = root
@@ -2633,7 +2524,7 @@ local function buildFallbackMap()
 	zonesFolder.Name = Config.ZonesFolderName
 
 	local zoneSize = Config.FallbackZoneSize
-	local spacing = zoneSize + 15
+	local spacing = zoneSize + 20
 	for i = 1, Config.FallbackZoneCount do
 		local zone = Instance.new("Part")
 		zone.Name = "Zone" .. i
@@ -2642,6 +2533,28 @@ local function buildFallbackMap()
 		zone.CFrame = CFrame.new((i - (Config.FallbackZoneCount + 1) / 2) * spacing, 0.5, 0)
 		zone.Material = Enum.Material.Concrete
 		zone.Color = Color3.fromRGB(163, 162, 165)
+
+		-- Demo land parcels (quarters): front-left free, the rest buyable —
+		-- the same convention the owner uses in their own map.
+		local quarter = zoneSize / 4
+		for _, quad in ipairs({
+			{ -quarter, quarter, 0 }, -- front-left: free starting land
+			{ quarter, quarter, 2000 },
+			{ -quarter, -quarter, 2500 },
+			{ quarter, -quarter, 3000 },
+		}) do
+			local parcel = Instance.new("Part")
+			parcel.Name = "Land"
+			parcel.Anchored = true
+			parcel.Size = Vector3.new(zoneSize / 2, 0.5, zoneSize / 2)
+			parcel.CFrame = zone.CFrame * CFrame.new(quad[1], 0.5, quad[2])
+			parcel.Transparency = 1
+			parcel.CanCollide = false
+			if quad[3] > 0 then
+				parcel:SetAttribute("Price", quad[3])
+			end
+			parcel.Parent = zone
+		end
 		zone.Parent = zonesFolder
 	end
 	zonesFolder.Parent = root
@@ -2666,17 +2579,111 @@ local function discoverZones()
 			local placed = Instance.new("Folder")
 			placed.Name = "Placed"
 			placed.Parent = child
+			local info = GridMath.zoneInfo(child)
+
+			-- Land parcels: any Part inside the zone Part marks a region.
+			-- No Price attribute (or 0) = free starting land; a Price =
+			-- buyable expansion. No parcels at all = whole zone unlocked.
+			local parcels = {}
+			for _, marker in ipairs(child:GetChildren()) do
+				if marker:IsA("BasePart") then
+					local x1, z1, x2, z2 = GridMath.partRect(info, marker)
+					table.insert(parcels, {
+						x1 = x1,
+						z1 = z1,
+						x2 = x2,
+						z2 = z2,
+						price = math.max(0, math.floor(tonumber(marker:GetAttribute("Price")) or 0)),
+					})
+					marker.Transparency = 1
+					marker.CanCollide = false
+					marker.CanQuery = false
+					marker.CanTouch = false
+				end
+			end
+			table.sort(parcels, function(a, b)
+				if a.z1 ~= b.z1 then
+					return a.z1 < b.z1
+				end
+				return a.x1 < b.x1
+			end)
+			for i, parcel in ipairs(parcels) do
+				parcel.index = i
+			end
+
 			table.insert(zones, {
 				part = child,
-				info = GridMath.zoneInfo(child),
+				info = info,
 				placed = placed,
 				owner = nil,
+				parcels = parcels,
+				unlocked = nil,
+				purchasedList = {},
 			})
 		else
 			warn("[Lockdown] Ignoring '" .. child.Name .. "' in " .. Config.ZonesFolderName .. " — zones must be Parts.")
 		end
 	end
 	print(("[Lockdown] %d build zones ready"):format(#zones))
+end
+
+local function unlockParcel(zone, parcel)
+	for x = parcel.x1, parcel.x2 do
+		for z = parcel.z1, parcel.z2 do
+			zone.unlocked[x .. ":" .. z] = true
+		end
+	end
+end
+
+-- A locked parcel: dark slab + price tag + click-to-buy.
+local function makeOverlay(player, zone, parcel, folder)
+	local G = Config.GridSize
+	local w, d = parcel.x2 - parcel.x1 + 1, parcel.z2 - parcel.z1 + 1
+
+	local overlay = Instance.new("Part")
+	overlay.Name = "LandOverlay"
+	overlay.Anchored = true
+	overlay.CanCollide = false
+	overlay.CanTouch = false
+	overlay.CastShadow = false
+	overlay.Material = Enum.Material.SmoothPlastic
+	overlay.Color = Color3.fromRGB(35, 35, 40)
+	overlay.Transparency = 0.4
+	overlay.Size = Vector3.new(w * G - 0.3, 0.5, d * G - 0.3)
+	overlay.CFrame = GridMath.regionCenter(zone.info, parcel.x1, parcel.z1, w, d) * CFrame.new(0, 0.3, 0)
+
+	local gui = Instance.new("BillboardGui")
+	gui.Size = UDim2.new(0, 240, 0, 56)
+	gui.StudsOffset = Vector3.new(0, 5, 0)
+	gui.MaxDistance = 600
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.new(1, 0, 1, 0)
+	label.BackgroundTransparency = 1
+	label.Font = Enum.Font.GothamBold
+	label.TextScaled = true
+	label.TextColor3 = Color3.fromRGB(255, 220, 130)
+	label.TextStrokeTransparency = 0.4
+	label.Text = ("🔒 Buy land — %s"):format(Format.money(parcel.price))
+	label.Parent = gui
+	gui.Parent = overlay
+
+	local click = Instance.new("ClickDetector")
+	click.MaxActivationDistance = 1000
+	click.MouseClick:Connect(function(clicker)
+		if clicker ~= player or zone.owner ~= player then
+			return
+		end
+		if not EconomyService.tryCharge(player, parcel.price) then
+			return
+		end
+		table.insert(zone.purchasedList, parcel.index)
+		unlockParcel(zone, parcel)
+		overlay:Destroy()
+		RoomService.poke(player)
+		IntakeService.poke(player)
+	end)
+	click.Parent = overlay
+	overlay.Parent = folder
 end
 
 local function assignZone(player)
@@ -2698,6 +2705,35 @@ local function assignZone(player)
 	end
 
 	zone.owner = player
+
+	-- Land: free parcels + previously bought ones unlock; the rest get
+	-- purchase overlays. No parcels = the whole zone is buildable.
+	zone.purchasedList = {}
+	if #zone.parcels > 0 then
+		zone.unlocked = {}
+		local purchasedSet = {}
+		if type(data.land) == "table" then
+			for _, idx in ipairs(data.land) do
+				purchasedSet[math.floor(tonumber(idx) or -1)] = true
+			end
+		end
+		local lockedFolder = Instance.new("Folder")
+		lockedFolder.Name = "LockedLand"
+		lockedFolder.Parent = zone.part
+		for _, parcel in ipairs(zone.parcels) do
+			if parcel.price <= 0 or purchasedSet[parcel.index] then
+				unlockParcel(zone, parcel)
+				if parcel.price > 0 then
+					table.insert(zone.purchasedList, parcel.index)
+				end
+			else
+				makeOverlay(player, zone, parcel, lockedFolder)
+			end
+		end
+	else
+		zone.unlocked = nil
+	end
+
 	PlacementService.assignZone(player, zone, data.layout)
 	RoomService.assignZone(player, zone, data.rooms)
 	ConstructionService.assignPlayer(player, zone)
@@ -2705,6 +2741,9 @@ local function assignZone(player)
 	SaveService.attachSource(player, "layout", PlacementService.snapshotLayout)
 	SaveService.attachSource(player, "rooms", RoomService.snapshotRooms)
 	SaveService.attachSource(player, "intake", IntakeService.snapshotIntake)
+	SaveService.attachSource(player, "land", function()
+		return zone.purchasedList
+	end)
 
 	-- Tell this player's client which zone is theirs (the build UI needs
 	-- it for grid math and aiming).
@@ -2743,6 +2782,10 @@ local function releaseZone(player)
 	for _, zone in ipairs(zones) do
 		if zone.owner == player then
 			zone.owner = nil
+			local locked = zone.part:FindFirstChild("LockedLand")
+			if locked then
+				locked:Destroy()
+			end
 		end
 	end
 end
@@ -2763,7 +2806,7 @@ return PlotService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="18">
+      <Item class="ModuleScript" referent="17">
         <Properties>
           <string name="Name">RoomService</string>
           <string name="Source"><![CDATA[-- RoomService: Prison Architect-style room designation. The player picks
@@ -2780,11 +2823,17 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Config = require(ReplicatedStorage.Shared.Config)
 local GridMath = require(ReplicatedStorage.Shared.GridMath)
 local Buildables = require(script.Parent.Buildables)
-local ObjectiveService = require(script.Parent.ObjectiveService)
 
 local RoomService = {}
 
 local GRID = Config.GridSize
+
+-- Fired (with the zone's owner) after any requirements re-evaluation —
+-- the bootstrap wires this to IntakeService so capacity follows rooms.
+local changedListeners = {}
+function RoomService.onRoomsChanged(fn)
+	table.insert(changedListeners, fn)
+end
 
 local playerZones = {} -- player -> zone record
 local zoneRooms = {} -- zone -> { map = {["x:z"] = typeId], tilesFolder, rowParts = {[z] = {parts}} }
@@ -2942,8 +2991,16 @@ local function rebuildLabels(zone)
 		end
 	end
 
+	-- Beds only count as prisoner housing inside a ✓-ready Cell room —
+	-- clear the stamp first, re-stamp below as regions evaluate.
+	for _, info in ipairs(placedInfos) do
+		if info.model:GetAttribute("SpawnsInmate") == true then
+			info.model:SetAttribute("InReadyCellRoom", nil)
+		end
+	end
+
 	-- Count the regions that fully meet their requirements, per type —
-	-- published as ReadyRooms_<Type> attributes (objectives watch these).
+	-- published as ReadyRooms_<Type> attributes.
 	local readyCounts = {}
 
 	local map = state.map
@@ -2997,6 +3054,24 @@ local function rebuildLabels(zone)
 				local met, statusText = evaluateRegion(zone, typeName, regionCells, placedInfos, blockedCells)
 				if met then
 					readyCounts[typeName] = (readyCounts[typeName] or 0) + 1
+					if typeName == "Cell" then
+						-- Stamp the beds inside: they're real housing now.
+						local regionSet = {}
+						for _, cell in ipairs(regionCells) do
+							regionSet[cell[1] .. ":" .. cell[2]] = true
+						end
+						for _, info in ipairs(placedInfos) do
+							if info.model:GetAttribute("SpawnsInmate") == true and not info.blueprint then
+								for bx = info.gx, info.gx + info.w - 1 do
+									for bz = info.gz, info.gz + info.d - 1 do
+										if regionSet[bx .. ":" .. bz] then
+											info.model:SetAttribute("InReadyCellRoom", true)
+										end
+									end
+								end
+							end
+						end
+					end
 				end
 
 				local surface = Instance.new("SurfaceGui")
@@ -3035,6 +3110,9 @@ local function rebuildLabels(zone)
 		for _, roomType in ipairs(Config.RoomTypes) do
 			zone.owner:SetAttribute("ReadyRooms_" .. roomType.name, readyCounts[roomType.name] or 0)
 		end
+		for _, fn in ipairs(changedListeners) do
+			task.spawn(fn, zone.owner)
+		end
 	end
 end
 
@@ -3042,7 +3120,10 @@ local function paintRect(zone, typeId, x1, z1, x2, z2)
 	local state = zoneRooms[zone]
 	for z = z1, z2 do
 		for x = x1, x2 do
-			state.map[cellKey(x, z)] = typeId ~= 0 and typeId or nil
+			local key = cellKey(x, z)
+			if not (zone.unlocked and not zone.unlocked[key]) then
+				state.map[key] = typeId ~= 0 and typeId or nil
+			end
 		end
 	end
 	for z = z1, z2 do
@@ -3181,9 +3262,6 @@ function RoomService.handlePaint(player, typeId, x1, z1, x2, z2)
 	z2 = math.clamp(math.floor(z2), 0, zone.info.rows - 1)
 
 	paintRect(zone, typeId, x1, z1, x2, z2)
-	if typeId ~= 0 and Config.RoomTypes[typeId].name == "Cell" then
-		ObjectiveService.notify(player, "cell_painted")
-	end
 	return { ok = true }
 end
 
@@ -3196,7 +3274,7 @@ return RoomService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="19">
+      <Item class="ModuleScript" referent="18">
         <Properties>
           <string name="Name">SaveService</string>
           <string name="Source"><![CDATA[-- SaveService: cloud-saves each player's prison layout so it's rebuilt
@@ -3272,7 +3350,7 @@ local function onPlayerAdded(player)
 		intake = saved and saved.intake or nil,
 		cash = saved and saved.cash or 0,
 		totalSpent = saved and saved.totalSpent or 0,
-		objectives = saved and saved.objectives or nil,
+		land = saved and saved.land or {},
 		-- Only allowed to write to the cloud if the read worked. A failed
 		-- read must never let empty data overwrite a real save.
 		canSave = store ~= nil and loadOk,
@@ -3292,7 +3370,7 @@ local function saveNow(player)
 		intake = st.sources.intake and st.sources.intake(player) or st.intake,
 		cash = st.cash,
 		totalSpent = st.totalSpent,
-		objectives = st.objectives,
+		land = st.sources.land and st.sources.land(player) or st.land,
 	}
 	local ok, err = pcall(function()
 		store:UpdateAsync(keyFor(player), function()
@@ -3357,15 +3435,15 @@ return SaveService
       </Item>
     </Item>
   </Item>
-  <Item class="StarterPlayer" referent="20">
+  <Item class="StarterPlayer" referent="19">
     <Properties>
       <string name="Name">StarterPlayer</string>
     </Properties>
-    <Item class="StarterPlayerScripts" referent="21">
+    <Item class="StarterPlayerScripts" referent="20">
       <Properties>
         <string name="Name">StarterPlayerScripts</string>
       </Properties>
-      <Item class="LocalScript" referent="22">
+      <Item class="LocalScript" referent="21">
         <Properties>
           <string name="Name">Client</string>
           <string name="Source"><![CDATA[-- Lockdown client bootstrap. Runs on each player's own device and starts
@@ -3374,12 +3452,11 @@ return SaveService
 
 require(script.BuildMode).start()
 require(script.CashHud).start()
-require(script.ObjectivePanel).start()
 require(script.IntakePanel).start()
 require(script.InmateAnimator).start()
 ]]></string>
         </Properties>
-        <Item class="ModuleScript" referent="23">
+        <Item class="ModuleScript" referent="22">
           <Properties>
             <string name="Name">BuildCamera</string>
             <string name="Source"><![CDATA[-- BuildCamera: the Prison Architect view. While build mode is open the
@@ -3639,7 +3716,7 @@ return BuildCamera
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="24">
+        <Item class="ModuleScript" referent="23">
           <Properties>
             <string name="Name">BuildMode</string>
             <string name="Source"><![CDATA[-- BuildMode: the whole building experience on the player's screen,
@@ -3745,6 +3822,7 @@ function BuildMode.start()
 	-- My zone (the server drops a "BuildZone" pointer into the Player).
 	local zone = nil
 	local occupied = {}
+	local lockedRects = {} -- land not bought yet, mirrored from the overlays
 
 	-- State.
 	local mode = "off" -- "off" | "objects" | "rooms" | "foundation" | "move" | "delete"
@@ -3815,10 +3893,19 @@ function BuildMode.start()
 		end
 	end
 
+	local function cellLocked(x, z)
+		for _, r in ipairs(lockedRects) do
+			if x >= r[1] and x <= r[3] and z >= r[2] and z <= r[4] then
+				return true
+			end
+		end
+		return false
+	end
+
 	local function regionFree(gx, gz, w, d)
 		for x = gx, gx + w - 1 do
 			for z = gz, gz + d - 1 do
-				if occupied[x .. ":" .. z] then
+				if occupied[x .. ":" .. z] or cellLocked(x, z) then
 					return false
 				end
 			end
@@ -3841,6 +3928,36 @@ function BuildMode.start()
 		end)
 		zone.placed.ChildRemoved:Connect(function(model)
 			markModel(model, nil)
+		end)
+
+		-- Mirror the locked-land overlays into grid rects (they vanish as
+		-- parcels get bought).
+		local function rebuildLockedRects()
+			lockedRects = {}
+			local folder = zone.part:FindFirstChild("LockedLand")
+			if folder then
+				for _, overlay in ipairs(folder:GetChildren()) do
+					if overlay:IsA("BasePart") then
+						local x1, z1, x2, z2 = GridMath.partRect(zone.info, overlay)
+						table.insert(lockedRects, { x1, z1, x2, z2 })
+					end
+				end
+			end
+		end
+		rebuildLockedRects()
+		local lockedFolder = zone.part:FindFirstChild("LockedLand")
+		if lockedFolder then
+			lockedFolder.ChildRemoved:Connect(function()
+				task.defer(rebuildLockedRects)
+			end)
+		end
+		zone.part.ChildAdded:Connect(function(child)
+			if child.Name == "LockedLand" then
+				task.defer(rebuildLockedRects)
+				child.ChildRemoved:Connect(function()
+					task.defer(rebuildLockedRects)
+				end)
+			end
 		end)
 	end
 
@@ -3920,6 +4037,45 @@ function BuildMode.start()
 		highlight.Parent = model
 		ghost = model
 		ghostHighlight = highlight
+	end
+
+	-- The grid cursor: a bright square on whichever cell the pointer is
+	-- over, in every build tool — so you always know what you're aiming at.
+	local cursorBox = nil
+	local function updateCursor()
+		if mode == "off" or not zone then
+			if cursorBox then
+				cursorBox.Parent = nil
+			end
+			return
+		end
+		local gx, gz = cellUnderPointer(1, 1)
+		if not gx then
+			if cursorBox then
+				cursorBox.Parent = nil
+			end
+			return
+		end
+		if not cursorBox then
+			cursorBox = Instance.new("Part")
+			cursorBox.Name = "GridCursor"
+			cursorBox.Anchored = true
+			cursorBox.CanCollide = false
+			cursorBox.CanQuery = false
+			cursorBox.CanTouch = false
+			cursorBox.CastShadow = false
+			cursorBox.Transparency = 1
+			cursorBox.Size = Vector3.new(GRID, 0.3, GRID)
+			local box = Instance.new("SelectionBox")
+			box.Adornee = cursorBox
+			box.Color3 = Color3.fromRGB(255, 255, 160)
+			box.LineThickness = 0.05
+			box.SurfaceColor3 = Color3.fromRGB(255, 255, 160)
+			box.SurfaceTransparency = 0.85
+			box.Parent = cursorBox
+		end
+		cursorBox.CFrame = GridMath.regionCenter(zone.info, gx, gz, 1, 1) * CFrame.new(0, 0.2, 0)
+		cursorBox.Parent = workspace
 	end
 
 	local function hideStretchBox()
@@ -4528,10 +4684,6 @@ function BuildMode.start()
 			setMode("delete")
 		end
 	end)
-	local undoButton = toolbarButton("↩", "Undo", true)
-	undoButton.Activated:Connect(function()
-		doUndo()
-	end)
 	for _, future in ipairs(Config.ComingSoon) do
 		local button = toolbarButton(future.icon, future.name, false)
 		button.Activated:Connect(function()
@@ -4869,6 +5021,20 @@ function BuildMode.start()
 			elseif mode == "rooms" and selectedRoom ~= nil then
 				selectedRoom = nil
 				refreshSelectionLook()
+			else
+				-- Nothing selected: right-clicking a blueprint cancels that
+				-- construction job (queued or mid-hammer), full refund.
+				local model = findPlacedModel()
+				if model and model:GetAttribute("Blueprint") == true then
+					local ok, result = pcall(function()
+						return deleteRequest:InvokeServer(model)
+					end)
+					if ok and result and result.ok then
+						playSound("snap.mp3", 0.5)
+						flashStatus("Construction cancelled" ..
+							((result.refund and result.refund > 0) and (" +" .. Format.money(result.refund)) or ""), ORANGE)
+					end
+				end
 			end
 		elseif input.KeyCode == Enum.KeyCode.B then
 			setMode(mode == "off" and "objects" or "off")
@@ -4928,6 +5094,7 @@ function BuildMode.start()
 	end)
 
 	RunService.RenderStepped:Connect(function()
+		updateCursor()
 		if mode == "objects" then
 			updateGhost()
 			if pressing and pressStartCell and selected and ghostCell then
@@ -4995,7 +5162,7 @@ return BuildMode
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="25">
+        <Item class="ModuleScript" referent="24">
           <Properties>
             <string name="Name">CashHud</string>
             <string name="Source"><![CDATA[-- CashHud: the money display, back from the dead for Phase 3.
@@ -5158,7 +5325,7 @@ return CashHud
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="26">
+        <Item class="ModuleScript" referent="25">
           <Properties>
             <string name="Name">InmateAnimator</string>
             <string name="Source"><![CDATA[-- InmateAnimator: brings the blocky prisoners to life — entirely on each
@@ -5439,7 +5606,7 @@ return InmateAnimator
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="27">
+        <Item class="ModuleScript" referent="26">
           <Properties>
             <string name="Name">IntakePanel</string>
             <string name="Source"><![CDATA[-- IntakePanel: the warden's version of Prison Architect's Intake report.
@@ -5594,103 +5761,6 @@ function IntakePanel.start()
 end
 
 return IntakePanel
-]]></string>
-          </Properties>
-        </Item>
-        <Item class="ModuleScript" referent="28">
-          <Properties>
-            <string name="Name">ObjectivePanel</string>
-            <string name="Source"><![CDATA[-- ObjectivePanel: the current starter objective (PA's grants, simplified)
--- as a small card in the top-left. Reads the attributes ObjectiveService
--- publishes: ObjText, ObjProgress, ObjTarget, ObjReward, ObjDone.
-
-local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-
-local Format = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Format"))
-
-local ObjectivePanel = {}
-
-function ObjectivePanel.start()
-	local player = Players.LocalPlayer
-	local playerGui = player:WaitForChild("PlayerGui")
-
-	local gui = Instance.new("ScreenGui")
-	gui.Name = "LockdownObjective"
-	gui.ResetOnSpawn = false
-
-	local card = Instance.new("Frame")
-	card.Position = UDim2.new(0, 12, 0, 12)
-	card.Size = UDim2.new(0, 250, 0, 74)
-	card.BackgroundColor3 = Color3.fromRGB(20, 24, 20)
-	card.BackgroundTransparency = 0.25
-	card.Visible = false
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 12)
-	corner.Parent = card
-
-	local title = Instance.new("TextLabel")
-	title.Position = UDim2.new(0, 10, 0, 4)
-	title.Size = UDim2.new(1, -20, 0, 16)
-	title.BackgroundTransparency = 1
-	title.Font = Enum.Font.GothamBold
-	title.TextScaled = true
-	title.TextXAlignment = Enum.TextXAlignment.Left
-	title.TextColor3 = Color3.fromRGB(255, 220, 130)
-	title.Text = "📋 OBJECTIVE"
-	title.Parent = card
-
-	local text = Instance.new("TextLabel")
-	text.Position = UDim2.new(0, 10, 0, 22)
-	text.Size = UDim2.new(1, -20, 0, 30)
-	text.BackgroundTransparency = 1
-	text.Font = Enum.Font.GothamBold
-	text.TextScaled = true
-	text.TextWrapped = true
-	text.TextXAlignment = Enum.TextXAlignment.Left
-	text.TextColor3 = Color3.fromRGB(255, 255, 255)
-	text.Parent = card
-
-	local progress = Instance.new("TextLabel")
-	progress.Position = UDim2.new(0, 10, 0, 54)
-	progress.Size = UDim2.new(1, -20, 0, 16)
-	progress.BackgroundTransparency = 1
-	progress.Font = Enum.Font.Gotham
-	progress.TextScaled = true
-	progress.TextXAlignment = Enum.TextXAlignment.Left
-	progress.TextColor3 = Color3.fromRGB(200, 200, 200)
-	progress.Parent = card
-
-	card.Parent = gui
-	gui.Parent = playerGui
-
-	local function refresh()
-		if player:GetAttribute("ObjDone") == true then
-			card.Visible = true
-			text.Text = "All objectives complete! 🎉"
-			progress.Text = "More coming in later phases."
-			return
-		end
-		local objText = player:GetAttribute("ObjText")
-		if type(objText) ~= "string" then
-			card.Visible = false
-			return
-		end
-		card.Visible = true
-		text.Text = objText
-		local current = player:GetAttribute("ObjProgress") or 0
-		local target = player:GetAttribute("ObjTarget") or 0
-		local reward = player:GetAttribute("ObjReward") or 0
-		progress.Text = ("%d / %d  ·  reward %s"):format(current, target, Format.money(reward))
-	end
-
-	for _, attr in ipairs({ "ObjText", "ObjProgress", "ObjTarget", "ObjReward", "ObjDone" }) do
-		player:GetAttributeChangedSignal(attr):Connect(refresh)
-	end
-	refresh()
-end
-
-return ObjectivePanel
 ]]></string>
           </Properties>
         </Item>

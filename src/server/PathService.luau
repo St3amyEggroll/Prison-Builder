@@ -31,6 +31,9 @@ local function isWalkable(zone, x, z)
 	if x < 0 or x >= zone.info.cols or z < 0 or z >= zone.info.rows then
 		return false
 	end
+	if zone.unlocked and not zone.unlocked[x .. ":" .. z] then
+		return false -- land they haven't bought yet
+	end
 	local assetName = cellLookup and cellLookup(zone, x, z)
 	if not assetName then
 		return true

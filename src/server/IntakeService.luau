@@ -43,6 +43,7 @@ local function housingAssets(zone)
 	for _, model in ipairs(zone.placed:GetChildren()) do
 		if model:IsA("Model") and model:GetAttribute("SpawnsInmate") == true
 			and model:GetAttribute("Blueprint") ~= true -- unbuilt = no capacity
+			and model:GetAttribute("InReadyCellRoom") == true -- bed must sit in a ✓-ready Cell room
 		then
 			table.insert(houses, model)
 		end

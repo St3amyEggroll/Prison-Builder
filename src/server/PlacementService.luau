@@ -14,7 +14,6 @@ local Config = require(ReplicatedStorage.Shared.Config)
 local Buildables = require(script.Parent.Buildables)
 local DoorService = require(script.Parent.DoorService)
 local EconomyService = require(script.Parent.EconomyService)
-local ObjectiveService = require(script.Parent.ObjectiveService)
 local ConstructionService = require(script.Parent.ConstructionService)
 
 local PlacementService = {}
@@ -77,6 +76,17 @@ local function placeInternal(player, zone, asset, gx, gz, rot, instant)
 	end
 	if not regionFree(zone, gx, gz, w, d) then
 		return nil, "Something is already there."
+	end
+	if zone.unlocked then
+		local owned = true
+		eachCell(gx, gz, w, d, function(key)
+			if not zone.unlocked[key] then
+				owned = false
+			end
+		end)
+		if not owned then
+			return nil, "You don't own that land — buy it first!"
+		end
 	end
 
 	nextId += 1
@@ -180,9 +190,6 @@ local function paidPlace(player, zone, asset, gx, gz, rot)
 	if not model then
 		EconomyService.credit(player, asset.price)
 		return nil, err
-	end
-	if asset.category == "Walls & Doors" then
-		ObjectiveService.notify(player, "wall_built")
 	end
 	return model
 end

@@ -4,6 +4,5 @@
 
 require(script.BuildMode).start()
 require(script.CashHud).start()
-require(script.ObjectivePanel).start()
 require(script.IntakePanel).start()
 require(script.InmateAnimator).start()

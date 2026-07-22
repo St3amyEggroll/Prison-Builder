@@ -185,6 +185,12 @@ function ConstructionService.init()
 						table.insert(rec.queue, job)
 						continue
 					end
+					-- Walk to the square BESIDE the job, never into it — the
+					-- route's final point is the blueprint's center, and ending
+					-- the walk there desynced client/server (the teleport bug).
+					if #route > 1 then
+						table.remove(route)
+					end
 
 					worker.busy = true
 					local duration = PathService.startWalk(worker.model, route, Config.WorkerSpeed)
@@ -197,7 +203,7 @@ function ConstructionService.init()
 							return
 						end
 						-- Arrive next to the job and start hammering.
-						local stand = route[#route - 1] or route[#route]
+						local stand = route[#route]
 						local standCF
 						if (stand - targetPos).Magnitude > 0.05 then
 							standCF = CFrame.lookAt(stand, targetPos)

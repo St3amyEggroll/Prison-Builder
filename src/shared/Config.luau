@@ -28,6 +28,8 @@ Config.GrantInterval = 30
 Config.GrantPerPrisoner = 60
 
 -- An asset's price = its "Price" attribute, else its category's default.
+Config.DefaultLandPrice = 2000 -- buyable parcels without a Price attribute
+
 Config.DefaultPrices = {
 	["Walls & Doors"] = 40,
 	["Flooring"] = 10,
@@ -45,18 +47,6 @@ Config.BuildTimeBase = 1 -- seconds per job...
 Config.BuildTimePerCell = 0.5 -- ...plus this per grid square of footprint
 Config.WorkerNames = { "Hammer Hank", "Nailgun Ned", "Plank Paul", "Rivet Rita", "Sawdust Sam", "Bolt Betty" }
 
--- Objectives -------------------------------------------------------------
-
--- Sequential starter goals, PA-grants style. kinds:
---   counter -> ObjectiveService counts named events
---   attr    -> watches a published player attribute
-Config.Objectives = {
-	{ id = "walls", text = "Build 10 walls or fences", kind = "counter", event = "wall_built", target = 10, reward = 400 },
-	{ id = "cellroom", text = "Paint a Cell room", kind = "counter", event = "cell_painted", target = 1, reward = 300 },
-	{ id = "readycell", text = "Get a Cell room to ✓ ready", kind = "attr", attr = "ReadyRooms_Cell", target = 1, reward = 800 },
-	{ id = "house3", text = "House 3 prisoners", kind = "attr", attr = "PrisonHoused", target = 3, reward = 1200 },
-	{ id = "earn", text = "Earn $5,000 in prisoner grants", kind = "counter", event = "granted", target = 5000, reward = 2500 },
-}
 
 -- Building ---------------------------------------------------------------
 
@@ -129,7 +119,7 @@ Config.RoomRequirements = {
 
 -- Friendly names for attrCounts requirements in the floor labels.
 Config.RequirementText = {
-	SpawnsInmate = "housing",
+	SpawnsInmate = "bed",
 }
 
 -- Rooms ------------------------------------------------------------------
@@ -173,8 +163,8 @@ Config.AutosaveInterval = 60
 -- Only used when Workspace has no PlotZones folder yet: the code builds
 -- a simple flat test map so the game always runs. The moment your real
 -- map (with a PlotZones folder) exists, none of this happens.
-Config.FallbackZoneCount = 4
-Config.FallbackZoneSize = 128
+Config.FallbackZoneCount = 2
+Config.FallbackZoneSize = 240
 
 -- Flavor ----------------------------------------------------------------
 

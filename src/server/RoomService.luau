@@ -12,11 +12,17 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Config = require(ReplicatedStorage.Shared.Config)
 local GridMath = require(ReplicatedStorage.Shared.GridMath)
 local Buildables = require(script.Parent.Buildables)
-local ObjectiveService = require(script.Parent.ObjectiveService)
 
 local RoomService = {}
 
 local GRID = Config.GridSize
+
+-- Fired (with the zone's owner) after any requirements re-evaluation —
+-- the bootstrap wires this to IntakeService so capacity follows rooms.
+local changedListeners = {}
+function RoomService.onRoomsChanged(fn)
+	table.insert(changedListeners, fn)
+end
 
 local playerZones = {} -- player -> zone record
 local zoneRooms = {} -- zone -> { map = {["x:z"] = typeId], tilesFolder, rowParts = {[z] = {parts}} }
@@ -174,8 +180,16 @@ local function rebuildLabels(zone)
 		end
 	end
 
+	-- Beds only count as prisoner housing inside a ✓-ready Cell room —
+	-- clear the stamp first, re-stamp below as regions evaluate.
+	for _, info in ipairs(placedInfos) do
+		if info.model:GetAttribute("SpawnsInmate") == true then
+			info.model:SetAttribute("InReadyCellRoom", nil)
+		end
+	end
+
 	-- Count the regions that fully meet their requirements, per type —
-	-- published as ReadyRooms_<Type> attributes (objectives watch these).
+	-- published as ReadyRooms_<Type> attributes.
 	local readyCounts = {}
 
 	local map = state.map
@@ -229,6 +243,24 @@ local function rebuildLabels(zone)
 				local met, statusText = evaluateRegion(zone, typeName, regionCells, placedInfos, blockedCells)
 				if met then
 					readyCounts[typeName] = (readyCounts[typeName] or 0) + 1
+					if typeName == "Cell" then
+						-- Stamp the beds inside: they're real housing now.
+						local regionSet = {}
+						for _, cell in ipairs(regionCells) do
+							regionSet[cell[1] .. ":" .. cell[2]] = true
+						end
+						for _, info in ipairs(placedInfos) do
+							if info.model:GetAttribute("SpawnsInmate") == true and not info.blueprint then
+								for bx = info.gx, info.gx + info.w - 1 do
+									for bz = info.gz, info.gz + info.d - 1 do
+										if regionSet[bx .. ":" .. bz] then
+											info.model:SetAttribute("InReadyCellRoom", true)
+										end
+									end
+								end
+							end
+						end
+					end
 				end
 
 				local surface = Instance.new("SurfaceGui")
@@ -267,6 +299,9 @@ local function rebuildLabels(zone)
 		for _, roomType in ipairs(Config.RoomTypes) do
 			zone.owner:SetAttribute("ReadyRooms_" .. roomType.name, readyCounts[roomType.name] or 0)
 		end
+		for _, fn in ipairs(changedListeners) do
+			task.spawn(fn, zone.owner)
+		end
 	end
 end
 
@@ -274,7 +309,10 @@ local function paintRect(zone, typeId, x1, z1, x2, z2)
 	local state = zoneRooms[zone]
 	for z = z1, z2 do
 		for x = x1, x2 do
-			state.map[cellKey(x, z)] = typeId ~= 0 and typeId or nil
+			local key = cellKey(x, z)
+			if not (zone.unlocked and not zone.unlocked[key]) then
+				state.map[key] = typeId ~= 0 and typeId or nil
+			end
 		end
 	end
 	for z = z1, z2 do
@@ -413,9 +451,6 @@ function RoomService.handlePaint(player, typeId, x1, z1, x2, z2)
 	z2 = math.clamp(math.floor(z2), 0, zone.info.rows - 1)
 
 	paintRect(zone, typeId, x1, z1, x2, z2)
-	if typeId ~= 0 and Config.RoomTypes[typeId].name == "Cell" then
-		ObjectiveService.notify(player, "cell_painted")
-	end
 	return { ok = true }
 end
 

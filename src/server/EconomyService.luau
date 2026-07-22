@@ -94,7 +94,9 @@ function EconomyService.init()
 			for player in pairs(wallets) do
 				local housed = player:GetAttribute("PrisonHoused") or 0
 				if housed > 0 then
-					local amount = housed * Config.GrantPerPrisoner
+					-- Miserable prisons pay less: 100% unrest halves grants.
+					local unrest = player:GetAttribute("PrisonUnrest") or 0
+					local amount = math.floor(housed * Config.GrantPerPrisoner * (1 - unrest / 200))
 					EconomyService.credit(player, amount)
 					for _, fn in ipairs(grantedListeners) do
 						task.spawn(fn, player, amount)

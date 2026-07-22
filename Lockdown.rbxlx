@@ -154,6 +154,58 @@ Config.BuildablesFolderName = "Buildables"
 -- Set attribute "NoPlaceholders" = true on your Buildables folder once
 -- you have your own assets and want Claude's placeholder models gone.
 
+-- Regime (the prison's daily schedule) -----------------------------------
+
+-- In-game hours (one day = Config.DayLength real seconds). Prisoners
+-- follow this: walking to bed, the canteen, the yard...
+Config.Regime = {
+	{ from = 0, to = 7, activity = "Sleep" },
+	{ from = 7, to = 9, activity = "Eat" },
+	{ from = 9, to = 12, activity = "Yard" },
+	{ from = 12, to = 13, activity = "Eat" },
+	{ from = 13, to = 17, activity = "FreeTime" },
+	{ from = 17, to = 19, activity = "Eat" },
+	{ from = 19, to = 24, activity = "Sleep" },
+}
+
+function Config.activityAt(hour)
+	for _, slot in ipairs(Config.Regime) do
+		if hour >= slot.from and hour < slot.to then
+			return slot.activity
+		end
+	end
+	return "FreeTime"
+end
+
+-- Needs -------------------------------------------------------------------
+
+-- 100 = satisfied, 0 = desperate. Decay is per real second; regen only
+-- happens in the right place at the right time (canteen during Eat, bed
+-- during Sleep, shower/yard during free time...).
+Config.NeedDecay = { food = 0.11, sleep = 0.083, hygiene = 0.083, recreation = 0.11 }
+Config.NeedRegen = { food = 1.2, sleep = 0.6, hygiene = 1.5, recreation = 0.8 }
+Config.SafetyRegen = 0.5 -- with enough guards...
+Config.SafetyDecay = 0.15 -- ...without
+Config.GuardsPerPrisoners = 4 -- 1 guard covers 4 prisoners
+Config.NeedTick = 3 -- seconds between behavior/needs updates
+
+-- Unrest: rises while needs sit below 30, falls when they're met.
+-- High unrest cuts grant income (and feeds Phase 5's riots/escapes).
+Config.UnrestRise = 0.35
+Config.UnrestFall = 0.2
+
+-- Staff -------------------------------------------------------------------
+
+-- Hiring is free; wages charge continuously (per WageInterval slice of a
+-- day). Can't pay? Someone quits — PA rules.
+Config.StaffTypes = {
+	{ id = "Guard", icon = "👮", wage = 150, outfit = "guard" },
+	{ id = "Cook", icon = "🍳", wage = 100, outfit = "cook" },
+	{ id = "Janitor", icon = "🧹", wage = 80, outfit = "janitor" },
+}
+Config.WageInterval = 30
+Config.MaxStaffPerType = 10
+
 -- Toolbar categories -----------------------------------------------------
 
 -- The Prison Architect-style bottom bar. Assets declare theirs with a
@@ -168,7 +220,6 @@ Config.CategoryIcons = {
 
 -- Shown grayed-out like PA's locked tabs — real features in later phases.
 Config.ComingSoon = {
-	{ icon = "👮", name = "Staff", note = "Staff arrive in Phase 4!" },
 	{ icon = "💡", name = "Utilities", note = "Utilities — later, maybe. Pipes on a phone is a big ask 😄" },
 }
 
@@ -443,6 +494,7 @@ for _, name in ipairs({
 	"MoveRequest",
 	"RoomPaintRequest",
 	"IntakeRequest",
+	"StaffRequest",
 }) do
 	local remote = Instance.new("RemoteFunction")
 	remote.Name = name
@@ -461,6 +513,8 @@ local ConstructionService = require(script.ConstructionService)
 local PlacementService = require(script.PlacementService)
 local RoomService = require(script.RoomService)
 local IntakeService = require(script.IntakeService)
+local StaffService = require(script.StaffService)
+local NeedsService = require(script.NeedsService)
 local PlotService = require(script.PlotService)
 
 SaveService.init()
@@ -472,6 +526,8 @@ ConstructionService.init()
 PlacementService.init()
 RoomService.init()
 IntakeService.init()
+StaffService.init()
+NeedsService.init()
 PlotService.init()
 
 -- Cross-system wiring, all in one visible place:
@@ -492,7 +548,7 @@ RoomService.onRoomsChanged(function(player)
 	IntakeService.poke(player)
 end)
 
-print("[Lockdown] Server ready — Phase 3: money, workmen, pathfinding")
+print("[Lockdown] Server ready — Phase 4: needs, regime, staff")
 ]]></string>
       </Properties>
       <Item class="ModuleScript" referent="8">
@@ -1191,7 +1247,9 @@ function EconomyService.init()
 			for player in pairs(wallets) do
 				local housed = player:GetAttribute("PrisonHoused") or 0
 				if housed > 0 then
-					local amount = housed * Config.GrantPerPrisoner
+					-- Miserable prisons pay less: 100% unrest halves grants.
+					local unrest = player:GetAttribute("PrisonUnrest") or 0
+					local amount = math.floor(housed * Config.GrantPerPrisoner * (1 - unrest / 200))
 					EconomyService.credit(player, amount)
 					for _, fn in ipairs(grantedListeners) do
 						task.spawn(fn, player, amount)
@@ -1260,10 +1318,15 @@ function InmateService.spawn(baseCF, cellIndex, parent, opts)
 	-- full cellblock doesn't look like a copy-paste army. Seeding with
 	-- cellIndex keeps each one looking the same each visit.
 	local rng = Random.new(cellIndex * 7919)
-	local jumpsuit = Color3.fromRGB(255, 120 + rng:NextInteger(0, 40), 25 + rng:NextInteger(0, 25))
-	if outfit == "worker" then
-		jumpsuit = Color3.fromRGB(60 + rng:NextInteger(0, 20), 90 + rng:NextInteger(0, 20), 170 + rng:NextInteger(0, 30))
-	end
+	local OUTFITS = {
+		worker = { torso = Color3.fromRGB(60 + rng:NextInteger(0, 20), 90, 170), hat = Color3.fromRGB(255, 200, 40), tag = Color3.fromRGB(255, 220, 120) },
+		guard = { torso = Color3.fromRGB(45, 55, 100), hat = Color3.fromRGB(25, 30, 50), tag = Color3.fromRGB(150, 180, 255) },
+		cook = { torso = Color3.fromRGB(235, 235, 235), hat = Color3.fromRGB(250, 250, 250), tag = Color3.fromRGB(255, 255, 255) },
+		janitor = { torso = Color3.fromRGB(60, 130, 80), hat = nil, tag = Color3.fromRGB(170, 255, 190) },
+	}
+	local look = OUTFITS[outfit]
+	local jumpsuit = look and look.torso
+		or Color3.fromRGB(255, 120 + rng:NextInteger(0, 40), 25 + rng:NextInteger(0, 25))
 
 	-- Face a random direction inside the cell.
 	local root = baseCF * CFrame.Angles(0, rng:NextNumber(0, math.pi * 2), 0)
@@ -1276,10 +1339,9 @@ function InmateService.spawn(baseCF, cellIndex, parent, opts)
 	makePart("RightArm", Vector3.new(1, 2, 1), jumpsuit, root * CFrame.new(1.5, 3, 0), model)
 	local head = makePart("Head", Vector3.new(1.2, 1.2, 1.2), SKIN, root * CFrame.new(0, 4.6, 0), model)
 
-	if outfit == "worker" then
-		-- The hard hat: what separates professionals from prisoners.
-		makePart("HardHat", Vector3.new(1.4, 0.35, 1.4), Color3.fromRGB(255, 200, 40),
-			root * CFrame.new(0, 5.35, 0), model)
+	if look and look.hat then
+		-- The hat: what separates professionals from prisoners.
+		makePart("HardHat", Vector3.new(1.4, 0.35, 1.4), look.hat, root * CFrame.new(0, 5.35, 0), model)
 	end
 
 	-- The classic Roblox smile, shipped inside the engine (no download).
@@ -1290,7 +1352,7 @@ function InmateService.spawn(baseCF, cellIndex, parent, opts)
 	face.Parent = head
 
 	-- Floating name tag.
-	local nameList = outfit == "worker" and Config.WorkerNames or Config.InmateNames
+	local nameList = outfit ~= "inmate" and Config.WorkerNames or Config.InmateNames
 	local nameIndex = ((cellIndex - 1) % #nameList) + 1
 	local tag = Instance.new("BillboardGui")
 	tag.Name = "NameTag"
@@ -1306,8 +1368,9 @@ function InmateService.spawn(baseCF, cellIndex, parent, opts)
 	tagText.TextColor3 = Color3.fromRGB(255, 220, 180)
 	tagText.TextStrokeTransparency = 0.4
 	tagText.Text = nameList[nameIndex]
-	if outfit == "worker" then
-		tagText.TextColor3 = Color3.fromRGB(255, 220, 120)
+	model:SetAttribute("NpcName", nameList[nameIndex])
+	if look then
+		tagText.TextColor3 = look.tag
 	end
 	tagText.Parent = tag
 	tag.Parent = head
@@ -1601,6 +1664,20 @@ function IntakeService.assignPlayer(player, zone, savedIntake)
 	refresh(player)
 end
 
+-- The housed prisoners (NeedsService drives their daily life).
+function IntakeService.getHoused(player)
+	local rec = records[player]
+	local out = {}
+	if rec then
+		for _, prisoner in ipairs(rec.prisoners) do
+			if prisoner.status == "housed" and prisoner.model.Parent ~= nil then
+				table.insert(out, { model = prisoner.model, house = prisoner.house })
+			end
+		end
+	end
+	return out
+end
+
 -- Re-check capacity/escorts (used after moves and blueprint completions).
 function IntakeService.poke(player)
 	refresh(player)
@@ -1680,6 +1757,255 @@ return IntakeService
         </Properties>
       </Item>
       <Item class="ModuleScript" referent="14">
+        <Properties>
+          <string name="Name">NeedsService</string>
+          <string name="Source"><![CDATA[-- NeedsService: gives every housed prisoner a life. Five needs decay over
+-- time (Food, Sleep, Hygiene, Recreation, Safety), and the REGIME (the
+-- prison's daily schedule on the shared clock) tells them where to be:
+--
+--   Sleep    -> walk to their bed, sleep need recovers
+--   Eat      -> walk to a ✓-ready Canteen; food recovers ONLY if the food
+--               chain is complete (a ✓-ready Kitchen + a hired Cook)
+--   Yard     -> walk to a ✓-ready Yard, recreation recovers
+--   FreeTime -> shower if grubby (✓-ready Shower), else mill about
+--
+-- Safety recovers when enough Guards are on staff, decays otherwise.
+-- Neglected needs raise UNREST, which cuts grant income (EconomyService)
+-- and is the fuse for Phase 5's riots and escapes.
+--
+-- Movement reuses PathService: the server picks a destination, pathfinds,
+-- and tracks a LOGICAL position (updated when a walk finishes) so need
+-- math never fights the client-side walk animation.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Config = require(ReplicatedStorage.Shared.Config)
+local GridMath = require(ReplicatedStorage.Shared.GridMath)
+local PathService = require(script.Parent.PathService)
+local RoomService = require(script.Parent.RoomService)
+local IntakeService = require(script.Parent.IntakeService)
+local StaffService = require(script.Parent.StaffService)
+
+local NeedsService = {}
+
+local PIVOT_HEIGHT = 3
+local ARRIVE_DIST = 8
+
+-- model -> per-prisoner state
+local lives = {}
+-- player -> zone (set on assign)
+local playerZones = {}
+
+local function newLife(pos)
+	return {
+		needs = { food = 80, sleep = 80, hygiene = 80, recreation = 80, safety = 80 },
+		pos = pos, -- logical feet position
+		walking = false,
+		walkUntil = 0,
+	}
+end
+
+-- Centre-of-mass world position of the nearest ✓-ready room of a type.
+local function readyRoomCenter(player, zone, roomType, fromPos)
+	local best, bestDist
+	for _, region in ipairs(RoomService.getReadyRegions(player)) do
+		if region.type == roomType then
+			local sx, sz, n = 0, 0, 0
+			for _, cell in ipairs(region.cells) do
+				sx += cell[1]
+				sz += cell[2]
+				n += 1
+			end
+			local cx, cz = math.floor(sx / n), math.floor(sz / n)
+			local pos = GridMath.regionCenter(zone.info, cx, cz, 1, 1).Position
+			local dist = (pos - fromPos).Magnitude
+			if not bestDist or dist < bestDist then
+				best, bestDist = pos, dist
+			end
+		end
+	end
+	return best
+end
+
+-- Where should this prisoner be right now, which need does being there
+-- feed, and is that need actually being provided?
+local function resolveActivity(player, zone, life, house, activity)
+	if activity == "Sleep" then
+		local pos = house and house.Parent and (house:GetPivot().Position - Vector3.new(0, PIVOT_HEIGHT, 0))
+		return pos, "sleep", pos ~= nil
+	elseif activity == "Eat" then
+		local pos = readyRoomCenter(player, zone, "Canteen", life.pos)
+		-- The food chain: a canteen alone isn't enough — you need a
+		-- kitchen making the food and a cook to run it.
+		local fed = pos ~= nil
+			and readyRoomCenter(player, zone, "Kitchen", life.pos) ~= nil
+			and StaffService.hasCook(player)
+		return pos, "food", fed
+	elseif activity == "Yard" then
+		local pos = readyRoomCenter(player, zone, "Yard", life.pos)
+		return pos, "recreation", pos ~= nil
+	else -- FreeTime
+		if life.needs.hygiene < 55 then
+			local pos = readyRoomCenter(player, zone, "Shower", life.pos)
+			if pos then
+				return pos, "hygiene", true
+			end
+		end
+		local pos = house and house.Parent and (house:GetPivot().Position - Vector3.new(0, PIVOT_HEIGHT, 0))
+		return pos, nil, false
+	end
+end
+
+local function walkTo(zone, model, life, targetPos)
+	local from = life.pos
+	-- Target a walkable square near the destination.
+	local tx, tz = GridMath.worldToCell(zone.info, targetPos, 1, 1)
+	local footprint = { gx = tx, gz = tz, w = 1, d = 1 }
+	local route = PathService.findRoute(zone, from, footprint, targetPos)
+	if not route then
+		return false
+	end
+	local duration = PathService.startWalk(model, route, Config.WalkSpeed)
+	life.walking = true
+	life.walkUntil = workspace:GetServerTimeNow() + duration
+	task.delay(duration, function()
+		if model.Parent == nil then
+			return
+		end
+		PathService.finishWalk(model, CFrame.new(targetPos + Vector3.new(0, PIVOT_HEIGHT, 0)))
+		life.pos = targetPos
+		life.walking = false
+	end)
+	return true
+end
+
+local function step(player)
+	local zone = playerZones[player]
+	if not zone then
+		return
+	end
+
+	local hour = 12
+	local epoch = workspace:GetAttribute("ClockEpoch")
+	if epoch then
+		local frac = ((workspace:GetServerTimeNow() - epoch) % Config.DayLength) / Config.DayLength
+		hour = frac * 24
+	end
+	local activity = Config.activityAt(hour)
+
+	local housed = IntakeService.getHoused(player)
+	local guardCount = StaffService.count(player, "Guard")
+	local janitorCount = StaffService.count(player, "Janitor")
+	local prisonerCount = #housed
+	local safetyOk = prisonerCount == 0
+		or guardCount >= math.ceil(prisonerCount / Config.GuardsPerPrisoners)
+
+	local unrestSum = 0
+
+	for _, entry in ipairs(housed) do
+		local model = entry.model
+		local life = lives[model]
+		if not life then
+			life = newLife(model:GetPivot().Position - Vector3.new(0, PIVOT_HEIGHT, 0))
+			lives[model] = life
+		end
+
+		-- Decay.
+		for need, rate in pairs(Config.NeedDecay) do
+			life.needs[need] = math.max(0, life.needs[need] - rate * Config.NeedTick)
+		end
+		life.needs.safety = math.clamp(
+			life.needs.safety + (safetyOk and Config.SafetyRegen or -Config.SafetyDecay) * Config.NeedTick,
+			0, 100
+		)
+
+		-- Behaviour: go where the regime says, recover the right need there.
+		if not life.walking and workspace:GetServerTimeNow() >= life.walkUntil then
+			local target, need, provided = resolveActivity(player, zone, life, entry.house, activity)
+			if target and (target - life.pos).Magnitude > ARRIVE_DIST then
+				walkTo(zone, model, life, target)
+			elseif need and provided then
+				local regen = Config.NeedRegen[need] or 0
+				-- Janitors give a gentle hygiene bump everywhere.
+				life.needs[need] = math.min(100, life.needs[need] + regen * Config.NeedTick)
+			end
+		end
+		if janitorCount > 0 then
+			life.needs.hygiene = math.min(100, life.needs.hygiene + 0.1 * janitorCount * Config.NeedTick)
+		end
+
+		-- Worst need drives the mood shown over their head.
+		local worst, worstVal = "content", 101
+		for need, val in pairs(life.needs) do
+			if val < worstVal then
+				worst, worstVal = need, val
+			end
+		end
+		model:SetAttribute("Mood", worstVal < 25 and worst or (worstVal < 50 and "uneasy" or "content"))
+		model:SetAttribute("MoodValue", math.floor(worstVal))
+
+		-- This prisoner's contribution to unrest.
+		local avg = 0
+		for _, val in pairs(life.needs) do
+			avg += val
+		end
+		avg /= 5
+		if avg < 40 then
+			unrestSum += (40 - avg)
+		end
+	end
+
+	-- Prison-wide unrest: nudge toward the neglect level.
+	local unrest = player:GetAttribute("PrisonUnrest") or 0
+	if prisonerCount > 0 then
+		local pressure = unrestSum / prisonerCount -- 0..40ish
+		if pressure > 8 then
+			unrest = math.min(100, unrest + Config.UnrestRise * Config.NeedTick)
+		else
+			unrest = math.max(0, unrest - Config.UnrestFall * Config.NeedTick)
+		end
+	else
+		unrest = math.max(0, unrest - Config.UnrestFall * Config.NeedTick)
+	end
+	player:SetAttribute("PrisonUnrest", math.floor(unrest))
+	player:SetAttribute("RegimeActivity", activity)
+end
+
+function NeedsService.assignPlayer(player, zone)
+	playerZones[player] = zone
+end
+
+function NeedsService.releasePlayer(player)
+	playerZones[player] = nil
+	-- Drop lives whose models belong to this zone (cheap: prune dead ones).
+	for model in pairs(lives) do
+		if model.Parent == nil then
+			lives[model] = nil
+		end
+	end
+end
+
+function NeedsService.init()
+	task.spawn(function()
+		while true do
+			task.wait(Config.NeedTick)
+			for model in pairs(lives) do
+				if model.Parent == nil then
+					lives[model] = nil
+				end
+			end
+			for player in pairs(playerZones) do
+				step(player)
+			end
+		end
+	end)
+end
+
+return NeedsService
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="15">
         <Properties>
           <string name="Name">PathService</string>
           <string name="Source"><![CDATA[-- PathService: A* pathfinding over the build grid, plus the shared
@@ -1885,7 +2211,7 @@ return PathService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="15">
+      <Item class="ModuleScript" referent="16">
         <Properties>
           <string name="Name">PlacementService</string>
           <string name="Source"><![CDATA[-- PlacementService: the server half of the building system. The client
@@ -2468,7 +2794,7 @@ return PlacementService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="16">
+      <Item class="ModuleScript" referent="17">
         <Properties>
           <string name="Name">PlotService</string>
           <string name="Source"><![CDATA[-- PlotService: finds the build zones in YOUR hand-made map and assigns
@@ -2495,6 +2821,8 @@ local EconomyService = require(script.Parent.EconomyService)
 local PlacementService = require(script.Parent.PlacementService)
 local RoomService = require(script.Parent.RoomService)
 local IntakeService = require(script.Parent.IntakeService)
+local StaffService = require(script.Parent.StaffService)
+local NeedsService = require(script.Parent.NeedsService)
 local ConstructionService = require(script.Parent.ConstructionService)
 
 local PlotService = {}
@@ -2743,12 +3071,15 @@ local function assignZone(player)
 	RoomService.assignZone(player, zone, data.rooms)
 	ConstructionService.assignPlayer(player, zone)
 	IntakeService.assignPlayer(player, zone, data.intake)
+	StaffService.assignPlayer(player, zone, data.staff)
+	NeedsService.assignPlayer(player, zone)
 	SaveService.attachSource(player, "layout", PlacementService.snapshotLayout)
 	SaveService.attachSource(player, "rooms", RoomService.snapshotRooms)
 	SaveService.attachSource(player, "intake", IntakeService.snapshotIntake)
 	SaveService.attachSource(player, "land", function()
 		return zone.purchasedList
 	end)
+	SaveService.attachSource(player, "staff", StaffService.snapshotStaff)
 
 	-- Tell this player's client which zone is theirs (the build UI needs
 	-- it for grid math and aiming).
@@ -2776,6 +3107,8 @@ local function assignZone(player)
 end
 
 local function releaseZone(player)
+	NeedsService.releasePlayer(player)
+	StaffService.releasePlayer(player)
 	IntakeService.releasePlayer(player)
 	ConstructionService.releasePlayer(player)
 	RoomService.releasePlayer(player)
@@ -2811,7 +3144,7 @@ return PlotService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="17">
+      <Item class="ModuleScript" referent="18">
         <Properties>
           <string name="Name">RoomService</string>
           <string name="Source"><![CDATA[-- RoomService: Prison Architect-style room designation. The player picks
@@ -3005,8 +3338,10 @@ local function rebuildLabels(zone)
 	end
 
 	-- Count the regions that fully meet their requirements, per type —
-	-- published as ReadyRooms_<Type> attributes.
+	-- published as ReadyRooms_<Type> attributes. Ready regions are also
+	-- kept queryable (NeedsService sends prisoners to them).
 	local readyCounts = {}
+	local readyRegions = {}
 
 	local map = state.map
 	local seen = {}
@@ -3059,6 +3394,7 @@ local function rebuildLabels(zone)
 				local met, statusText = evaluateRegion(zone, typeName, regionCells, placedInfos, blockedCells)
 				if met then
 					readyCounts[typeName] = (readyCounts[typeName] or 0) + 1
+					table.insert(readyRegions, { type = typeName, cells = regionCells })
 					if typeName == "Cell" then
 						-- Stamp the beds inside: they're real housing now.
 						local regionSet = {}
@@ -3111,6 +3447,7 @@ local function rebuildLabels(zone)
 		end
 	end
 
+	state.readyRegions = readyRegions
 	if zone.owner then
 		for _, roomType in ipairs(Config.RoomTypes) do
 			zone.owner:SetAttribute("ReadyRooms_" .. roomType.name, readyCounts[roomType.name] or 0)
@@ -3234,6 +3571,13 @@ end
 
 -- Player requests ---------------------------------------------------------
 
+-- The ✓-ready room regions for a player's zone: { {type, cells}, ... }.
+function RoomService.getReadyRegions(player)
+	local zone = playerZones[player]
+	local state = zone and zoneRooms[zone]
+	return state and state.readyRegions or {}
+end
+
 -- Re-evaluate requirements (used after moves and blueprint completions).
 function RoomService.poke(player)
 	local zone = playerZones[player]
@@ -3279,7 +3623,7 @@ return RoomService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="18">
+      <Item class="ModuleScript" referent="19">
         <Properties>
           <string name="Name">SaveService</string>
           <string name="Source"><![CDATA[-- SaveService: cloud-saves each player's prison layout so it's rebuilt
@@ -3357,6 +3701,7 @@ local function onPlayerAdded(player)
 		totalSpent = saved and saved.totalSpent or 0,
 		land = saved and saved.land or {},
 		playedSeconds = saved and saved.playedSeconds or 0,
+		staff = saved and saved.staff or nil,
 		-- Only allowed to write to the cloud if the read worked. A failed
 		-- read must never let empty data overwrite a real save.
 		canSave = store ~= nil and loadOk,
@@ -3378,6 +3723,7 @@ local function saveNow(player)
 		totalSpent = st.totalSpent,
 		land = st.sources.land and st.sources.land(player) or st.land,
 		playedSeconds = st.playedSeconds,
+		staff = st.sources.staff and st.sources.staff(player) or st.staff,
 	}
 	local ok, err = pcall(function()
 		store:UpdateAsync(keyFor(player), function()
@@ -3440,7 +3786,216 @@ return SaveService
 ]]></string>
         </Properties>
       </Item>
-      <Item class="ModuleScript" referent="19">
+      <Item class="ModuleScript" referent="20">
+        <Properties>
+          <string name="Name">StaffService</string>
+          <string name="Source"><![CDATA[-- StaffService: hire and fire staff (Guards, Cooks, Janitors), pay their
+-- wages, and let them quit when the money runs dry (Prison Architect's
+-- rule). Staff are NPCs that mill about the prison; what they DO lives in
+-- other systems that ask us "how many guards / any cook?":
+--   * Guards  -> NeedsService reads the guard ratio for prisoner Safety.
+--   * Cooks   -> NeedsService needs one for the Kitchen->Canteen food chain.
+--   * Janitors-> keep hygiene from rotting (a small passive bonus).
+--
+-- Hiring is free; wages charge every Config.WageInterval seconds. Can't
+-- pay the full bill? Someone quits, and the warden gets a warning.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Config = require(ReplicatedStorage.Shared.Config)
+local EconomyService = require(script.Parent.EconomyService)
+local InmateService = require(script.Parent.InmateService)
+
+local StaffService = {}
+
+-- player -> { zone, folder, staff = { [typeId] = { model, model, ... } }, spawnCounter }
+local records = {}
+
+local function typeDef(typeId)
+	for _, def in ipairs(Config.StaffTypes) do
+		if def.id == typeId then
+			return def
+		end
+	end
+	return nil
+end
+
+local function staffPost(zone, index)
+	-- Staff gather along the front-right of the plot, opposite the crew.
+	local size = zone.part.Size
+	local col = index % 5
+	local row = math.floor(index / 5)
+	return zone.part.CFrame * CFrame.new(size.X / 2 - 6 - col * 4, size.Y / 2, size.Z / 2 - 4 - row * 4)
+end
+
+local function publish(player)
+	local rec = records[player]
+	if not rec then
+		return
+	end
+	local totalWage = 0
+	for _, def in ipairs(Config.StaffTypes) do
+		local n = #(rec.staff[def.id] or {})
+		player:SetAttribute("Staff_" .. def.id, n)
+		totalWage += n * def.wage
+	end
+	player:SetAttribute("StaffWage", totalWage)
+end
+
+function StaffService.count(player, typeId)
+	local rec = records[player]
+	return rec and #(rec.staff[typeId] or {}) or 0
+end
+
+function StaffService.hasCook(player)
+	return StaffService.count(player, "Cook") > 0
+end
+
+local function spawnStaff(player, def)
+	local rec = records[player]
+	rec.spawnCounter += 1
+	local total = 0
+	for _, def2 in ipairs(Config.StaffTypes) do
+		total += #(rec.staff[def2.id] or {})
+	end
+	local model = InmateService.spawn(staffPost(rec.zone, total), rec.spawnCounter, rec.folder, { outfit = def.outfit })
+	rec.staff[def.id] = rec.staff[def.id] or {}
+	table.insert(rec.staff[def.id], model)
+end
+
+local function fireStaff(player, typeId)
+	local rec = records[player]
+	local list = rec and rec.staff[typeId]
+	if list and #list > 0 then
+		local model = table.remove(list)
+		if model then
+			model:Destroy()
+		end
+		return true
+	end
+	return false
+end
+
+-- Wiring ------------------------------------------------------------------
+
+function StaffService.assignPlayer(player, zone, savedStaff)
+	local folder = Instance.new("Folder")
+	folder.Name = "Staff"
+	folder.Parent = zone.part
+
+	records[player] = { zone = zone, folder = folder, staff = {}, spawnCounter = 0 }
+
+	if type(savedStaff) == "table" then
+		for _, def in ipairs(Config.StaffTypes) do
+			local n = math.clamp(math.floor(tonumber(savedStaff[def.id]) or 0), 0, Config.MaxStaffPerType)
+			for _ = 1, n do
+				spawnStaff(player, def)
+			end
+		end
+	end
+	publish(player)
+end
+
+function StaffService.releasePlayer(player)
+	local rec = records[player]
+	records[player] = nil
+	if rec then
+		rec.folder:Destroy()
+	end
+end
+
+function StaffService.snapshotStaff(player)
+	local rec = records[player]
+	local out = {}
+	if rec then
+		for _, def in ipairs(Config.StaffTypes) do
+			out[def.id] = #(rec.staff[def.id] or {})
+		end
+	end
+	return out
+end
+
+-- Player requests ---------------------------------------------------------
+
+function StaffService.handleRequest(player, action, typeId)
+	local rec = records[player]
+	if not rec then
+		return { ok = false, err = "You don't have a plot yet." }
+	end
+	local def = typeDef(typeId)
+	if not def then
+		return { ok = false, err = "Unknown staff type." }
+	end
+
+	if action == "hire" then
+		if #(rec.staff[def.id] or {}) >= Config.MaxStaffPerType then
+			return { ok = false, err = "You already have the max " .. def.id .. "s." }
+		end
+		spawnStaff(player, def)
+		publish(player)
+		return { ok = true }
+	elseif action == "fire" then
+		if not fireStaff(player, def.id) then
+			return { ok = false, err = "No " .. def.id .. " to fire." }
+		end
+		publish(player)
+		return { ok = true }
+	end
+	return { ok = false, err = "Bad request." }
+end
+
+function StaffService.init()
+	local remotes = ReplicatedStorage:WaitForChild("Remotes")
+	remotes.StaffRequest.OnServerInvoke = StaffService.handleRequest
+
+	-- The payroll: charge wages, and if the till can't cover it, someone
+	-- quits until the bill fits.
+	task.spawn(function()
+		while true do
+			task.wait(Config.WageInterval)
+			for player, rec in pairs(records) do
+				if player:IsDescendantOf(Players) then
+					local function bill()
+						local total = 0
+						for _, def in ipairs(Config.StaffTypes) do
+							total += #(rec.staff[def.id] or {}) * def.wage
+						end
+						return total
+					end
+					local total = bill()
+					if total > 0 then
+						if EconomyService.tryCharge(player, total) then
+							player:SetAttribute("StaffUnpaid", false)
+						else
+							-- Can't pay: quit the priciest staff, warn, retry.
+							local quit = false
+							for i = #Config.StaffTypes, 1, -1 do
+								if fireStaff(player, Config.StaffTypes[i].id) then
+									quit = true
+									break
+								end
+							end
+							player:SetAttribute("StaffUnpaid", true)
+							publish(player)
+							-- Charge the reduced bill if we now can.
+							local reduced = bill()
+							if quit and reduced > 0 then
+								EconomyService.tryCharge(player, reduced)
+							end
+						end
+					end
+				end
+			end
+		end
+	end)
+end
+
+return StaffService
+]]></string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="21">
         <Properties>
           <string name="Name">TimeService</string>
           <string name="Source"><![CDATA[-- TimeService: the game clock. One shared time-of-day for the whole
@@ -3482,15 +4037,15 @@ return TimeService
       </Item>
     </Item>
   </Item>
-  <Item class="StarterPlayer" referent="20">
+  <Item class="StarterPlayer" referent="22">
     <Properties>
       <string name="Name">StarterPlayer</string>
     </Properties>
-    <Item class="StarterPlayerScripts" referent="21">
+    <Item class="StarterPlayerScripts" referent="23">
       <Properties>
         <string name="Name">StarterPlayerScripts</string>
       </Properties>
-      <Item class="LocalScript" referent="22">
+      <Item class="LocalScript" referent="24">
         <Properties>
           <string name="Name">Client</string>
           <string name="Source"><![CDATA[-- Lockdown client bootstrap. Runs on each player's own device and starts
@@ -3500,11 +4055,13 @@ return TimeService
 require(script.BuildMode).start()
 require(script.CashHud).start()
 require(script.IntakePanel).start()
+require(script.StaffPanel).start()
 require(script.EmergencyBar).start()
 require(script.InmateAnimator).start()
+require(script.MoodDisplay).start()
 ]]></string>
         </Properties>
-        <Item class="ModuleScript" referent="23">
+        <Item class="ModuleScript" referent="25">
           <Properties>
             <string name="Name">BuildCamera</string>
             <string name="Source"><![CDATA[-- BuildCamera: the Prison Architect view. While build mode is open the
@@ -3764,7 +4321,7 @@ return BuildCamera
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="24">
+        <Item class="ModuleScript" referent="26">
           <Properties>
             <string name="Name">BuildMode</string>
             <string name="Source"><![CDATA[-- BuildMode: the whole building experience on the player's screen,
@@ -5210,7 +5767,7 @@ return BuildMode
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="25">
+        <Item class="ModuleScript" referent="27">
           <Properties>
             <string name="Name">CashHud</string>
             <string name="Source"><![CDATA[-- CashHud: the Prison Architect top bar, Roblox-ified.
@@ -5346,7 +5903,7 @@ function CashHud.start()
 	clockSub.Font = Enum.Font.GothamBold
 	clockSub.TextScaled = true
 	clockSub.TextColor3 = Color3.fromRGB(180, 180, 180)
-	clockSub.Text = "prison time"
+	clockSub.Text = "FreeTime"
 	clockSub.Parent = clockPanel
 	clockPanel.Parent = gui
 
@@ -5399,19 +5956,27 @@ function CashHud.start()
 		prisonersLabel.TextColor3 = waiting > 0 and Color3.fromRGB(255, 200, 120) or Color3.fromRGB(255, 255, 255)
 		prisonersChip.BackgroundColor3 = waiting > 0 and Color3.fromRGB(45, 32, 18) or CHIP_BG
 
-		local perMin = housed * Config.GrantPerPrisoner * (60 / Config.GrantInterval)
-		subLine.Text = ("%s/min in grants · session +%s / -%s"):format(
-			Format.money(perMin), Format.money(earned), Format.money(spent))
+		local unrest = player:GetAttribute("PrisonUnrest") or 0
+		local perMin = housed * Config.GrantPerPrisoner * (60 / Config.GrantInterval) * (1 - unrest / 200)
+		subLine.Text = ("%s/min in grants · unrest %d%% · session +%s / -%s"):format(
+			Format.money(perMin), unrest, Format.money(earned), Format.money(spent))
+		subLine.TextColor3 = unrest >= 60 and Color3.fromRGB(255, 150, 120)
+			or (unrest >= 30 and Color3.fromRGB(255, 210, 130) or Color3.fromRGB(200, 200, 200))
 
 		stuckLine.Text = player:GetAttribute("IntakeStuck") == true
 			and "⚠ Arrivals can't reach a cell — is there a door path?" or ""
 
 		dayLabel.Text = ("DAY %d"):format(player:GetAttribute("PrisonDay") or 1)
 	end
-	for _, attr in ipairs({ "PrisonHoused", "PrisonCapacity", "PrisonWaiting", "IntakeStuck", "PrisonDay" }) do
+	local function refreshRegime()
+		clockSub.Text = player:GetAttribute("RegimeActivity") or "FreeTime"
+	end
+	for _, attr in ipairs({ "PrisonHoused", "PrisonCapacity", "PrisonWaiting", "IntakeStuck", "PrisonDay", "PrisonUnrest" }) do
 		player:GetAttributeChangedSignal(attr):Connect(refreshStats)
 	end
+	player:GetAttributeChangedSignal("RegimeActivity"):Connect(refreshRegime)
 	refreshStats()
+	refreshRegime()
 
 	RunService.RenderStepped:Connect(function(dt)
 		-- Smooth cash count-up.
@@ -5438,7 +6003,7 @@ return CashHud
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="26">
+        <Item class="ModuleScript" referent="28">
           <Properties>
             <string name="Name">EmergencyBar</string>
             <string name="Source"><![CDATA[-- EmergencyBar: Prison Architect's red emergency buttons, bottom-right.
@@ -5529,7 +6094,7 @@ return EmergencyBar
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="27">
+        <Item class="ModuleScript" referent="29">
           <Properties>
             <string name="Name">InmateAnimator</string>
             <string name="Source"><![CDATA[-- InmateAnimator: brings the blocky prisoners to life — entirely on each
@@ -5810,7 +6375,7 @@ return InmateAnimator
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="28">
+        <Item class="ModuleScript" referent="30">
           <Properties>
             <string name="Name">IntakePanel</string>
             <string name="Source"><![CDATA[-- IntakePanel: the warden's version of Prison Architect's Intake report.
@@ -5965,6 +6530,222 @@ function IntakePanel.start()
 end
 
 return IntakePanel
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="31">
+          <Properties>
+            <string name="Name">MoodDisplay</string>
+            <string name="Source"><![CDATA[-- MoodDisplay: a small mood face that floats over unhappy prisoners so
+-- you can spot trouble from the top-down view (PA shows need bubbles).
+-- Purely cosmetic and client-side; it reads the Mood attribute the
+-- server sets on each housed prisoner (staff and workers never get one,
+-- so they stay bubble-free).
+
+local CollectionService = game:GetService("CollectionService")
+
+local MoodDisplay = {}
+
+local FACES = {
+	safety = "😨",
+	food = "🍽️",
+	sleep = "😴",
+	hygiene = "🚿",
+	recreation = "🥱",
+	uneasy = "😕",
+}
+
+function MoodDisplay.start()
+	local shown = {} -- model -> BillboardGui
+
+	local function update(model)
+		local mood = model:GetAttribute("Mood")
+		local gui = shown[model]
+		-- "content" (or nil) shows nothing.
+		if not mood or mood == "content" then
+			if gui then
+				gui.Enabled = false
+			end
+			return
+		end
+		if not gui then
+			local head = model:FindFirstChild("Head")
+			if not head then
+				return
+			end
+			gui = Instance.new("BillboardGui")
+			gui.Name = "MoodBubble"
+			gui.Size = UDim2.new(0, 30, 0, 30)
+			gui.StudsOffset = Vector3.new(0, 2.6, 0)
+			gui.AlwaysOnTop = true
+			gui.MaxDistance = 120
+			local label = Instance.new("TextLabel")
+			label.Size = UDim2.new(1, 0, 1, 0)
+			label.BackgroundTransparency = 1
+			label.Font = Enum.Font.GothamBold
+			label.TextScaled = true
+			label.Name = "Face"
+			label.Parent = gui
+			gui.Parent = head
+			shown[model] = gui
+		end
+		gui.Enabled = true
+		gui.Face.Text = FACES[mood] or "😕"
+	end
+
+	local function watch(model)
+		task.spawn(function()
+			-- Only prisoners ever get a Mood attribute set.
+			model:GetAttributeChangedSignal("Mood"):Connect(function()
+				update(model)
+			end)
+			update(model)
+		end)
+	end
+
+	for _, model in ipairs(CollectionService:GetTagged("Inmate")) do
+		watch(model)
+	end
+	CollectionService:GetInstanceAddedSignal("Inmate"):Connect(watch)
+	CollectionService:GetInstanceRemovedSignal("Inmate"):Connect(function(model)
+		shown[model] = nil
+	end)
+end
+
+return MoodDisplay
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="32">
+          <Properties>
+            <string name="Name">StaffPanel</string>
+            <string name="Source"><![CDATA[-- StaffPanel: the 👮 Staff hire/fire panel (PA's Staff tab). A button
+-- stack in the bottom-right opens a card with a row per staff type —
+-- icon, name, live count, wage, and Hire / Fire buttons. Reads the
+-- Staff_<Type> and StaffWage attributes the server publishes.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
+local Format = require(ReplicatedStorage.Shared:WaitForChild("Format"))
+
+local StaffPanel = {}
+
+local PANEL_BG = Color3.fromRGB(20, 24, 20)
+local RED = Color3.fromRGB(255, 120, 110)
+
+function StaffPanel.start()
+	local player = Players.LocalPlayer
+	local playerGui = player:WaitForChild("PlayerGui")
+	local staffRequest = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("StaffRequest")
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "LockdownStaff"
+	gui.ResetOnSpawn = false
+
+	local toggle = Instance.new("TextButton")
+	toggle.AnchorPoint = Vector2.new(1, 1)
+	toggle.Position = UDim2.new(1, -14, 1, -126)
+	toggle.Size = UDim2.new(0, 120, 0, 48)
+	toggle.BackgroundColor3 = PANEL_BG
+	toggle.BackgroundTransparency = 0.2
+	toggle.Font = Enum.Font.GothamBold
+	toggle.TextSize = 20
+	toggle.TextColor3 = Color3.fromRGB(255, 255, 255)
+	toggle.Text = "👮 Staff"
+	local toggleCorner = Instance.new("UICorner")
+	toggleCorner.CornerRadius = UDim.new(0, 12)
+	toggleCorner.Parent = toggle
+	toggle.Parent = gui
+
+	local rowH = 52
+	local panel = Instance.new("Frame")
+	panel.AnchorPoint = Vector2.new(1, 1)
+	panel.Position = UDim2.new(1, -14, 1, -182)
+	panel.Size = UDim2.new(0, 300, 0, 40 + rowH * #Config.StaffTypes)
+	panel.BackgroundColor3 = PANEL_BG
+	panel.BackgroundTransparency = 0.15
+	panel.Visible = false
+	local panelCorner = Instance.new("UICorner")
+	panelCorner.CornerRadius = UDim.new(0, 14)
+	panelCorner.Parent = panel
+
+	local wageLabel = Instance.new("TextLabel")
+	wageLabel.Position = UDim2.new(0, 12, 0, 8)
+	wageLabel.Size = UDim2.new(1, -24, 0, 22)
+	wageLabel.BackgroundTransparency = 1
+	wageLabel.Font = Enum.Font.GothamBold
+	wageLabel.TextScaled = true
+	wageLabel.TextXAlignment = Enum.TextXAlignment.Left
+	wageLabel.TextColor3 = Color3.fromRGB(255, 220, 130)
+	wageLabel.Parent = panel
+
+	local countLabels = {}
+	for i, def in ipairs(Config.StaffTypes) do
+		local y = 36 + (i - 1) * rowH
+		local info = Instance.new("TextLabel")
+		info.Position = UDim2.new(0, 12, 0, y)
+		info.Size = UDim2.new(0, 170, 0, rowH - 8)
+		info.BackgroundTransparency = 1
+		info.Font = Enum.Font.GothamBold
+		info.TextScaled = true
+		info.TextXAlignment = Enum.TextXAlignment.Left
+		info.TextColor3 = Color3.fromRGB(255, 255, 255)
+		info.Parent = panel
+		countLabels[def.id] = info
+
+		local function actionButton(text, color, xoff, action)
+			local b = Instance.new("TextButton")
+			b.AnchorPoint = Vector2.new(1, 0.5)
+			b.Position = UDim2.new(1, xoff, 0, y + (rowH - 8) / 2)
+			b.Size = UDim2.new(0, 44, 0, 36)
+			b.BackgroundColor3 = color
+			b.Font = Enum.Font.GothamBold
+			b.TextSize = 18
+			b.TextColor3 = Color3.fromRGB(255, 255, 255)
+			b.Text = text
+			local c = Instance.new("UICorner")
+			c.CornerRadius = UDim.new(0, 10)
+			c.Parent = b
+			b.Activated:Connect(function()
+				pcall(function()
+					return staffRequest:InvokeServer(action, def.id)
+				end)
+			end)
+			b.Parent = panel
+		end
+		actionButton("−", Color3.fromRGB(120, 50, 50), -14, "fire")
+		actionButton("+", Color3.fromRGB(60, 110, 60), -62, "hire")
+	end
+
+	panel.Parent = gui
+	gui.Parent = playerGui
+
+	local function refresh()
+		local total = player:GetAttribute("StaffWage") or 0
+		local unpaid = player:GetAttribute("StaffUnpaid") == true
+		wageLabel.Text = ("Payroll: %s / %ds%s"):format(Format.money(total), Config.WageInterval, unpaid and "  ⚠ UNPAID" or "")
+		wageLabel.TextColor3 = unpaid and RED or Color3.fromRGB(255, 220, 130)
+		for _, def in ipairs(Config.StaffTypes) do
+			local n = player:GetAttribute("Staff_" .. def.id) or 0
+			countLabels[def.id].Text = ("%s %s: %d  (%s ea)"):format(def.icon, def.id, n, Format.money(def.wage))
+		end
+	end
+
+	toggle.Activated:Connect(function()
+		panel.Visible = not panel.Visible
+		refresh()
+	end)
+	for _, def in ipairs(Config.StaffTypes) do
+		player:GetAttributeChangedSignal("Staff_" .. def.id):Connect(refresh)
+	end
+	player:GetAttributeChangedSignal("StaffWage"):Connect(refresh)
+	player:GetAttributeChangedSignal("StaffUnpaid"):Connect(refresh)
+	refresh()
+end
+
+return StaffPanel
 ]]></string>
           </Properties>
         </Item>

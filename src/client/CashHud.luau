@@ -131,7 +131,7 @@ function CashHud.start()
 	clockSub.Font = Enum.Font.GothamBold
 	clockSub.TextScaled = true
 	clockSub.TextColor3 = Color3.fromRGB(180, 180, 180)
-	clockSub.Text = "prison time"
+	clockSub.Text = "FreeTime"
 	clockSub.Parent = clockPanel
 	clockPanel.Parent = gui
 
@@ -184,19 +184,27 @@ function CashHud.start()
 		prisonersLabel.TextColor3 = waiting > 0 and Color3.fromRGB(255, 200, 120) or Color3.fromRGB(255, 255, 255)
 		prisonersChip.BackgroundColor3 = waiting > 0 and Color3.fromRGB(45, 32, 18) or CHIP_BG
 
-		local perMin = housed * Config.GrantPerPrisoner * (60 / Config.GrantInterval)
-		subLine.Text = ("%s/min in grants · session +%s / -%s"):format(
-			Format.money(perMin), Format.money(earned), Format.money(spent))
+		local unrest = player:GetAttribute("PrisonUnrest") or 0
+		local perMin = housed * Config.GrantPerPrisoner * (60 / Config.GrantInterval) * (1 - unrest / 200)
+		subLine.Text = ("%s/min in grants · unrest %d%% · session +%s / -%s"):format(
+			Format.money(perMin), unrest, Format.money(earned), Format.money(spent))
+		subLine.TextColor3 = unrest >= 60 and Color3.fromRGB(255, 150, 120)
+			or (unrest >= 30 and Color3.fromRGB(255, 210, 130) or Color3.fromRGB(200, 200, 200))
 
 		stuckLine.Text = player:GetAttribute("IntakeStuck") == true
 			and "⚠ Arrivals can't reach a cell — is there a door path?" or ""
 
 		dayLabel.Text = ("DAY %d"):format(player:GetAttribute("PrisonDay") or 1)
 	end
-	for _, attr in ipairs({ "PrisonHoused", "PrisonCapacity", "PrisonWaiting", "IntakeStuck", "PrisonDay" }) do
+	local function refreshRegime()
+		clockSub.Text = player:GetAttribute("RegimeActivity") or "FreeTime"
+	end
+	for _, attr in ipairs({ "PrisonHoused", "PrisonCapacity", "PrisonWaiting", "IntakeStuck", "PrisonDay", "PrisonUnrest" }) do
 		player:GetAttributeChangedSignal(attr):Connect(refreshStats)
 	end
+	player:GetAttributeChangedSignal("RegimeActivity"):Connect(refreshRegime)
 	refreshStats()
+	refreshRegime()
 
 	RunService.RenderStepped:Connect(function(dt)
 		-- Smooth cash count-up.

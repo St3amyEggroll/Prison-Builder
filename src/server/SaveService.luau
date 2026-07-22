@@ -73,6 +73,7 @@ local function onPlayerAdded(player)
 		totalSpent = saved and saved.totalSpent or 0,
 		land = saved and saved.land or {},
 		playedSeconds = saved and saved.playedSeconds or 0,
+		staff = saved and saved.staff or nil,
 		-- Only allowed to write to the cloud if the read worked. A failed
 		-- read must never let empty data overwrite a real save.
 		canSave = store ~= nil and loadOk,
@@ -94,6 +95,7 @@ local function saveNow(player)
 		totalSpent = st.totalSpent,
 		land = st.sources.land and st.sources.land(player) or st.land,
 		playedSeconds = st.playedSeconds,
+		staff = st.sources.staff and st.sources.staff(player) or st.staff,
 	}
 	local ok, err = pcall(function()
 		store:UpdateAsync(keyFor(player), function()

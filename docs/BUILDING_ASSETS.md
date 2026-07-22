@@ -57,7 +57,13 @@ Split each plot into parcels the player unlocks with cash:
 
 **Two names the 🏗️ Foundations tool depends on:** it builds using the assets called `Wall` and `Floor Tile`. If you replace those placeholders, keep the names (or tell Claude to point the tool at your names in the config).
 
-**Room requirements read your assets too:** "enclosed" means every square around a painted room is filled by a `Walls & Doors`-category asset (doors count), and a Cell room wants one `SpawnsInmate` asset inside. The room's floor label shows what's missing, PA-style.
+**Room requirements read your assets too:** "enclosed" means every square around a painted room is filled by a `Walls & Doors`-category asset (doors count), and a Cell room wants one `SpawnsInmate` asset (a bed) inside. The room's floor label shows what's missing, PA-style.
+
+**Rooms that actually feed prisoners (Phase 4):** prisoners follow the daily regime and recover needs in ✓-ready rooms —
+- **Cell** (bed): where they sleep. Capacity.
+- **Canteen** + **Kitchen** + a hired **Cook**: the food chain. A canteen alone does nothing — you need all three for food to recover.
+- **Yard**: recreation. **Shower**: hygiene.
+Paint them, enclose them (except Yard, which is open), and they light up once ✓ ready. Guards (Staff tab) keep prisoners feeling safe — hire roughly one per four prisoners.
 
 **Sizing conventions worth copying from the placeholders:** the Wall fills a *whole* 4-stud grid square (so wall runs tile solid, Prison Architect style), and the Fence/Security Door are thin panels spanning the full 4-stud width (so doors drop cleanly into fence lines). Matching those shapes keeps your assets mixing well with drag-to-build.
 

@@ -189,8 +189,10 @@ local function rebuildLabels(zone)
 	end
 
 	-- Count the regions that fully meet their requirements, per type —
-	-- published as ReadyRooms_<Type> attributes.
+	-- published as ReadyRooms_<Type> attributes. Ready regions are also
+	-- kept queryable (NeedsService sends prisoners to them).
 	local readyCounts = {}
+	local readyRegions = {}
 
 	local map = state.map
 	local seen = {}
@@ -243,6 +245,7 @@ local function rebuildLabels(zone)
 				local met, statusText = evaluateRegion(zone, typeName, regionCells, placedInfos, blockedCells)
 				if met then
 					readyCounts[typeName] = (readyCounts[typeName] or 0) + 1
+					table.insert(readyRegions, { type = typeName, cells = regionCells })
 					if typeName == "Cell" then
 						-- Stamp the beds inside: they're real housing now.
 						local regionSet = {}
@@ -295,6 +298,7 @@ local function rebuildLabels(zone)
 		end
 	end
 
+	state.readyRegions = readyRegions
 	if zone.owner then
 		for _, roomType in ipairs(Config.RoomTypes) do
 			zone.owner:SetAttribute("ReadyRooms_" .. roomType.name, readyCounts[roomType.name] or 0)
@@ -417,6 +421,13 @@ function RoomService.snapshotRooms(player)
 end
 
 -- Player requests ---------------------------------------------------------
+
+-- The ✓-ready room regions for a player's zone: { {type, cells}, ... }.
+function RoomService.getReadyRegions(player)
+	local zone = playerZones[player]
+	local state = zone and zoneRooms[zone]
+	return state and state.readyRegions or {}
+end
 
 -- Re-evaluate requirements (used after moves and blueprint completions).
 function RoomService.poke(player)

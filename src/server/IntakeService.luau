@@ -269,6 +269,20 @@ function IntakeService.assignPlayer(player, zone, savedIntake)
 	refresh(player)
 end
 
+-- The housed prisoners (NeedsService drives their daily life).
+function IntakeService.getHoused(player)
+	local rec = records[player]
+	local out = {}
+	if rec then
+		for _, prisoner in ipairs(rec.prisoners) do
+			if prisoner.status == "housed" and prisoner.model.Parent ~= nil then
+				table.insert(out, { model = prisoner.model, house = prisoner.house })
+			end
+		end
+	end
+	return out
+end
+
 -- Re-check capacity/escorts (used after moves and blueprint completions).
 function IntakeService.poke(player)
 	refresh(player)

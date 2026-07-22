@@ -49,10 +49,15 @@ function InmateService.spawn(baseCF, cellIndex, parent, opts)
 	-- full cellblock doesn't look like a copy-paste army. Seeding with
 	-- cellIndex keeps each one looking the same each visit.
 	local rng = Random.new(cellIndex * 7919)
-	local jumpsuit = Color3.fromRGB(255, 120 + rng:NextInteger(0, 40), 25 + rng:NextInteger(0, 25))
-	if outfit == "worker" then
-		jumpsuit = Color3.fromRGB(60 + rng:NextInteger(0, 20), 90 + rng:NextInteger(0, 20), 170 + rng:NextInteger(0, 30))
-	end
+	local OUTFITS = {
+		worker = { torso = Color3.fromRGB(60 + rng:NextInteger(0, 20), 90, 170), hat = Color3.fromRGB(255, 200, 40), tag = Color3.fromRGB(255, 220, 120) },
+		guard = { torso = Color3.fromRGB(45, 55, 100), hat = Color3.fromRGB(25, 30, 50), tag = Color3.fromRGB(150, 180, 255) },
+		cook = { torso = Color3.fromRGB(235, 235, 235), hat = Color3.fromRGB(250, 250, 250), tag = Color3.fromRGB(255, 255, 255) },
+		janitor = { torso = Color3.fromRGB(60, 130, 80), hat = nil, tag = Color3.fromRGB(170, 255, 190) },
+	}
+	local look = OUTFITS[outfit]
+	local jumpsuit = look and look.torso
+		or Color3.fromRGB(255, 120 + rng:NextInteger(0, 40), 25 + rng:NextInteger(0, 25))
 
 	-- Face a random direction inside the cell.
 	local root = baseCF * CFrame.Angles(0, rng:NextNumber(0, math.pi * 2), 0)
@@ -65,10 +70,9 @@ function InmateService.spawn(baseCF, cellIndex, parent, opts)
 	makePart("RightArm", Vector3.new(1, 2, 1), jumpsuit, root * CFrame.new(1.5, 3, 0), model)
 	local head = makePart("Head", Vector3.new(1.2, 1.2, 1.2), SKIN, root * CFrame.new(0, 4.6, 0), model)
 
-	if outfit == "worker" then
-		-- The hard hat: what separates professionals from prisoners.
-		makePart("HardHat", Vector3.new(1.4, 0.35, 1.4), Color3.fromRGB(255, 200, 40),
-			root * CFrame.new(0, 5.35, 0), model)
+	if look and look.hat then
+		-- The hat: what separates professionals from prisoners.
+		makePart("HardHat", Vector3.new(1.4, 0.35, 1.4), look.hat, root * CFrame.new(0, 5.35, 0), model)
 	end
 
 	-- The classic Roblox smile, shipped inside the engine (no download).
@@ -79,7 +83,7 @@ function InmateService.spawn(baseCF, cellIndex, parent, opts)
 	face.Parent = head
 
 	-- Floating name tag.
-	local nameList = outfit == "worker" and Config.WorkerNames or Config.InmateNames
+	local nameList = outfit ~= "inmate" and Config.WorkerNames or Config.InmateNames
 	local nameIndex = ((cellIndex - 1) % #nameList) + 1
 	local tag = Instance.new("BillboardGui")
 	tag.Name = "NameTag"
@@ -95,8 +99,9 @@ function InmateService.spawn(baseCF, cellIndex, parent, opts)
 	tagText.TextColor3 = Color3.fromRGB(255, 220, 180)
 	tagText.TextStrokeTransparency = 0.4
 	tagText.Text = nameList[nameIndex]
-	if outfit == "worker" then
-		tagText.TextColor3 = Color3.fromRGB(255, 220, 120)
+	model:SetAttribute("NpcName", nameList[nameIndex])
+	if look then
+		tagText.TextColor3 = look.tag
 	end
 	tagText.Parent = tag
 	tag.Parent = head

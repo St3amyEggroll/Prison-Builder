@@ -61,16 +61,17 @@ The economy returns, plus PA's construction feel — and pathfinding, pulled for
 - [x] Objectives system removed per owner
 - [x] **PA-style HUD** (per the owner's screenshot): segmented top bar (DAY / cash with ±$ blips / crew / prisoners, amber when arrivals queue), shared prison clock top-right (10-min days, day counter saves), grayed-out emergency buttons bottom-right awaiting Phase 5. Left to-do panel intentionally empty; speed controls intentionally omitted (multiplayer time is shared)
 
-## Phase 4 — Prisoner life: needs, regime & staff 👮
+## ✅ Phase 4 — Prisoner life: needs, regime & staff 👮 *(shipped)*
 
-The sim under the hood. Unlocks the Staff tab.
+The sim under the hood. Staff tab now live.
 
 - [x] ~~Real pathfinding~~ — shipped early in Phase 3
-- [ ] Needs meters: Food, Sleep, Hygiene, Recreation, Safety
-- [ ] Regime schedule: hour-by-hour day (sleep → eat → yard → lockup), prisoners follow it
-- [ ] The food chain: Kitchen room + Cook staff → meals in the Canteen
-- [ ] Staff with daily wages: Guards, Cooks, Janitors
-- [ ] Soft unrest when needs are ignored — recoverable, never game-over
+- [x] **Needs**: Food, Sleep, Hygiene, Recreation, Safety decay over time; a mood face (😴🍽️🚿…) floats over prisoners whose worst need is low
+- [x] **Regime schedule**: the day runs on the prison clock (Sleep → Eat → Yard → Eat → FreeTime → Eat → Sleep); prisoners walk to bed / canteen / yard / shower on cue, shown top-right by the clock
+- [x] **Food chain**: food only recovers in a ✓-ready Canteen when there's also a ✓-ready Kitchen AND a hired Cook
+- [x] **Staff tab (👮)**: hire/fire Guards, Cooks, Janitors; wages charge every 30s; can't pay → someone quits (⚠ UNPAID warning). Guards give Safety by ratio (1 per 4 prisoners); Janitors slow hygiene decay
+- [x] **Unrest**: rises when needs are neglected, and cuts grant income (100% unrest ≈ half pay) — recoverable, never a game-over. Fuse for Phase 5's riots/escapes
+- [ ] Owner playtest: build a Kitchen + Canteen, hire a Cook and a Guard, watch prisoners walk their schedule and unrest fall — **← your move!**
 
 ## Phase 5 — Security & escapes ❤ *(the heart)*
 

@@ -66,6 +66,58 @@ Config.BuildablesFolderName = "Buildables"
 -- Set attribute "NoPlaceholders" = true on your Buildables folder once
 -- you have your own assets and want Claude's placeholder models gone.
 
+-- Regime (the prison's daily schedule) -----------------------------------
+
+-- In-game hours (one day = Config.DayLength real seconds). Prisoners
+-- follow this: walking to bed, the canteen, the yard...
+Config.Regime = {
+	{ from = 0, to = 7, activity = "Sleep" },
+	{ from = 7, to = 9, activity = "Eat" },
+	{ from = 9, to = 12, activity = "Yard" },
+	{ from = 12, to = 13, activity = "Eat" },
+	{ from = 13, to = 17, activity = "FreeTime" },
+	{ from = 17, to = 19, activity = "Eat" },
+	{ from = 19, to = 24, activity = "Sleep" },
+}
+
+function Config.activityAt(hour)
+	for _, slot in ipairs(Config.Regime) do
+		if hour >= slot.from and hour < slot.to then
+			return slot.activity
+		end
+	end
+	return "FreeTime"
+end
+
+-- Needs -------------------------------------------------------------------
+
+-- 100 = satisfied, 0 = desperate. Decay is per real second; regen only
+-- happens in the right place at the right time (canteen during Eat, bed
+-- during Sleep, shower/yard during free time...).
+Config.NeedDecay = { food = 0.11, sleep = 0.083, hygiene = 0.083, recreation = 0.11 }
+Config.NeedRegen = { food = 1.2, sleep = 0.6, hygiene = 1.5, recreation = 0.8 }
+Config.SafetyRegen = 0.5 -- with enough guards...
+Config.SafetyDecay = 0.15 -- ...without
+Config.GuardsPerPrisoners = 4 -- 1 guard covers 4 prisoners
+Config.NeedTick = 3 -- seconds between behavior/needs updates
+
+-- Unrest: rises while needs sit below 30, falls when they're met.
+-- High unrest cuts grant income (and feeds Phase 5's riots/escapes).
+Config.UnrestRise = 0.35
+Config.UnrestFall = 0.2
+
+-- Staff -------------------------------------------------------------------
+
+-- Hiring is free; wages charge continuously (per WageInterval slice of a
+-- day). Can't pay? Someone quits — PA rules.
+Config.StaffTypes = {
+	{ id = "Guard", icon = "👮", wage = 150, outfit = "guard" },
+	{ id = "Cook", icon = "🍳", wage = 100, outfit = "cook" },
+	{ id = "Janitor", icon = "🧹", wage = 80, outfit = "janitor" },
+}
+Config.WageInterval = 30
+Config.MaxStaffPerType = 10
+
 -- Toolbar categories -----------------------------------------------------
 
 -- The Prison Architect-style bottom bar. Assets declare theirs with a
@@ -80,7 +132,6 @@ Config.CategoryIcons = {
 
 -- Shown grayed-out like PA's locked tabs — real features in later phases.
 Config.ComingSoon = {
-	{ icon = "👮", name = "Staff", note = "Staff arrive in Phase 4!" },
 	{ icon = "💡", name = "Utilities", note = "Utilities — later, maybe. Pipes on a phone is a big ask 😄" },
 }
 

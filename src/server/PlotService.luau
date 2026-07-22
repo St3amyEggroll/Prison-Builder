@@ -22,6 +22,8 @@ local EconomyService = require(script.Parent.EconomyService)
 local PlacementService = require(script.Parent.PlacementService)
 local RoomService = require(script.Parent.RoomService)
 local IntakeService = require(script.Parent.IntakeService)
+local StaffService = require(script.Parent.StaffService)
+local NeedsService = require(script.Parent.NeedsService)
 local ConstructionService = require(script.Parent.ConstructionService)
 
 local PlotService = {}
@@ -270,12 +272,15 @@ local function assignZone(player)
 	RoomService.assignZone(player, zone, data.rooms)
 	ConstructionService.assignPlayer(player, zone)
 	IntakeService.assignPlayer(player, zone, data.intake)
+	StaffService.assignPlayer(player, zone, data.staff)
+	NeedsService.assignPlayer(player, zone)
 	SaveService.attachSource(player, "layout", PlacementService.snapshotLayout)
 	SaveService.attachSource(player, "rooms", RoomService.snapshotRooms)
 	SaveService.attachSource(player, "intake", IntakeService.snapshotIntake)
 	SaveService.attachSource(player, "land", function()
 		return zone.purchasedList
 	end)
+	SaveService.attachSource(player, "staff", StaffService.snapshotStaff)
 
 	-- Tell this player's client which zone is theirs (the build UI needs
 	-- it for grid math and aiming).
@@ -303,6 +308,8 @@ local function assignZone(player)
 end
 
 local function releaseZone(player)
+	NeedsService.releasePlayer(player)
+	StaffService.releasePlayer(player)
 	IntakeService.releasePlayer(player)
 	ConstructionService.releasePlayer(player)
 	RoomService.releasePlayer(player)

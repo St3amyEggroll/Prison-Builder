@@ -1,23 +1,23 @@
 -- BuildMode: the whole building experience on the player's screen,
--- arranged like Prison Architect's bottom toolbar:
+-- arranged 1:1 like Prison Architect:
 --
---   [🏗️ Foundations] [🧱 Walls & Doors] [🟫 Flooring] [🎨 Rooms] [🪑 Objects]
---   [✋ Move] [🗑️ Bulldoze] [↩ Undo] [👮] [💡]
+--   * bottom-left: the PA toolbar (see PAToolbar) — square blueprint
+--     tabs: Build/Walk, Foundations, Walls & Doors, Flooring, Rooms,
+--     Objects, Staff, then PA's future tabs rendered dark (they light up
+--     as phases ship), then Move and Bulldoze.
+--   * clicking a tab opens a PA-style menu above the strip: rows of
+--     items with icons and prices. Picking one arms the tool. Assets
+--     pick their tab with a "Category" attribute — a name the toolbar
+--     has never seen becomes a new tab automatically.
 --
--- Category buttons open an item panel above the bar (3D thumbnails for
--- assets, color chips for rooms). Grayed-out buttons are future phases,
--- just like PA's locked tabs. Assets pick their button with a "Category"
--- attribute — a name the toolbar has never seen becomes a new button
--- automatically.
---
---   🔨 Build (or B)  ->  build mode: top-down camera + the toolbar
+--   Build tab (or B)  ->  build view: top-down camera + the tool tabs
 --   Foundations       ->  drag a rectangle: walls around it, floor inside
---   Objects           ->  ghost preview snaps to the grid; click places;
---                         1-square assets PRESS-DRAG into whole lines
+--   Walls / Flooring  ->  drag whole lines / fill rectangles
 --   Rooms             ->  pick the type FIRST, then drag a rectangle
---   ✋ Move           ->  pick an object up and re-place it
---   ↩ / Ctrl+Z       ->  undo placements and demolishes
---   ↻ / R             ->  rotate 90°   ·   🗑️ Bulldoze -> click to demolish
+--   Objects           ->  ghost preview snaps to the grid; click places
+--   Move              ->  pick an object up and re-place it
+--   Ctrl+Z            ->  undo placements and demolishes
+--   R                 ->  rotate 90°   ·   Bulldoze -> click / drag-clear
 --
 -- The server re-validates everything — this file is just the friendly face.
 
@@ -32,6 +32,8 @@ local GridMath = require(ReplicatedStorage.Shared:WaitForChild("GridMath"))
 local AssetCatalog = require(ReplicatedStorage.Shared:WaitForChild("AssetCatalog"))
 local BuildCamera = require(script.Parent.BuildCamera)
 local UIKit = require(script.Parent.UIKit)
+local PAIcons = require(script.Parent.PAIcons)
+local PAToolbar = require(script.Parent.PAToolbar)
 
 local BuildMode = {}
 
@@ -39,9 +41,6 @@ local GRID = Config.GridSize
 local GREEN = Color3.fromRGB(80, 255, 120)
 local RED = Color3.fromRGB(255, 80, 80)
 local ORANGE = Color3.fromRGB(255, 170, 60) -- valid spot, can't afford it
-local PANEL_BG = Color3.fromRGB(20, 24, 20)
-local BUTTON_BG = Color3.fromRGB(45, 52, 45)
-local SELECTED_BG = Color3.fromRGB(60, 110, 60)
 
 function BuildMode.start()
 	local player = Players.LocalPlayer
@@ -73,25 +72,17 @@ function BuildMode.start()
 	local buildablesFolder = ReplicatedStorage:WaitForChild(Config.BuildablesFolderName)
 	local catalogByName, catalogOrdered = AssetCatalog.load(buildablesFolder)
 
-	-- Which categories exist? Start from the standard order, then append
-	-- any new names the map-maker invented on their own assets.
+	-- Which categories exist? The standard PA tab row ALWAYS shows (an
+	-- empty one just says so in its menu); any new names the map-maker
+	-- invented on their own assets are appended after it.
 	local categories = {}
-	local categorySeen = {}
 	for _, name in ipairs(Config.AssetCategories) do
-		categorySeen[name] = false
-	end
-	for _, asset in ipairs(catalogOrdered) do
-		categorySeen[asset.category] = true
-	end
-	for _, name in ipairs(Config.AssetCategories) do
-		if categorySeen[name] then
-			table.insert(categories, name)
-		end
+		table.insert(categories, name)
 	end
 	local extras = {}
-	for name, present in pairs(categorySeen) do
-		if present and not table.find(Config.AssetCategories, name) then
-			table.insert(extras, name)
+	for _, asset in ipairs(catalogOrdered) do
+		if not table.find(categories, asset.category) and not table.find(extras, asset.category) then
+			table.insert(extras, asset.category)
 		end
 	end
 	table.sort(extras)
@@ -481,99 +472,37 @@ function BuildMode.start()
 		end
 	end
 
-	-- UI: build toggle, PA-style bottom toolbar, item panel ----------------
+	-- UI: PAToolbar owns the strip and menus; this gui holds the floating
+	-- extras — the status line, the rotate button, the hover highlight.
 
 	local gui = Instance.new("ScreenGui")
 	gui.Name = "LockdownBuild"
 	gui.ResetOnSpawn = false
 
-	-- The Build button lives in the shared dock; created after setMode
-	-- exists (below) so its callback can reference it.
-	local toggle
-
-	-- The bottom bar (visible whenever build mode is open).
-	local toolbar = Instance.new("Frame")
-	toolbar.AnchorPoint = Vector2.new(0.5, 1)
-	toolbar.Position = UDim2.new(0.5, 0, 1, -10)
-	toolbar.AutomaticSize = Enum.AutomaticSize.X
-	toolbar.Size = UDim2.new(0, 0, 0, 66)
-	toolbar.BackgroundColor3 = PANEL_BG
-	toolbar.BackgroundTransparency = 0.15
-	toolbar.Visible = false
-	local toolbarCorner = Instance.new("UICorner")
-	toolbarCorner.CornerRadius = UDim.new(0, 12)
-	toolbarCorner.Parent = toolbar
-	local toolbarPad = Instance.new("UIPadding")
-	toolbarPad.PaddingLeft = UDim.new(0, 6)
-	toolbarPad.PaddingRight = UDim.new(0, 6)
-	toolbarPad.PaddingTop = UDim.new(0, 6)
-	toolbarPad.PaddingBottom = UDim.new(0, 6)
-	toolbarPad.Parent = toolbar
-	local toolbarLayout = Instance.new("UIListLayout")
-	toolbarLayout.FillDirection = Enum.FillDirection.Horizontal
-	toolbarLayout.Padding = UDim.new(0, 6)
-	toolbarLayout.SortOrder = Enum.SortOrder.LayoutOrder
-	toolbarLayout.VerticalAlignment = Enum.VerticalAlignment.Center
-	toolbarLayout.Parent = toolbar
-	toolbar.Parent = gui
-
-	-- A PA-style toolbar button: big icon on top, small label under it.
-	local toolbarOrder = 0
-	local function toolbarButton(icon, name, enabled)
-		toolbarOrder += 1
-		local button = Instance.new("TextButton")
-		button.LayoutOrder = toolbarOrder
-		button.Size = UDim2.new(0, 74, 0, 54)
-		button.BackgroundColor3 = BUTTON_BG
-		button.BackgroundTransparency = enabled and 0 or 0.5
-		button.Text = ""
-		local corner = Instance.new("UICorner")
-		corner.CornerRadius = UDim.new(0, 10)
-		corner.Parent = button
-
-		local iconLabel = Instance.new("TextLabel")
-		iconLabel.Size = UDim2.new(1, 0, 0, 30)
-		iconLabel.Position = UDim2.new(0, 0, 0, 2)
-		iconLabel.BackgroundTransparency = 1
-		iconLabel.Font = Enum.Font.GothamBold
-		iconLabel.TextSize = 22
-		iconLabel.TextTransparency = enabled and 0 or 0.5
-		iconLabel.Text = icon
-		iconLabel.Parent = button
-
-		local nameLabel = Instance.new("TextLabel")
-		nameLabel.AnchorPoint = Vector2.new(0, 1)
-		nameLabel.Position = UDim2.new(0, 2, 1, -3)
-		nameLabel.Size = UDim2.new(1, -4, 0, 16)
-		nameLabel.BackgroundTransparency = 1
-		nameLabel.Font = Enum.Font.GothamBold
-		nameLabel.TextScaled = true
-		nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-		nameLabel.TextTransparency = enabled and 0 or 0.55
-		nameLabel.Text = name
-		nameLabel.Parent = button
-
-		button.Parent = toolbar
-		return button
+	-- A row's little 3D thumbnail (the menu "icon" — our stand-in art).
+	local function assetIcon(slot, asset)
+		local viewport = Instance.new("ViewportFrame")
+		viewport.Size = UDim2.new(1, 0, 1, 0)
+		viewport.BackgroundTransparency = 1
+		local camera = Instance.new("Camera")
+		camera.Parent = viewport
+		viewport.CurrentCamera = camera
+		local preview = asset.model:Clone()
+		preview.Parent = viewport
+		local boxCF, boxSize = preview:GetBoundingBox()
+		local distance = boxSize.Magnitude * 1.1 + 2
+		camera.CFrame = CFrame.lookAt(
+			boxCF.Position + Vector3.new(distance * 0.6, distance * 0.55, distance * 0.6),
+			boxCF.Position
+		)
+		viewport.Parent = slot
 	end
 
-	-- The item panel that opens above the toolbar.
-	local panel = Instance.new("Frame")
-	panel.AnchorPoint = Vector2.new(0.5, 1)
-	panel.Position = UDim2.new(0.5, 0, 1, -82)
-	panel.Size = UDim2.new(0.94, 0, 0, 150)
-	panel.BackgroundColor3 = PANEL_BG
-	panel.BackgroundTransparency = 0.15
-	panel.Visible = false
-	local panelCorner = Instance.new("UICorner")
-	panelCorner.CornerRadius = UDim.new(0, 14)
-	panelCorner.Parent = panel
-	panel.Parent = gui
-
+	-- The hint line, sitting just above the bottom of the screen.
 	local status = Instance.new("TextLabel")
 	status.AnchorPoint = Vector2.new(0.5, 1)
-	status.Position = UDim2.new(0.5, 0, 1, -238)
-	status.Size = UDim2.new(0.9, 0, 0, 24)
+	status.Position = UDim2.new(0.5, 0, 1, -70)
+	status.Size = UDim2.new(0, 560, 0, 20)
 	status.BackgroundTransparency = 1
 	status.Font = Enum.Font.GothamBold
 	status.TextScaled = true
@@ -582,40 +511,22 @@ function BuildMode.start()
 	status.Text = ""
 	status.Parent = gui
 
+	-- Rotate: R does it on PC; this button does it on phones. It floats
+	-- just clear of the toolbar menus (they're 272 wide).
 	local rotateButton = Instance.new("TextButton")
-	rotateButton.Size = UDim2.new(0, 44, 0, 44)
-	rotateButton.Position = UDim2.new(0, 8, 0.5, -22)
-	rotateButton.BackgroundColor3 = BUTTON_BG
+	rotateButton.AnchorPoint = Vector2.new(0, 1)
+	rotateButton.Position = UDim2.new(0, 300, 1, -70)
+	rotateButton.Size = UDim2.new(0, 40, 0, 40)
+	rotateButton.BackgroundColor3 = UIKit.BTN
+	rotateButton.BorderSizePixel = 0
+	rotateButton.AutoButtonColor = false
 	rotateButton.Font = Enum.Font.GothamBold
 	rotateButton.TextSize = 22
-	rotateButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+	rotateButton.TextColor3 = UIKit.ICON
 	rotateButton.Text = "↻"
-	local rotateCorner = Instance.new("UICorner")
-	rotateCorner.CornerRadius = UDim.new(0, 10)
-	rotateCorner.Parent = rotateButton
-	rotateButton.Parent = panel
-
-	local function makeList()
-		local list = Instance.new("ScrollingFrame")
-		list.Position = UDim2.new(0, 60, 0, 8)
-		list.Size = UDim2.new(1, -68, 1, -16)
-		list.BackgroundTransparency = 1
-		list.ScrollBarThickness = 6
-		list.ScrollingDirection = Enum.ScrollingDirection.X
-		list.AutomaticCanvasSize = Enum.AutomaticSize.X
-		list.CanvasSize = UDim2.new(0, 0, 0, 0)
-		local layout = Instance.new("UIListLayout")
-		layout.FillDirection = Enum.FillDirection.Horizontal
-		layout.Padding = UDim.new(0, 8)
-		layout.SortOrder = Enum.SortOrder.LayoutOrder
-		layout.Parent = list
-		list.Parent = panel
-		return list
-	end
-
-	local objectsList = makeList()
-	local roomsList = makeList()
-	roomsList.Visible = false
+	rotateButton.Visible = false
+	UIKit.stroke(rotateButton, UIKit.EDGE, 1, 0.35)
+	rotateButton.Parent = gui
 
 	-- The status line has a PERSISTENT hint (what the current tool does)
 	-- and temporary flashes (results/errors) that revert to it.
@@ -640,157 +551,125 @@ function BuildMode.start()
 		end)
 	end
 
-	-- Item tiles ----------------------------------------------------------
+	-- Menus ---------------------------------------------------------------
 
-	local assetButtons = {} -- asset name -> { button, category }
-	local roomButtons = {}
-	local categoryButtons = {} -- category name -> toolbar button
-	local roomsButton, deleteButton, foundationButton, moveButton
+	local assetRows = {} -- asset name -> PA menu row handle
+	local roomRows = {} -- room id -> row handle
+	local foundationRow = nil
+	local menuHandles = {} -- tab id -> PAToolbar menu handle
+	local TAB_IDS = {} -- category name -> tab id
+
+	-- Which toolbar tab matches the current tool?
+	local function tabForMode()
+		if mode == "objects" then
+			return TAB_IDS[currentCategory]
+		elseif mode == "rooms" then
+			return "rooms"
+		elseif mode == "foundation" then
+			return "foundations"
+		elseif mode == "move" then
+			return "move"
+		elseif mode == "delete" then
+			return "bulldoze"
+		end
+		return nil
+	end
 
 	local function refreshSelectionLook()
-		for name, entry in pairs(assetButtons) do
-			entry.button.BackgroundColor3 = (selected and selected.name == name) and SELECTED_BG or BUTTON_BG
+		for name, handle in pairs(assetRows) do
+			handle.setSelected(selected ~= nil and selected.name == name)
 		end
-		for id, button in pairs(roomButtons) do
-			local stroke = button:FindFirstChildOfClass("UIStroke")
-			if stroke then
-				stroke.Transparency = (selectedRoom == id) and 0 or 1
+		for id, handle in pairs(roomRows) do
+			handle.setSelected(selectedRoom == id)
+		end
+		if foundationRow then
+			foundationRow.setSelected(mode == "foundation")
+		end
+		PAToolbar.setActiveTool(tabForMode())
+		PAToolbar.setPressed("walk", mode ~= "off")
+		rotateButton.Visible = mode == "objects" and selected ~= nil
+	end
+
+	local setMode, selectAsset, selectRoom, tryMove, doUndo
+
+	-- One PA menu per buildable category (rows: icon · name · price).
+	local function buildCategoryMenu(categoryName, tabId)
+		local menu = PAToolbar.menu(tabId, categoryName)
+		local shown = 0
+		for order, asset in ipairs(catalogOrdered) do
+			if asset.category == categoryName then
+				shown += 1
+				local handle = PAToolbar.row(menu.list, {
+					order = order,
+					name = asset.name,
+					right = Format.money(asset.price),
+					onClick = function()
+						selectAsset(asset)
+					end,
+				})
+				assetIcon(handle.icon, asset)
+				assetRows[asset.name] = handle
 			end
 		end
-		for name, button in pairs(categoryButtons) do
-			button.BackgroundColor3 = (mode == "objects" and currentCategory == name) and SELECTED_BG or BUTTON_BG
+		if shown == 0 then
+			local empty = PAToolbar.row(menu.list, { order = 1, name = "(add Models to Buildables)", right = "" })
+			empty.name.TextColor3 = UIKit.DIM
 		end
-		roomsButton.BackgroundColor3 = (mode == "rooms") and SELECTED_BG or BUTTON_BG
-		foundationButton.BackgroundColor3 = (mode == "foundation") and SELECTED_BG or BUTTON_BG
-		moveButton.BackgroundColor3 = (mode == "move") and Color3.fromRGB(120, 110, 40) or BUTTON_BG
-		deleteButton.BackgroundColor3 = (mode == "delete") and Color3.fromRGB(140, 50, 50) or BUTTON_BG
+		menu.fit()
+		menuHandles[tabId] = menu
 	end
 
-	local function refreshTileVisibility()
-		for _, entry in pairs(assetButtons) do
-			entry.button.Visible = entry.category == currentCategory
-		end
+	for i, name in ipairs(categories) do
+		local tabId = "cat" .. i
+		TAB_IDS[name] = tabId
+		buildCategoryMenu(name, tabId)
 	end
 
-	-- Size the item panel to its contents — a three-tile category gets a
-	-- compact panel, not a screen-wide empty bar.
-	local function refreshPanelSize()
-		local count
-		if mode == "rooms" then
-			count = #Config.RoomTypes + 1
+	-- The Rooms menu: "Remove Room" first (PA's None), then every type.
+	local roomsMenu = PAToolbar.menu("rooms", "Rooms")
+	menuHandles.rooms = roomsMenu
+	local function roomRow(id, name, color, order)
+		local handle = PAToolbar.row(roomsMenu.list, {
+			order = order,
+			name = name,
+			right = "",
+			onClick = function()
+				selectRoom(id)
+			end,
+		})
+		if color then
+			local swatch = Instance.new("Frame")
+			swatch.AnchorPoint = Vector2.new(0.5, 0.5)
+			swatch.Position = UDim2.new(0.5, 0, 0.5, 0)
+			swatch.Size = UDim2.new(0, 18, 0, 18)
+			swatch.BackgroundColor3 = color
+			swatch.BorderSizePixel = 0
+			UIKit.stroke(swatch, UIKit.EDGE_DIM, 1, 0)
+			swatch.Parent = handle.icon
 		else
-			count = 0
-			for _, asset in ipairs(catalogOrdered) do
-				if asset.category == currentCategory then
-					count += 1
-				end
-			end
+			PAIcons.draw(handle.icon, "bulldoze", UIKit.DIM, 4)
 		end
-		local width = math.clamp(68 + count * 112 + 16, 250, 940)
-		panel.Size = UDim2.new(0, width, 0, 150)
+		roomRows[id] = handle
 	end
-
-	local selectAsset, selectRoom, tryMove, doUndo
-
-	for order, asset in ipairs(catalogOrdered) do
-		local tile = Instance.new("TextButton")
-		tile.LayoutOrder = order
-		tile.Size = UDim2.new(0, 104, 1, 0)
-		tile.BackgroundColor3 = BUTTON_BG
-		tile.Text = ""
-		local tileCorner = Instance.new("UICorner")
-		tileCorner.CornerRadius = UDim.new(0, 10)
-		tileCorner.Parent = tile
-
-		local viewport = Instance.new("ViewportFrame")
-		viewport.Size = UDim2.new(1, -8, 1, -30)
-		viewport.Position = UDim2.new(0, 4, 0, 4)
-		viewport.BackgroundTransparency = 1
-		local camera = Instance.new("Camera")
-		camera.Parent = viewport
-		viewport.CurrentCamera = camera
-		local preview = asset.model:Clone()
-		preview.Parent = viewport
-		local boxCF, boxSize = preview:GetBoundingBox()
-		local distance = boxSize.Magnitude * 1.1 + 2
-		camera.CFrame = CFrame.lookAt(
-			boxCF.Position + Vector3.new(distance * 0.6, distance * 0.55, distance * 0.6),
-			boxCF.Position
-		)
-		viewport.Parent = tile
-
-		local label = Instance.new("TextLabel")
-		label.AnchorPoint = Vector2.new(0, 1)
-		label.Position = UDim2.new(0, 4, 1, -4)
-		label.Size = UDim2.new(1, -8, 0, 20)
-		label.BackgroundTransparency = 1
-		label.Font = Enum.Font.GothamBold
-		label.TextScaled = true
-		label.TextColor3 = Color3.fromRGB(255, 255, 255)
-		label.Text = asset.name
-		label.Parent = tile
-
-		local priceTag = Instance.new("TextLabel")
-		priceTag.Position = UDim2.new(0, 4, 0, 4)
-		priceTag.Size = UDim2.new(0, 52, 0, 15)
-		priceTag.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-		priceTag.BackgroundTransparency = 0.4
-		priceTag.Font = Enum.Font.GothamBold
-		priceTag.TextScaled = true
-		priceTag.TextColor3 = Color3.fromRGB(150, 255, 160)
-		priceTag.Text = Format.money(asset.price)
-		local priceCorner = Instance.new("UICorner")
-		priceCorner.CornerRadius = UDim.new(0, 5)
-		priceCorner.Parent = priceTag
-		priceTag.Parent = tile
-
-		tile.Activated:Connect(function()
-			selectAsset(asset)
-		end)
-		tile.Parent = objectsList
-		assetButtons[asset.name] = { button = tile, category = asset.category }
-	end
-
-	local function roomTile(id, name, color, order)
-		local tile = Instance.new("TextButton")
-		tile.LayoutOrder = order
-		tile.Size = UDim2.new(0, 104, 1, 0)
-		tile.BackgroundColor3 = color
-		tile.Text = ""
-		local tileCorner = Instance.new("UICorner")
-		tileCorner.CornerRadius = UDim.new(0, 10)
-		tileCorner.Parent = tile
-		local stroke = Instance.new("UIStroke")
-		stroke.Thickness = 3
-		stroke.Color = Color3.fromRGB(255, 255, 255)
-		stroke.Transparency = 1
-		stroke.Parent = tile
-
-		local label = Instance.new("TextLabel")
-		label.AnchorPoint = Vector2.new(0, 1)
-		label.Position = UDim2.new(0, 4, 1, -4)
-		label.Size = UDim2.new(1, -8, 0, 22)
-		label.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-		label.BackgroundTransparency = 0.35
-		label.Font = Enum.Font.GothamBold
-		label.TextScaled = true
-		label.TextColor3 = Color3.fromRGB(255, 255, 255)
-		label.Text = name
-		local labelCorner = Instance.new("UICorner")
-		labelCorner.CornerRadius = UDim.new(0, 6)
-		labelCorner.Parent = label
-		label.Parent = tile
-
-		tile.Activated:Connect(function()
-			selectRoom(id)
-		end)
-		tile.Parent = roomsList
-		roomButtons[id] = tile
-	end
+	roomRow(0, "Remove Room", nil, 1)
 	for id, roomType in ipairs(Config.RoomTypes) do
-		roomTile(id, roomType.name, roomType.color, id)
+		roomRow(id, roomType.name, roomType.color, id + 1)
 	end
-	roomTile(0, "✖ Eraser", Color3.fromRGB(80, 80, 85), #Config.RoomTypes + 1)
+	roomsMenu.fit()
+
+	-- The Foundations menu: one entry, like PA's foundation list.
+	local foundationsMenu = PAToolbar.menu("foundations", "Foundations")
+	menuHandles.foundations = foundationsMenu
+	foundationRow = PAToolbar.row(foundationsMenu.list, {
+		order = 1,
+		name = "Foundation",
+		right = "",
+		onClick = function()
+			setMode("foundation")
+		end,
+	})
+	PAIcons.draw(foundationRow.icon, "foundations", UIKit.ICON, 4)
+	foundationsMenu.fit()
 
 	-- Mode switching -----------------------------------------------------
 
@@ -800,7 +679,7 @@ function BuildMode.start()
 		end
 	end
 
-	local function setMode(newMode)
+	setMode = function(newMode)
 		local wasOff = mode == "off"
 		mode = newMode
 		pressing = false
@@ -815,24 +694,12 @@ function BuildMode.start()
 		if mode ~= "rooms" then
 			selectedRoom = nil
 		end
-		toolbar.Visible = mode ~= "off"
-		panel.Visible = mode == "objects" or mode == "rooms"
-		objectsList.Visible = mode == "objects"
-		roomsList.Visible = mode == "rooms"
-		rotateButton.Visible = mode == "objects"
-		if toggle then
-			UIKit.setActive(toggle, mode ~= "off")
-			local toggleIcon = toggle:FindFirstChild("Icon")
-			if toggleIcon then
-				toggleIcon.Text = mode == "off" and "🔨" or "✖"
-			end
-		end
-		if mode ~= "off" then
-			UIKit.closeAll() -- entering build mode shuts the intake/staff panels
+		if mode == "off" or wasOff then
+			-- Crossing the build/walk boundary closes every open menu
+			-- (tab clicks re-open the one they want right after).
+			UIKit.closeAll()
 		end
 		refreshSelectionLook()
-		refreshTileVisibility()
-		refreshPanelSize()
 
 		if mode ~= "off" then
 			showGrid()
@@ -842,9 +709,9 @@ function BuildMode.start()
 		setNameTagsHidden(mode ~= "off")
 
 		if mode == "objects" and not selected then
-			setStatusDefault("Pick an item from the panel below")
+			setStatusDefault("Pick a tool from the toolbar, or an item from its menu")
 		elseif mode == "rooms" and selectedRoom == nil then
-			setStatusDefault("Pick a room type below, then drag a rectangle")
+			setStatusDefault("Pick a room type from the menu, then drag a rectangle")
 		elseif mode == "foundation" then
 			setStatusDefault("Drag a rectangle — walls around the edge, floor inside. Add a door after!")
 		elseif mode == "move" then
@@ -876,9 +743,17 @@ function BuildMode.start()
 		end
 	end
 
-	local function selectCategory(name)
-		currentCategory = name
-		setMode("objects")
+	-- Clicking a category tab arms that category and opens its menu.
+	-- Clicking it again just toggles the menu (the tool stays armed).
+	local function activateCategory(name)
+		local tabId = TAB_IDS[name]
+		if mode == "objects" and currentCategory == name then
+			PAToolbar.toggleMenu(tabId)
+		else
+			currentCategory = name
+			setMode("objects")
+			PAToolbar.openMenu(tabId)
+		end
 	end
 
 	selectAsset = function(asset)
@@ -920,59 +795,100 @@ function BuildMode.start()
 		end
 	end
 
-	-- Build the toolbar buttons (PA order: foundations, build stuff,
-	-- rooms, objects, move/bulldoze/undo, then the locked future tabs).
-	foundationButton = toolbarButton("🏗️", "Foundations", true)
-	foundationButton.Activated:Connect(function()
-		setMode("foundation")
-	end)
+	-- The toolbar tabs — PA's full row, left to right: Build/Walk toggle,
+	-- Foundations, Walls & Doors, Flooring, Rooms, Objects (then any
+	-- custom categories), Staff (order 12, added by StaffPanel), the
+	-- locked future tabs rendered dark, and finally Move + Bulldoze.
+	PAToolbar.addTab({
+		id = "walk",
+		icon = "build",
+		label = "Build view (B)",
+		order = 1,
+		onClick = function()
+			setMode(mode == "off" and "objects" or "off")
+		end,
+	})
+	PAToolbar.addTab({
+		id = "foundations",
+		icon = "foundations",
+		label = "Foundations",
+		order = 2,
+		onClick = function()
+			if mode == "foundation" then
+				PAToolbar.toggleMenu("foundations")
+			else
+				setMode("foundation")
+				PAToolbar.openMenu("foundations")
+			end
+		end,
+	})
+	local CATEGORY_TAB = {
+		["Walls & Doors"] = { order = 3, icon = "walls" },
+		["Flooring"] = { order = 4, icon = "flooring" },
+		["Objects"] = { order = 6, icon = "objects" },
+	}
+	local extraOrder = 6
 	for _, name in ipairs(categories) do
-		if name ~= "Objects" then
-			local button = toolbarButton(Config.CategoryIcons[name] or "📦", name, true)
-			button.Activated:Connect(function()
-				selectCategory(name)
-			end)
-			categoryButtons[name] = button
+		local look = CATEGORY_TAB[name]
+		if not look then
+			extraOrder += 1
+			look = { order = extraOrder, icon = "box" }
 		end
+		PAToolbar.addTab({
+			id = TAB_IDS[name],
+			icon = look.icon,
+			label = name,
+			order = look.order,
+			onClick = function()
+				activateCategory(name)
+			end,
+		})
 	end
-	roomsButton = toolbarButton("🎨", "Rooms", true)
-	roomsButton.Activated:Connect(function()
-		setMode("rooms")
-	end)
-	if table.find(categories, "Objects") then
-		local button = toolbarButton(Config.CategoryIcons.Objects, "Objects", true)
-		button.Activated:Connect(function()
-			selectCategory("Objects")
-		end)
-		categoryButtons.Objects = button
+	PAToolbar.addTab({
+		id = "rooms",
+		icon = "rooms",
+		label = "Rooms",
+		order = 5,
+		onClick = function()
+			if mode == "rooms" then
+				PAToolbar.toggleMenu("rooms")
+			else
+				setMode("rooms")
+				PAToolbar.openMenu("rooms")
+			end
+		end,
+	})
+	for i, future in ipairs(Config.ComingSoon) do
+		PAToolbar.addTab({
+			id = "future" .. i,
+			icon = future.icon,
+			label = future.name,
+			order = 20 + i,
+			enabled = false,
+			onClick = function()
+				flashStatus(future.note, Color3.fromRGB(220, 220, 220))
+			end,
+		})
 	end
-	moveButton = toolbarButton("✋", "Move", true)
-	moveButton.Activated:Connect(function()
-		if mode == "move" then
-			setMode("objects")
-		else
-			setMode("move")
-		end
-	end)
-	deleteButton = toolbarButton("🗑️", "Bulldoze", true)
-	deleteButton.Activated:Connect(function()
-		if mode == "delete" then
-			setMode("objects")
-		else
-			setMode("delete")
-		end
-	end)
-	for _, future in ipairs(Config.ComingSoon) do
-		local button = toolbarButton(future.icon, future.name, false)
-		button.Activated:Connect(function()
-			flashStatus(future.note, Color3.fromRGB(220, 220, 220))
-		end)
-	end
+	PAToolbar.addTab({
+		id = "move",
+		icon = "move",
+		label = "Move",
+		order = 40,
+		onClick = function()
+			setMode(mode == "move" and "objects" or "move")
+		end,
+	})
+	PAToolbar.addTab({
+		id = "bulldoze",
+		icon = "bulldoze",
+		label = "Bulldoze",
+		order = 41,
+		onClick = function()
+			setMode(mode == "delete" and "objects" or "delete")
+		end,
+	})
 
-
-	toggle = UIKit.dockButton(playerGui, 1, "🔨", "Build", function()
-		setMode(mode == "off" and "objects" or "off")
-	end)
 	rotateButton.Activated:Connect(function()
 		rot = (rot + 1) % 4
 	end)
@@ -1292,6 +1208,7 @@ function BuildMode.start()
 				movingFrom = nil
 				selected = nil
 				destroyGhost()
+				refreshSelectionLook()
 				setStatusDefault("Move: click an object to pick it up")
 			elseif mode == "objects" and selected then
 				selected = nil

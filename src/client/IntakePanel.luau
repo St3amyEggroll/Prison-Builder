@@ -1,6 +1,8 @@
--- IntakePanel: the warden's intake report — accept prisoners and toggle
--- auto-intake. Lives in the shared dock (UIKit) so it can't overlap the
--- other menus, and its dock button shows a badge when prisoners queue.
+-- IntakePanel: the warden's intake report — accept prisoners by hand or
+-- flip on auto-intake. It's the popup behind the Prisoners readout in
+-- the bottom-right corner (CashHud wires the click through the client
+-- bootstrap), styled as a PA panel and coordinated by UIKit so it never
+-- overlaps another menu.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -8,6 +10,15 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UIKit = require(script.Parent.UIKit)
 
 local IntakePanel = {}
+
+local panel = nil
+
+-- CashHud's Prisoners row calls this.
+function IntakePanel.toggle()
+	if panel then
+		UIKit.showOnly(panel)
+	end
+end
 
 function IntakePanel.start()
 	local player = Players.LocalPlayer
@@ -19,61 +30,48 @@ function IntakePanel.start()
 	gui.ResetOnSpawn = false
 	gui.DisplayOrder = 6
 
-	local panel = UIKit.card(gui, "IntakePanel")
+	panel = UIKit.panel(gui, "IntakePanel")
 	panel.AnchorPoint = Vector2.new(1, 1)
-	panel.Position = UDim2.new(1, -82, 1, -12)
-	panel.Size = UDim2.new(0, 250, 0, 176)
+	panel.Position = UDim2.new(1, -12, 1, -104)
+	panel.Size = UDim2.new(0, 232, 0, 168)
+	UIKit.titleBar(panel, "Intake")
 	UIKit.registerPanel(panel)
-
-	local title = Instance.new("TextLabel")
-	title.Position = UDim2.new(0, 14, 0, 10)
-	title.Size = UDim2.new(1, -28, 0, 20)
-	title.BackgroundTransparency = 1
-	title.Font = Enum.Font.GothamBlack
-	title.TextScaled = true
-	title.TextXAlignment = Enum.TextXAlignment.Left
-	title.TextColor3 = UIKit.WARN
-	title.Text = "🚔 INTAKE"
-	title.Parent = panel
 
 	local function label(y, color)
 		local l = Instance.new("TextLabel")
-		l.Position = UDim2.new(0, 14, 0, y)
-		l.Size = UDim2.new(1, -28, 0, 20)
+		l.Position = UDim2.new(0, 10, 0, y)
+		l.Size = UDim2.new(1, -20, 0, 18)
 		l.BackgroundTransparency = 1
-		l.Font = Enum.Font.GothamBold
-		l.TextScaled = true
+		l.Font = Enum.Font.GothamMedium
+		l.TextSize = 13
 		l.TextXAlignment = Enum.TextXAlignment.Left
 		l.TextColor3 = color or UIKit.TEXT
 		l.Parent = panel
 		return l
 	end
-	local housedLabel = label(36)
-	local waitingLabel = label(60)
-	local statusLabel = label(84, UIKit.DIM)
+	local housedLabel = label(32)
+	local waitingLabel = label(52)
+	local statusLabel = label(72, UIKit.DIM)
 
-	local function bigButton(y, color, text)
+	local function paButton(y, text)
 		local b = Instance.new("TextButton")
-		b.Position = UDim2.new(0, 14, 0, y)
-		b.Size = UDim2.new(1, -28, 0, 32)
-		b.BackgroundColor3 = color
+		b.Position = UDim2.new(0, 10, 0, y)
+		b.Size = UDim2.new(1, -20, 0, 26)
+		b.BackgroundColor3 = UIKit.BTN
+		b.BorderSizePixel = 0
 		b.AutoButtonColor = true
 		b.Font = Enum.Font.GothamBold
-		b.TextSize = 16
-		b.TextColor3 = Color3.fromRGB(255, 255, 255)
+		b.TextSize = 13
+		b.TextColor3 = UIKit.TEXT
 		b.Text = text
-		UIKit.corner(b, 10)
+		UIKit.stroke(b, UIKit.EDGE, 1, 0.35)
 		b.Parent = panel
 		return b
 	end
-	local acceptButton = bigButton(108, Color3.fromRGB(52, 120, 66), "➕ Accept prisoner")
-	local autoButton = bigButton(144, UIKit.BG2, "Auto-intake: …")
+	local acceptButton = paButton(96, "Accept Prisoner")
+	local autoButton = paButton(128, "Auto-Intake: …")
 
 	gui.Parent = playerGui
-
-	local dockButton = UIKit.dockButton(playerGui, 2, "🚔", "Intake", function()
-		UIKit.showOnly(panel)
-	end)
 
 	local statusId = 0
 	local function flash(text, color)
@@ -93,12 +91,11 @@ function IntakePanel.start()
 		local capacity = player:GetAttribute("PrisonCapacity") or 0
 		local waiting = player:GetAttribute("PrisonWaiting") or 0
 		local auto = player:GetAttribute("AutoIntake")
-		housedLabel.Text = ("🔒 Housed: %d / %d"):format(housed, capacity)
-		waitingLabel.Text = ("⛓️ At the gate: %d"):format(waiting)
+		housedLabel.Text = ("Housed: %d / %d"):format(housed, capacity)
+		waitingLabel.Text = ("At the gate: %d"):format(waiting)
 		waitingLabel.TextColor3 = waiting > 0 and UIKit.WARN or UIKit.TEXT
-		autoButton.Text = auto and "Auto-intake: ON" or "Auto-intake: OFF"
-		autoButton.BackgroundColor3 = auto and Color3.fromRGB(52, 120, 66) or UIKit.BG2
-		UIKit.setBadge(dockButton, waiting > 0 and tostring(waiting) or nil)
+		autoButton.Text = auto and "Auto-Intake: ON" or "Auto-Intake: OFF"
+		autoButton.BackgroundColor3 = auto and UIKit.BTN_ON or UIKit.BTN
 	end
 	for _, attr in ipairs({ "PrisonHoused", "PrisonCapacity", "PrisonWaiting", "AutoIntake" }) do
 		player:GetAttributeChangedSignal(attr):Connect(refresh)

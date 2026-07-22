@@ -120,19 +120,21 @@ Config.MaxStaffPerType = 10
 
 -- Toolbar categories -----------------------------------------------------
 
--- The Prison Architect-style bottom bar. Assets declare theirs with a
+-- The Prison Architect bottom-left toolbar. Assets declare theirs with a
 -- "Category" attribute (defaults to "Objects"); a category the code has
--- never seen just becomes a new button automatically.
+-- never seen just becomes a new tab automatically.
 Config.AssetCategories = { "Walls & Doors", "Flooring", "Objects" }
-Config.CategoryIcons = {
-	["Walls & Doors"] = "🧱",
-	["Flooring"] = "🟫",
-	["Objects"] = "🪑",
-}
 
--- Shown grayed-out like PA's locked tabs — real features in later phases.
+-- PA's remaining tabs, rendered dark like its locked tools — each one
+-- lights up when its phase ships. icon = a PAIcons drawing name.
 Config.ComingSoon = {
-	{ icon = "💡", name = "Utilities", note = "Utilities — later, maybe. Pipes on a phone is a big ask 😄" },
+	{ icon = "utilities", name = "Utilities", note = "Utilities — pipes & power come in a later phase" },
+	{ icon = "deployment", name = "Deployment", note = "Deployment — guard patrol zones come with Phase 5 (security)" },
+	{ icon = "logistics", name = "Logistics", note = "Logistics — food & supply routing comes in a later phase" },
+	{ icon = "intelligence", name = "Intelligence", note = "Intelligence — informants & contraband come with Phase 5" },
+	{ icon = "quickbuild", name = "Quick Build", note = "Quick Build — one-click premade rooms come in a later phase" },
+	{ icon = "planning", name = "Planning", note = "Planning — sketch layouts for free comes in a later phase" },
+	{ icon = "emergencies", name = "Emergencies", note = "Emergencies — lockdowns & callouts come with Phase 5" },
 }
 
 -- Foundations ------------------------------------------------------------

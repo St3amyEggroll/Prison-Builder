@@ -1,6 +1,7 @@
--- StaffPanel: hire/fire Guards, Cooks, Janitors (PA's Staff tab). Lives in
--- the shared dock (UIKit) alongside Intake, so only one is open at a time
--- and nothing overlaps.
+-- StaffPanel: PA's Staff tab, living in the toolbar like the original.
+-- Its menu lists each staff type as a PA row — click the row to hire
+-- one, the − to let one go. The payroll footer shows the running wage
+-- bill, and the tab grows a red alert dot the moment payroll is missed.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -8,88 +9,100 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
 local Format = require(ReplicatedStorage.Shared:WaitForChild("Format"))
 local UIKit = require(script.Parent.UIKit)
+local PAIcons = require(script.Parent.PAIcons)
+local PAToolbar = require(script.Parent.PAToolbar)
 
 local StaffPanel = {}
 
+-- Icon tints so the three trades read apart at a glance.
+local TINTS = {
+	Guard = Color3.fromRGB(126, 156, 224),
+	Cook = Color3.fromRGB(236, 236, 236),
+	Janitor = Color3.fromRGB(120, 196, 140),
+}
+
 function StaffPanel.start()
 	local player = Players.LocalPlayer
-	local playerGui = player:WaitForChild("PlayerGui")
 	local staffRequest = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("StaffRequest")
 
-	local gui = Instance.new("ScreenGui")
-	gui.Name = "LockdownStaff"
-	gui.ResetOnSpawn = false
-	gui.DisplayOrder = 6
-
-	local rowH = 50
-	local panel = UIKit.card(gui, "StaffPanel")
-	panel.AnchorPoint = Vector2.new(1, 1)
-	panel.Position = UDim2.new(1, -82, 1, -12)
-	panel.Size = UDim2.new(0, 310, 0, 44 + rowH * #Config.StaffTypes)
-	UIKit.registerPanel(panel)
-
-	local wageLabel = Instance.new("TextLabel")
-	wageLabel.Position = UDim2.new(0, 14, 0, 10)
-	wageLabel.Size = UDim2.new(1, -28, 0, 22)
-	wageLabel.BackgroundTransparency = 1
-	wageLabel.Font = Enum.Font.GothamBlack
-	wageLabel.TextScaled = true
-	wageLabel.TextXAlignment = Enum.TextXAlignment.Left
-	wageLabel.TextColor3 = UIKit.WARN
-	wageLabel.Parent = panel
-
-	local countLabels = {}
+	local menu = PAToolbar.menu("staff", "Staff", 260)
+	local rows = {}
 	for i, def in ipairs(Config.StaffTypes) do
-		local y = 40 + (i - 1) * rowH
-		local info = Instance.new("TextLabel")
-		info.Position = UDim2.new(0, 14, 0, y)
-		info.Size = UDim2.new(0, 180, 0, rowH - 8)
-		info.BackgroundTransparency = 1
-		info.Font = Enum.Font.GothamBold
-		info.TextScaled = true
-		info.TextXAlignment = Enum.TextXAlignment.Left
-		info.TextColor3 = UIKit.TEXT
-		info.Parent = panel
-		countLabels[def.id] = info
-
-		local function actionButton(text, color, xoff, action)
-			local b = Instance.new("TextButton")
-			b.AnchorPoint = Vector2.new(1, 0.5)
-			b.Position = UDim2.new(1, xoff, 0, y + (rowH - 8) / 2)
-			b.Size = UDim2.new(0, 40, 0, 34)
-			b.BackgroundColor3 = color
-			b.Font = Enum.Font.GothamBlack
-			b.TextSize = 20
-			b.TextColor3 = Color3.fromRGB(255, 255, 255)
-			b.Text = text
-			UIKit.corner(b, 10)
-			b.Activated:Connect(function()
+		local handle = PAToolbar.row(menu.list, {
+			order = i,
+			name = def.id,
+			right = Format.money(def.wage),
+			onClick = function()
 				pcall(function()
-					return staffRequest:InvokeServer(action, def.id)
+					return staffRequest:InvokeServer("hire", def.id)
 				end)
+			end,
+		})
+		PAIcons.draw(handle.icon, "staff", TINTS[def.id] or UIKit.ICON, 2)
+
+		-- The little − lets one go (the row itself hires).
+		local fire = Instance.new("TextButton")
+		fire.AnchorPoint = Vector2.new(1, 0.5)
+		fire.Position = UDim2.new(1, -80, 0.5, 0)
+		fire.Size = UDim2.new(0, 22, 0, 22)
+		fire.BackgroundColor3 = UIKit.PANEL
+		fire.BorderSizePixel = 0
+		fire.AutoButtonColor = true
+		fire.Font = Enum.Font.GothamBold
+		fire.TextSize = 16
+		fire.TextColor3 = UIKit.BAD
+		fire.Text = "−"
+		UIKit.stroke(fire, UIKit.EDGE_DIM, 1, 0)
+		fire.Activated:Connect(function()
+			pcall(function()
+				return staffRequest:InvokeServer("fire", def.id)
 			end)
-			b.Parent = panel
-		end
-		actionButton("−", Color3.fromRGB(120, 50, 50), -14, "fire")
-		actionButton("+", Color3.fromRGB(52, 120, 66), -60, "hire")
+		end)
+		fire.Parent = handle.button
+		rows[def.id] = handle
 	end
 
-	gui.Parent = playerGui
+	-- Payroll footer under the rows.
+	local payroll = Instance.new("TextLabel")
+	payroll.LayoutOrder = 99
+	payroll.Size = UDim2.new(1, -8, 0, 22)
+	payroll.BackgroundTransparency = 1
+	payroll.Font = Enum.Font.GothamMedium
+	payroll.TextSize = 12
+	payroll.TextXAlignment = Enum.TextXAlignment.Left
+	payroll.TextColor3 = UIKit.DIM
+	payroll.Text = ""
+	local pad = Instance.new("UIPadding")
+	pad.PaddingLeft = UDim.new(0, 8)
+	pad.Parent = payroll
+	payroll.Parent = menu.list
+	menu.fit()
 
-	local dockButton = UIKit.dockButton(playerGui, 3, "👮", "Staff", function()
-		UIKit.showOnly(panel)
+	PAToolbar.addTab({
+		id = "staff",
+		icon = "staff",
+		label = "Staff",
+		order = 12,
+		onClick = function()
+			PAToolbar.toggleMenu("staff")
+		end,
+	})
+	-- Stay lit exactly while the menu shows (however it gets closed).
+	menu.panel:GetPropertyChangedSignal("Visible"):Connect(function()
+		PAToolbar.setPressed("staff", menu.panel.Visible)
 	end)
 
 	local function refresh()
 		local total = player:GetAttribute("StaffWage") or 0
 		local unpaid = player:GetAttribute("StaffUnpaid") == true
-		wageLabel.Text = ("Payroll %s / %ds%s"):format(Format.money(total), Config.WageInterval, unpaid and "  ⚠ UNPAID" or "")
-		wageLabel.TextColor3 = unpaid and UIKit.BAD or UIKit.WARN
+		payroll.Text = ("Payroll %s / %ds%s"):format(
+			Format.money(total), Config.WageInterval, unpaid and " — UNPAID!" or "")
+		payroll.TextColor3 = unpaid and UIKit.BAD or UIKit.DIM
 		for _, def in ipairs(Config.StaffTypes) do
 			local n = player:GetAttribute("Staff_" .. def.id) or 0
-			countLabels[def.id].Text = ("%s %s: %d  (%s ea)"):format(def.icon, def.id, n, Format.money(def.wage))
+			rows[def.id].name.Text = n > 0 and ("%s  ×%d"):format(def.id, n) or def.id
 		end
-		UIKit.setBadge(dockButton, unpaid and "!" or nil)
+		PAToolbar.setAlert("staff", unpaid)
 	end
 	for _, def in ipairs(Config.StaffTypes) do
 		player:GetAttributeChangedSignal("Staff_" .. def.id):Connect(refresh)

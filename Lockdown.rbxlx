@@ -208,19 +208,21 @@ Config.MaxStaffPerType = 10
 
 -- Toolbar categories -----------------------------------------------------
 
--- The Prison Architect-style bottom bar. Assets declare theirs with a
+-- The Prison Architect bottom-left toolbar. Assets declare theirs with a
 -- "Category" attribute (defaults to "Objects"); a category the code has
--- never seen just becomes a new button automatically.
+-- never seen just becomes a new tab automatically.
 Config.AssetCategories = { "Walls & Doors", "Flooring", "Objects" }
-Config.CategoryIcons = {
-	["Walls & Doors"] = "🧱",
-	["Flooring"] = "🟫",
-	["Objects"] = "🪑",
-}
 
--- Shown grayed-out like PA's locked tabs — real features in later phases.
+-- PA's remaining tabs, rendered dark like its locked tools — each one
+-- lights up when its phase ships. icon = a PAIcons drawing name.
 Config.ComingSoon = {
-	{ icon = "💡", name = "Utilities", note = "Utilities — later, maybe. Pipes on a phone is a big ask 😄" },
+	{ icon = "utilities", name = "Utilities", note = "Utilities — pipes & power come in a later phase" },
+	{ icon = "deployment", name = "Deployment", note = "Deployment — guard patrol zones come with Phase 5 (security)" },
+	{ icon = "logistics", name = "Logistics", note = "Logistics — food & supply routing comes in a later phase" },
+	{ icon = "intelligence", name = "Intelligence", note = "Intelligence — informants & contraband come with Phase 5" },
+	{ icon = "quickbuild", name = "Quick Build", note = "Quick Build — one-click premade rooms come in a later phase" },
+	{ icon = "planning", name = "Planning", note = "Planning — sketch layouts for free comes in a later phase" },
+	{ icon = "emergencies", name = "Emergencies", note = "Emergencies — lockdowns & callouts come with Phase 5" },
 }
 
 -- Foundations ------------------------------------------------------------
@@ -4057,14 +4059,16 @@ return TimeService
         <Properties>
           <string name="Name">Client</string>
           <string name="Source"><![CDATA[-- Lockdown client bootstrap. Runs on each player's own device and starts
--- what they personally see: build mode (with the top-down camera), the
--- cash HUD, the objective card, the intake panel, and NPC animation.
+-- what they personally see: build mode (the PA toolbar + top-down
+-- camera), the PA HUD readouts, the intake popup (opened from the
+-- Prisoners readout — that's the wiring below), the Staff tab, and NPC
+-- animation.
 
 require(script.BuildMode).start()
-require(script.CashHud).start()
-require(script.IntakePanel).start()
+local IntakePanel = require(script.IntakePanel)
+IntakePanel.start()
 require(script.StaffPanel).start()
-require(script.EmergencyBar).start()
+require(script.CashHud).start({ onPrisoners = IntakePanel.toggle })
 require(script.InmateAnimator).start()
 require(script.MoodDisplay).start()
 ]]></string>
@@ -4197,22 +4201,22 @@ function BuildCamera.enter(part)
 			pan += Vector3.new(1, 0, 0)
 		end
 		-- Edge scrolling (PC): nudge the mouse against a screen edge to
-		-- pan, like every city builder since forever.
+		-- pan, like every city builder since forever. The corners where
+		-- UI lives (toolbar bottom-left, readouts bottom-right) don't pan.
 		if UserInputService.MouseEnabled and not panDragging then
 			local mouse = UserInputService:GetMouseLocation()
 			local viewport = camera.ViewportSize
 			local margin = 14
 			if mouse.X <= margin then
 				pan += Vector3.new(-1, 0, 0)
-			-- Skip the RIGHT edge: the dock buttons live there, so nudging
-			-- toward them shouldn't pan the camera.
-			elseif mouse.X >= viewport.X - margin and mouse.X < viewport.X - 90 then
+			elseif mouse.X >= viewport.X - margin and mouse.Y < viewport.Y - 140 then
 				pan += Vector3.new(1, 0, 0)
 			end
-			-- Skip the very bottom too (toolbar), keep the top.
 			if mouse.Y <= margin then
 				pan += Vector3.new(0, 0, -1)
-			elseif mouse.Y >= viewport.Y - margin and mouse.Y < viewport.Y - 80 then
+			elseif mouse.Y >= viewport.Y - margin
+				and mouse.X > 820 and mouse.X < viewport.X - 220
+			then
 				pan += Vector3.new(0, 0, 1)
 			end
 		end
@@ -4349,25 +4353,25 @@ return BuildCamera
           <Properties>
             <string name="Name">BuildMode</string>
             <string name="Source"><![CDATA[-- BuildMode: the whole building experience on the player's screen,
--- arranged like Prison Architect's bottom toolbar:
+-- arranged 1:1 like Prison Architect:
 --
---   [🏗️ Foundations] [🧱 Walls & Doors] [🟫 Flooring] [🎨 Rooms] [🪑 Objects]
---   [✋ Move] [🗑️ Bulldoze] [↩ Undo] [👮] [💡]
+--   * bottom-left: the PA toolbar (see PAToolbar) — square blueprint
+--     tabs: Build/Walk, Foundations, Walls & Doors, Flooring, Rooms,
+--     Objects, Staff, then PA's future tabs rendered dark (they light up
+--     as phases ship), then Move and Bulldoze.
+--   * clicking a tab opens a PA-style menu above the strip: rows of
+--     items with icons and prices. Picking one arms the tool. Assets
+--     pick their tab with a "Category" attribute — a name the toolbar
+--     has never seen becomes a new tab automatically.
 --
--- Category buttons open an item panel above the bar (3D thumbnails for
--- assets, color chips for rooms). Grayed-out buttons are future phases,
--- just like PA's locked tabs. Assets pick their button with a "Category"
--- attribute — a name the toolbar has never seen becomes a new button
--- automatically.
---
---   🔨 Build (or B)  ->  build mode: top-down camera + the toolbar
+--   Build tab (or B)  ->  build view: top-down camera + the tool tabs
 --   Foundations       ->  drag a rectangle: walls around it, floor inside
---   Objects           ->  ghost preview snaps to the grid; click places;
---                         1-square assets PRESS-DRAG into whole lines
+--   Walls / Flooring  ->  drag whole lines / fill rectangles
 --   Rooms             ->  pick the type FIRST, then drag a rectangle
---   ✋ Move           ->  pick an object up and re-place it
---   ↩ / Ctrl+Z       ->  undo placements and demolishes
---   ↻ / R             ->  rotate 90°   ·   🗑️ Bulldoze -> click to demolish
+--   Objects           ->  ghost preview snaps to the grid; click places
+--   Move              ->  pick an object up and re-place it
+--   Ctrl+Z            ->  undo placements and demolishes
+--   R                 ->  rotate 90°   ·   Bulldoze -> click / drag-clear
 --
 -- The server re-validates everything — this file is just the friendly face.
 
@@ -4382,6 +4386,8 @@ local GridMath = require(ReplicatedStorage.Shared:WaitForChild("GridMath"))
 local AssetCatalog = require(ReplicatedStorage.Shared:WaitForChild("AssetCatalog"))
 local BuildCamera = require(script.Parent.BuildCamera)
 local UIKit = require(script.Parent.UIKit)
+local PAIcons = require(script.Parent.PAIcons)
+local PAToolbar = require(script.Parent.PAToolbar)
 
 local BuildMode = {}
 
@@ -4389,9 +4395,6 @@ local GRID = Config.GridSize
 local GREEN = Color3.fromRGB(80, 255, 120)
 local RED = Color3.fromRGB(255, 80, 80)
 local ORANGE = Color3.fromRGB(255, 170, 60) -- valid spot, can't afford it
-local PANEL_BG = Color3.fromRGB(20, 24, 20)
-local BUTTON_BG = Color3.fromRGB(45, 52, 45)
-local SELECTED_BG = Color3.fromRGB(60, 110, 60)
 
 function BuildMode.start()
 	local player = Players.LocalPlayer
@@ -4423,25 +4426,17 @@ function BuildMode.start()
 	local buildablesFolder = ReplicatedStorage:WaitForChild(Config.BuildablesFolderName)
 	local catalogByName, catalogOrdered = AssetCatalog.load(buildablesFolder)
 
-	-- Which categories exist? Start from the standard order, then append
-	-- any new names the map-maker invented on their own assets.
+	-- Which categories exist? The standard PA tab row ALWAYS shows (an
+	-- empty one just says so in its menu); any new names the map-maker
+	-- invented on their own assets are appended after it.
 	local categories = {}
-	local categorySeen = {}
 	for _, name in ipairs(Config.AssetCategories) do
-		categorySeen[name] = false
-	end
-	for _, asset in ipairs(catalogOrdered) do
-		categorySeen[asset.category] = true
-	end
-	for _, name in ipairs(Config.AssetCategories) do
-		if categorySeen[name] then
-			table.insert(categories, name)
-		end
+		table.insert(categories, name)
 	end
 	local extras = {}
-	for name, present in pairs(categorySeen) do
-		if present and not table.find(Config.AssetCategories, name) then
-			table.insert(extras, name)
+	for _, asset in ipairs(catalogOrdered) do
+		if not table.find(categories, asset.category) and not table.find(extras, asset.category) then
+			table.insert(extras, asset.category)
 		end
 	end
 	table.sort(extras)
@@ -4831,99 +4826,37 @@ function BuildMode.start()
 		end
 	end
 
-	-- UI: build toggle, PA-style bottom toolbar, item panel ----------------
+	-- UI: PAToolbar owns the strip and menus; this gui holds the floating
+	-- extras — the status line, the rotate button, the hover highlight.
 
 	local gui = Instance.new("ScreenGui")
 	gui.Name = "LockdownBuild"
 	gui.ResetOnSpawn = false
 
-	-- The Build button lives in the shared dock; created after setMode
-	-- exists (below) so its callback can reference it.
-	local toggle
-
-	-- The bottom bar (visible whenever build mode is open).
-	local toolbar = Instance.new("Frame")
-	toolbar.AnchorPoint = Vector2.new(0.5, 1)
-	toolbar.Position = UDim2.new(0.5, 0, 1, -10)
-	toolbar.AutomaticSize = Enum.AutomaticSize.X
-	toolbar.Size = UDim2.new(0, 0, 0, 66)
-	toolbar.BackgroundColor3 = PANEL_BG
-	toolbar.BackgroundTransparency = 0.15
-	toolbar.Visible = false
-	local toolbarCorner = Instance.new("UICorner")
-	toolbarCorner.CornerRadius = UDim.new(0, 12)
-	toolbarCorner.Parent = toolbar
-	local toolbarPad = Instance.new("UIPadding")
-	toolbarPad.PaddingLeft = UDim.new(0, 6)
-	toolbarPad.PaddingRight = UDim.new(0, 6)
-	toolbarPad.PaddingTop = UDim.new(0, 6)
-	toolbarPad.PaddingBottom = UDim.new(0, 6)
-	toolbarPad.Parent = toolbar
-	local toolbarLayout = Instance.new("UIListLayout")
-	toolbarLayout.FillDirection = Enum.FillDirection.Horizontal
-	toolbarLayout.Padding = UDim.new(0, 6)
-	toolbarLayout.SortOrder = Enum.SortOrder.LayoutOrder
-	toolbarLayout.VerticalAlignment = Enum.VerticalAlignment.Center
-	toolbarLayout.Parent = toolbar
-	toolbar.Parent = gui
-
-	-- A PA-style toolbar button: big icon on top, small label under it.
-	local toolbarOrder = 0
-	local function toolbarButton(icon, name, enabled)
-		toolbarOrder += 1
-		local button = Instance.new("TextButton")
-		button.LayoutOrder = toolbarOrder
-		button.Size = UDim2.new(0, 74, 0, 54)
-		button.BackgroundColor3 = BUTTON_BG
-		button.BackgroundTransparency = enabled and 0 or 0.5
-		button.Text = ""
-		local corner = Instance.new("UICorner")
-		corner.CornerRadius = UDim.new(0, 10)
-		corner.Parent = button
-
-		local iconLabel = Instance.new("TextLabel")
-		iconLabel.Size = UDim2.new(1, 0, 0, 30)
-		iconLabel.Position = UDim2.new(0, 0, 0, 2)
-		iconLabel.BackgroundTransparency = 1
-		iconLabel.Font = Enum.Font.GothamBold
-		iconLabel.TextSize = 22
-		iconLabel.TextTransparency = enabled and 0 or 0.5
-		iconLabel.Text = icon
-		iconLabel.Parent = button
-
-		local nameLabel = Instance.new("TextLabel")
-		nameLabel.AnchorPoint = Vector2.new(0, 1)
-		nameLabel.Position = UDim2.new(0, 2, 1, -3)
-		nameLabel.Size = UDim2.new(1, -4, 0, 16)
-		nameLabel.BackgroundTransparency = 1
-		nameLabel.Font = Enum.Font.GothamBold
-		nameLabel.TextScaled = true
-		nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-		nameLabel.TextTransparency = enabled and 0 or 0.55
-		nameLabel.Text = name
-		nameLabel.Parent = button
-
-		button.Parent = toolbar
-		return button
+	-- A row's little 3D thumbnail (the menu "icon" — our stand-in art).
+	local function assetIcon(slot, asset)
+		local viewport = Instance.new("ViewportFrame")
+		viewport.Size = UDim2.new(1, 0, 1, 0)
+		viewport.BackgroundTransparency = 1
+		local camera = Instance.new("Camera")
+		camera.Parent = viewport
+		viewport.CurrentCamera = camera
+		local preview = asset.model:Clone()
+		preview.Parent = viewport
+		local boxCF, boxSize = preview:GetBoundingBox()
+		local distance = boxSize.Magnitude * 1.1 + 2
+		camera.CFrame = CFrame.lookAt(
+			boxCF.Position + Vector3.new(distance * 0.6, distance * 0.55, distance * 0.6),
+			boxCF.Position
+		)
+		viewport.Parent = slot
 	end
 
-	-- The item panel that opens above the toolbar.
-	local panel = Instance.new("Frame")
-	panel.AnchorPoint = Vector2.new(0.5, 1)
-	panel.Position = UDim2.new(0.5, 0, 1, -82)
-	panel.Size = UDim2.new(0.94, 0, 0, 150)
-	panel.BackgroundColor3 = PANEL_BG
-	panel.BackgroundTransparency = 0.15
-	panel.Visible = false
-	local panelCorner = Instance.new("UICorner")
-	panelCorner.CornerRadius = UDim.new(0, 14)
-	panelCorner.Parent = panel
-	panel.Parent = gui
-
+	-- The hint line, sitting just above the bottom of the screen.
 	local status = Instance.new("TextLabel")
 	status.AnchorPoint = Vector2.new(0.5, 1)
-	status.Position = UDim2.new(0.5, 0, 1, -238)
-	status.Size = UDim2.new(0.9, 0, 0, 24)
+	status.Position = UDim2.new(0.5, 0, 1, -70)
+	status.Size = UDim2.new(0, 560, 0, 20)
 	status.BackgroundTransparency = 1
 	status.Font = Enum.Font.GothamBold
 	status.TextScaled = true
@@ -4932,40 +4865,22 @@ function BuildMode.start()
 	status.Text = ""
 	status.Parent = gui
 
+	-- Rotate: R does it on PC; this button does it on phones. It floats
+	-- just clear of the toolbar menus (they're 272 wide).
 	local rotateButton = Instance.new("TextButton")
-	rotateButton.Size = UDim2.new(0, 44, 0, 44)
-	rotateButton.Position = UDim2.new(0, 8, 0.5, -22)
-	rotateButton.BackgroundColor3 = BUTTON_BG
+	rotateButton.AnchorPoint = Vector2.new(0, 1)
+	rotateButton.Position = UDim2.new(0, 300, 1, -70)
+	rotateButton.Size = UDim2.new(0, 40, 0, 40)
+	rotateButton.BackgroundColor3 = UIKit.BTN
+	rotateButton.BorderSizePixel = 0
+	rotateButton.AutoButtonColor = false
 	rotateButton.Font = Enum.Font.GothamBold
 	rotateButton.TextSize = 22
-	rotateButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+	rotateButton.TextColor3 = UIKit.ICON
 	rotateButton.Text = "↻"
-	local rotateCorner = Instance.new("UICorner")
-	rotateCorner.CornerRadius = UDim.new(0, 10)
-	rotateCorner.Parent = rotateButton
-	rotateButton.Parent = panel
-
-	local function makeList()
-		local list = Instance.new("ScrollingFrame")
-		list.Position = UDim2.new(0, 60, 0, 8)
-		list.Size = UDim2.new(1, -68, 1, -16)
-		list.BackgroundTransparency = 1
-		list.ScrollBarThickness = 6
-		list.ScrollingDirection = Enum.ScrollingDirection.X
-		list.AutomaticCanvasSize = Enum.AutomaticSize.X
-		list.CanvasSize = UDim2.new(0, 0, 0, 0)
-		local layout = Instance.new("UIListLayout")
-		layout.FillDirection = Enum.FillDirection.Horizontal
-		layout.Padding = UDim.new(0, 8)
-		layout.SortOrder = Enum.SortOrder.LayoutOrder
-		layout.Parent = list
-		list.Parent = panel
-		return list
-	end
-
-	local objectsList = makeList()
-	local roomsList = makeList()
-	roomsList.Visible = false
+	rotateButton.Visible = false
+	UIKit.stroke(rotateButton, UIKit.EDGE, 1, 0.35)
+	rotateButton.Parent = gui
 
 	-- The status line has a PERSISTENT hint (what the current tool does)
 	-- and temporary flashes (results/errors) that revert to it.
@@ -4990,157 +4905,125 @@ function BuildMode.start()
 		end)
 	end
 
-	-- Item tiles ----------------------------------------------------------
+	-- Menus ---------------------------------------------------------------
 
-	local assetButtons = {} -- asset name -> { button, category }
-	local roomButtons = {}
-	local categoryButtons = {} -- category name -> toolbar button
-	local roomsButton, deleteButton, foundationButton, moveButton
+	local assetRows = {} -- asset name -> PA menu row handle
+	local roomRows = {} -- room id -> row handle
+	local foundationRow = nil
+	local menuHandles = {} -- tab id -> PAToolbar menu handle
+	local TAB_IDS = {} -- category name -> tab id
+
+	-- Which toolbar tab matches the current tool?
+	local function tabForMode()
+		if mode == "objects" then
+			return TAB_IDS[currentCategory]
+		elseif mode == "rooms" then
+			return "rooms"
+		elseif mode == "foundation" then
+			return "foundations"
+		elseif mode == "move" then
+			return "move"
+		elseif mode == "delete" then
+			return "bulldoze"
+		end
+		return nil
+	end
 
 	local function refreshSelectionLook()
-		for name, entry in pairs(assetButtons) do
-			entry.button.BackgroundColor3 = (selected and selected.name == name) and SELECTED_BG or BUTTON_BG
+		for name, handle in pairs(assetRows) do
+			handle.setSelected(selected ~= nil and selected.name == name)
 		end
-		for id, button in pairs(roomButtons) do
-			local stroke = button:FindFirstChildOfClass("UIStroke")
-			if stroke then
-				stroke.Transparency = (selectedRoom == id) and 0 or 1
+		for id, handle in pairs(roomRows) do
+			handle.setSelected(selectedRoom == id)
+		end
+		if foundationRow then
+			foundationRow.setSelected(mode == "foundation")
+		end
+		PAToolbar.setActiveTool(tabForMode())
+		PAToolbar.setPressed("walk", mode ~= "off")
+		rotateButton.Visible = mode == "objects" and selected ~= nil
+	end
+
+	local setMode, selectAsset, selectRoom, tryMove, doUndo
+
+	-- One PA menu per buildable category (rows: icon · name · price).
+	local function buildCategoryMenu(categoryName, tabId)
+		local menu = PAToolbar.menu(tabId, categoryName)
+		local shown = 0
+		for order, asset in ipairs(catalogOrdered) do
+			if asset.category == categoryName then
+				shown += 1
+				local handle = PAToolbar.row(menu.list, {
+					order = order,
+					name = asset.name,
+					right = Format.money(asset.price),
+					onClick = function()
+						selectAsset(asset)
+					end,
+				})
+				assetIcon(handle.icon, asset)
+				assetRows[asset.name] = handle
 			end
 		end
-		for name, button in pairs(categoryButtons) do
-			button.BackgroundColor3 = (mode == "objects" and currentCategory == name) and SELECTED_BG or BUTTON_BG
+		if shown == 0 then
+			local empty = PAToolbar.row(menu.list, { order = 1, name = "(add Models to Buildables)", right = "" })
+			empty.name.TextColor3 = UIKit.DIM
 		end
-		roomsButton.BackgroundColor3 = (mode == "rooms") and SELECTED_BG or BUTTON_BG
-		foundationButton.BackgroundColor3 = (mode == "foundation") and SELECTED_BG or BUTTON_BG
-		moveButton.BackgroundColor3 = (mode == "move") and Color3.fromRGB(120, 110, 40) or BUTTON_BG
-		deleteButton.BackgroundColor3 = (mode == "delete") and Color3.fromRGB(140, 50, 50) or BUTTON_BG
+		menu.fit()
+		menuHandles[tabId] = menu
 	end
 
-	local function refreshTileVisibility()
-		for _, entry in pairs(assetButtons) do
-			entry.button.Visible = entry.category == currentCategory
-		end
+	for i, name in ipairs(categories) do
+		local tabId = "cat" .. i
+		TAB_IDS[name] = tabId
+		buildCategoryMenu(name, tabId)
 	end
 
-	-- Size the item panel to its contents — a three-tile category gets a
-	-- compact panel, not a screen-wide empty bar.
-	local function refreshPanelSize()
-		local count
-		if mode == "rooms" then
-			count = #Config.RoomTypes + 1
+	-- The Rooms menu: "Remove Room" first (PA's None), then every type.
+	local roomsMenu = PAToolbar.menu("rooms", "Rooms")
+	menuHandles.rooms = roomsMenu
+	local function roomRow(id, name, color, order)
+		local handle = PAToolbar.row(roomsMenu.list, {
+			order = order,
+			name = name,
+			right = "",
+			onClick = function()
+				selectRoom(id)
+			end,
+		})
+		if color then
+			local swatch = Instance.new("Frame")
+			swatch.AnchorPoint = Vector2.new(0.5, 0.5)
+			swatch.Position = UDim2.new(0.5, 0, 0.5, 0)
+			swatch.Size = UDim2.new(0, 18, 0, 18)
+			swatch.BackgroundColor3 = color
+			swatch.BorderSizePixel = 0
+			UIKit.stroke(swatch, UIKit.EDGE_DIM, 1, 0)
+			swatch.Parent = handle.icon
 		else
-			count = 0
-			for _, asset in ipairs(catalogOrdered) do
-				if asset.category == currentCategory then
-					count += 1
-				end
-			end
+			PAIcons.draw(handle.icon, "bulldoze", UIKit.DIM, 4)
 		end
-		local width = math.clamp(68 + count * 112 + 16, 250, 940)
-		panel.Size = UDim2.new(0, width, 0, 150)
+		roomRows[id] = handle
 	end
-
-	local selectAsset, selectRoom, tryMove, doUndo
-
-	for order, asset in ipairs(catalogOrdered) do
-		local tile = Instance.new("TextButton")
-		tile.LayoutOrder = order
-		tile.Size = UDim2.new(0, 104, 1, 0)
-		tile.BackgroundColor3 = BUTTON_BG
-		tile.Text = ""
-		local tileCorner = Instance.new("UICorner")
-		tileCorner.CornerRadius = UDim.new(0, 10)
-		tileCorner.Parent = tile
-
-		local viewport = Instance.new("ViewportFrame")
-		viewport.Size = UDim2.new(1, -8, 1, -30)
-		viewport.Position = UDim2.new(0, 4, 0, 4)
-		viewport.BackgroundTransparency = 1
-		local camera = Instance.new("Camera")
-		camera.Parent = viewport
-		viewport.CurrentCamera = camera
-		local preview = asset.model:Clone()
-		preview.Parent = viewport
-		local boxCF, boxSize = preview:GetBoundingBox()
-		local distance = boxSize.Magnitude * 1.1 + 2
-		camera.CFrame = CFrame.lookAt(
-			boxCF.Position + Vector3.new(distance * 0.6, distance * 0.55, distance * 0.6),
-			boxCF.Position
-		)
-		viewport.Parent = tile
-
-		local label = Instance.new("TextLabel")
-		label.AnchorPoint = Vector2.new(0, 1)
-		label.Position = UDim2.new(0, 4, 1, -4)
-		label.Size = UDim2.new(1, -8, 0, 20)
-		label.BackgroundTransparency = 1
-		label.Font = Enum.Font.GothamBold
-		label.TextScaled = true
-		label.TextColor3 = Color3.fromRGB(255, 255, 255)
-		label.Text = asset.name
-		label.Parent = tile
-
-		local priceTag = Instance.new("TextLabel")
-		priceTag.Position = UDim2.new(0, 4, 0, 4)
-		priceTag.Size = UDim2.new(0, 52, 0, 15)
-		priceTag.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-		priceTag.BackgroundTransparency = 0.4
-		priceTag.Font = Enum.Font.GothamBold
-		priceTag.TextScaled = true
-		priceTag.TextColor3 = Color3.fromRGB(150, 255, 160)
-		priceTag.Text = Format.money(asset.price)
-		local priceCorner = Instance.new("UICorner")
-		priceCorner.CornerRadius = UDim.new(0, 5)
-		priceCorner.Parent = priceTag
-		priceTag.Parent = tile
-
-		tile.Activated:Connect(function()
-			selectAsset(asset)
-		end)
-		tile.Parent = objectsList
-		assetButtons[asset.name] = { button = tile, category = asset.category }
-	end
-
-	local function roomTile(id, name, color, order)
-		local tile = Instance.new("TextButton")
-		tile.LayoutOrder = order
-		tile.Size = UDim2.new(0, 104, 1, 0)
-		tile.BackgroundColor3 = color
-		tile.Text = ""
-		local tileCorner = Instance.new("UICorner")
-		tileCorner.CornerRadius = UDim.new(0, 10)
-		tileCorner.Parent = tile
-		local stroke = Instance.new("UIStroke")
-		stroke.Thickness = 3
-		stroke.Color = Color3.fromRGB(255, 255, 255)
-		stroke.Transparency = 1
-		stroke.Parent = tile
-
-		local label = Instance.new("TextLabel")
-		label.AnchorPoint = Vector2.new(0, 1)
-		label.Position = UDim2.new(0, 4, 1, -4)
-		label.Size = UDim2.new(1, -8, 0, 22)
-		label.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-		label.BackgroundTransparency = 0.35
-		label.Font = Enum.Font.GothamBold
-		label.TextScaled = true
-		label.TextColor3 = Color3.fromRGB(255, 255, 255)
-		label.Text = name
-		local labelCorner = Instance.new("UICorner")
-		labelCorner.CornerRadius = UDim.new(0, 6)
-		labelCorner.Parent = label
-		label.Parent = tile
-
-		tile.Activated:Connect(function()
-			selectRoom(id)
-		end)
-		tile.Parent = roomsList
-		roomButtons[id] = tile
-	end
+	roomRow(0, "Remove Room", nil, 1)
 	for id, roomType in ipairs(Config.RoomTypes) do
-		roomTile(id, roomType.name, roomType.color, id)
+		roomRow(id, roomType.name, roomType.color, id + 1)
 	end
-	roomTile(0, "✖ Eraser", Color3.fromRGB(80, 80, 85), #Config.RoomTypes + 1)
+	roomsMenu.fit()
+
+	-- The Foundations menu: one entry, like PA's foundation list.
+	local foundationsMenu = PAToolbar.menu("foundations", "Foundations")
+	menuHandles.foundations = foundationsMenu
+	foundationRow = PAToolbar.row(foundationsMenu.list, {
+		order = 1,
+		name = "Foundation",
+		right = "",
+		onClick = function()
+			setMode("foundation")
+		end,
+	})
+	PAIcons.draw(foundationRow.icon, "foundations", UIKit.ICON, 4)
+	foundationsMenu.fit()
 
 	-- Mode switching -----------------------------------------------------
 
@@ -5150,7 +5033,7 @@ function BuildMode.start()
 		end
 	end
 
-	local function setMode(newMode)
+	setMode = function(newMode)
 		local wasOff = mode == "off"
 		mode = newMode
 		pressing = false
@@ -5165,24 +5048,12 @@ function BuildMode.start()
 		if mode ~= "rooms" then
 			selectedRoom = nil
 		end
-		toolbar.Visible = mode ~= "off"
-		panel.Visible = mode == "objects" or mode == "rooms"
-		objectsList.Visible = mode == "objects"
-		roomsList.Visible = mode == "rooms"
-		rotateButton.Visible = mode == "objects"
-		if toggle then
-			UIKit.setActive(toggle, mode ~= "off")
-			local toggleIcon = toggle:FindFirstChild("Icon")
-			if toggleIcon then
-				toggleIcon.Text = mode == "off" and "🔨" or "✖"
-			end
-		end
-		if mode ~= "off" then
-			UIKit.closeAll() -- entering build mode shuts the intake/staff panels
+		if mode == "off" or wasOff then
+			-- Crossing the build/walk boundary closes every open menu
+			-- (tab clicks re-open the one they want right after).
+			UIKit.closeAll()
 		end
 		refreshSelectionLook()
-		refreshTileVisibility()
-		refreshPanelSize()
 
 		if mode ~= "off" then
 			showGrid()
@@ -5192,9 +5063,9 @@ function BuildMode.start()
 		setNameTagsHidden(mode ~= "off")
 
 		if mode == "objects" and not selected then
-			setStatusDefault("Pick an item from the panel below")
+			setStatusDefault("Pick a tool from the toolbar, or an item from its menu")
 		elseif mode == "rooms" and selectedRoom == nil then
-			setStatusDefault("Pick a room type below, then drag a rectangle")
+			setStatusDefault("Pick a room type from the menu, then drag a rectangle")
 		elseif mode == "foundation" then
 			setStatusDefault("Drag a rectangle — walls around the edge, floor inside. Add a door after!")
 		elseif mode == "move" then
@@ -5226,9 +5097,17 @@ function BuildMode.start()
 		end
 	end
 
-	local function selectCategory(name)
-		currentCategory = name
-		setMode("objects")
+	-- Clicking a category tab arms that category and opens its menu.
+	-- Clicking it again just toggles the menu (the tool stays armed).
+	local function activateCategory(name)
+		local tabId = TAB_IDS[name]
+		if mode == "objects" and currentCategory == name then
+			PAToolbar.toggleMenu(tabId)
+		else
+			currentCategory = name
+			setMode("objects")
+			PAToolbar.openMenu(tabId)
+		end
 	end
 
 	selectAsset = function(asset)
@@ -5270,59 +5149,100 @@ function BuildMode.start()
 		end
 	end
 
-	-- Build the toolbar buttons (PA order: foundations, build stuff,
-	-- rooms, objects, move/bulldoze/undo, then the locked future tabs).
-	foundationButton = toolbarButton("🏗️", "Foundations", true)
-	foundationButton.Activated:Connect(function()
-		setMode("foundation")
-	end)
+	-- The toolbar tabs — PA's full row, left to right: Build/Walk toggle,
+	-- Foundations, Walls & Doors, Flooring, Rooms, Objects (then any
+	-- custom categories), Staff (order 12, added by StaffPanel), the
+	-- locked future tabs rendered dark, and finally Move + Bulldoze.
+	PAToolbar.addTab({
+		id = "walk",
+		icon = "build",
+		label = "Build view (B)",
+		order = 1,
+		onClick = function()
+			setMode(mode == "off" and "objects" or "off")
+		end,
+	})
+	PAToolbar.addTab({
+		id = "foundations",
+		icon = "foundations",
+		label = "Foundations",
+		order = 2,
+		onClick = function()
+			if mode == "foundation" then
+				PAToolbar.toggleMenu("foundations")
+			else
+				setMode("foundation")
+				PAToolbar.openMenu("foundations")
+			end
+		end,
+	})
+	local CATEGORY_TAB = {
+		["Walls & Doors"] = { order = 3, icon = "walls" },
+		["Flooring"] = { order = 4, icon = "flooring" },
+		["Objects"] = { order = 6, icon = "objects" },
+	}
+	local extraOrder = 6
 	for _, name in ipairs(categories) do
-		if name ~= "Objects" then
-			local button = toolbarButton(Config.CategoryIcons[name] or "📦", name, true)
-			button.Activated:Connect(function()
-				selectCategory(name)
-			end)
-			categoryButtons[name] = button
+		local look = CATEGORY_TAB[name]
+		if not look then
+			extraOrder += 1
+			look = { order = extraOrder, icon = "box" }
 		end
+		PAToolbar.addTab({
+			id = TAB_IDS[name],
+			icon = look.icon,
+			label = name,
+			order = look.order,
+			onClick = function()
+				activateCategory(name)
+			end,
+		})
 	end
-	roomsButton = toolbarButton("🎨", "Rooms", true)
-	roomsButton.Activated:Connect(function()
-		setMode("rooms")
-	end)
-	if table.find(categories, "Objects") then
-		local button = toolbarButton(Config.CategoryIcons.Objects, "Objects", true)
-		button.Activated:Connect(function()
-			selectCategory("Objects")
-		end)
-		categoryButtons.Objects = button
+	PAToolbar.addTab({
+		id = "rooms",
+		icon = "rooms",
+		label = "Rooms",
+		order = 5,
+		onClick = function()
+			if mode == "rooms" then
+				PAToolbar.toggleMenu("rooms")
+			else
+				setMode("rooms")
+				PAToolbar.openMenu("rooms")
+			end
+		end,
+	})
+	for i, future in ipairs(Config.ComingSoon) do
+		PAToolbar.addTab({
+			id = "future" .. i,
+			icon = future.icon,
+			label = future.name,
+			order = 20 + i,
+			enabled = false,
+			onClick = function()
+				flashStatus(future.note, Color3.fromRGB(220, 220, 220))
+			end,
+		})
 	end
-	moveButton = toolbarButton("✋", "Move", true)
-	moveButton.Activated:Connect(function()
-		if mode == "move" then
-			setMode("objects")
-		else
-			setMode("move")
-		end
-	end)
-	deleteButton = toolbarButton("🗑️", "Bulldoze", true)
-	deleteButton.Activated:Connect(function()
-		if mode == "delete" then
-			setMode("objects")
-		else
-			setMode("delete")
-		end
-	end)
-	for _, future in ipairs(Config.ComingSoon) do
-		local button = toolbarButton(future.icon, future.name, false)
-		button.Activated:Connect(function()
-			flashStatus(future.note, Color3.fromRGB(220, 220, 220))
-		end)
-	end
+	PAToolbar.addTab({
+		id = "move",
+		icon = "move",
+		label = "Move",
+		order = 40,
+		onClick = function()
+			setMode(mode == "move" and "objects" or "move")
+		end,
+	})
+	PAToolbar.addTab({
+		id = "bulldoze",
+		icon = "bulldoze",
+		label = "Bulldoze",
+		order = 41,
+		onClick = function()
+			setMode(mode == "delete" and "objects" or "delete")
+		end,
+	})
 
-
-	toggle = UIKit.dockButton(playerGui, 1, "🔨", "Build", function()
-		setMode(mode == "off" and "objects" or "off")
-	end)
 	rotateButton.Activated:Connect(function()
 		rot = (rot + 1) % 4
 	end)
@@ -5642,6 +5562,7 @@ function BuildMode.start()
 				movingFrom = nil
 				selected = nil
 				destroyGhost()
+				refreshSelectionLook()
 				setStatusDefault("Move: click an object to pick it up")
 			elseif mode == "objects" and selected then
 				selected = nil
@@ -5794,15 +5715,18 @@ return BuildMode
         <Item class="ModuleScript" referent="27">
           <Properties>
             <string name="Name">CashHud</string>
-            <string name="Source"><![CDATA[-- CashHud: the Prison Architect top bar, Roblox-ified.
+            <string name="Source"><![CDATA[-- CashHud: Prison Architect's readouts, in PA's exact places.
 --
---   [ DAY 9 ] [ 💰 $4,266 ] [ 👷 2 ] [ 🧍 3/6 ]        (top-center)
---                                          [ 14:32 ]    (top-right clock)
+--   top-right:      the clock panel — the time big, "Day N — activity"
+--                   under it. (PA's speed controls are deliberately
+--                   absent: multiplayer time is shared.)
+--   bottom-right:   the Balance and Prisoners rows, PA's corner
+--                   readouts. Prisoners ambers when arrivals queue at
+--                   the gate — CLICK IT to open the Intake panel.
 --
--- Segments: prison day, cash (with ±$ blips and an income/session line
--- under it), work crew, prisoners housed/capacity (amber when arrivals
--- queue at the gate). The clock derives from a single server epoch
--- attribute — every player sees the same time with zero network traffic.
+-- Cash changes still blip ±$ off the Balance row, and the clock derives
+-- from a single server epoch attribute — every player sees the same time
+-- with zero network traffic.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -5811,87 +5735,123 @@ local TweenService = game:GetService("TweenService")
 
 local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
 local Format = require(ReplicatedStorage.Shared:WaitForChild("Format"))
+local UIKit = require(script.Parent.UIKit)
 
 local CashHud = {}
 
-local CHIP_BG = Color3.fromRGB(20, 24, 20)
-
-local function chip(parent, order, width)
-	local frame = Instance.new("Frame")
-	frame.LayoutOrder = order
-	frame.Size = UDim2.new(0, width, 1, 0)
-	frame.BackgroundColor3 = CHIP_BG
-	frame.BackgroundTransparency = 0.25
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 10)
-	corner.Parent = frame
-	local label = Instance.new("TextLabel")
-	label.Size = UDim2.new(1, -12, 1, -8)
-	label.Position = UDim2.new(0, 6, 0, 4)
-	label.BackgroundTransparency = 1
-	label.Font = Enum.Font.GothamBlack
-	label.TextScaled = true
-	label.TextColor3 = Color3.fromRGB(255, 255, 255)
-	label.Parent = frame
-	frame.Parent = parent
-	return frame, label
-end
-
-function CashHud.start()
+function CashHud.start(opts)
+	opts = opts or {}
 	local player = Players.LocalPlayer
 	local playerGui = player:WaitForChild("PlayerGui")
 	local leaderstats = player:WaitForChild("leaderstats")
 	local cashValue = leaderstats:WaitForChild("Cash")
 
 	local gui = Instance.new("ScreenGui")
-	gui.Name = "LockdownTopBar"
+	gui.Name = "LockdownHud"
 	gui.ResetOnSpawn = false
 
-	-- The segmented top bar --------------------------------------------
-	local bar = Instance.new("Frame")
-	bar.AnchorPoint = Vector2.new(0.5, 0)
-	bar.Position = UDim2.new(0.5, 0, 0, 8)
-	bar.AutomaticSize = Enum.AutomaticSize.X
-	bar.Size = UDim2.new(0, 0, 0, 40)
-	bar.BackgroundTransparency = 1
+	-- Top-right: the clock panel ----------------------------------------
+	local clockPanel = UIKit.panel(gui, "ClockPanel")
+	clockPanel.AnchorPoint = Vector2.new(1, 0)
+	clockPanel.Position = UDim2.new(1, -12, 0, 12)
+	clockPanel.Size = UDim2.new(0, 124, 0, 58)
+
+	local clockLabel = Instance.new("TextLabel")
+	clockLabel.Position = UDim2.new(0, 0, 0, 4)
+	clockLabel.Size = UDim2.new(1, 0, 0, 30)
+	clockLabel.BackgroundTransparency = 1
+	clockLabel.Font = Enum.Font.GothamBlack
+	clockLabel.TextSize = 24
+	clockLabel.TextColor3 = UIKit.TEXT
+	clockLabel.Text = "00:00"
+	clockLabel.Parent = clockPanel
+
+	local clockSub = Instance.new("TextLabel")
+	clockSub.Position = UDim2.new(0, 0, 0, 36)
+	clockSub.Size = UDim2.new(1, 0, 0, 16)
+	clockSub.BackgroundTransparency = 1
+	clockSub.Font = Enum.Font.GothamMedium
+	clockSub.TextSize = 12
+	clockSub.TextColor3 = UIKit.DIM
+	clockSub.Text = "Day 1"
+	clockSub.Parent = clockPanel
+
+	-- Bottom-right: Balance / Prisoners ---------------------------------
+	local stack = Instance.new("Frame")
+	stack.AnchorPoint = Vector2.new(1, 1)
+	stack.Position = UDim2.new(1, -12, 1, -12)
+	stack.Size = UDim2.new(0, 190, 0, 0)
+	stack.AutomaticSize = Enum.AutomaticSize.Y
+	stack.BackgroundTransparency = 1
 	local layout = Instance.new("UIListLayout")
-	layout.FillDirection = Enum.FillDirection.Horizontal
-	layout.Padding = UDim.new(0, 6)
+	layout.FillDirection = Enum.FillDirection.Vertical
+	layout.VerticalAlignment = Enum.VerticalAlignment.Bottom
+	layout.Padding = UDim.new(0, 4)
 	layout.SortOrder = Enum.SortOrder.LayoutOrder
-	layout.Parent = bar
+	layout.Parent = stack
+	stack.Parent = gui
 
-	local _, dayLabel = chip(bar, 1, 90)
-	dayLabel.TextColor3 = Color3.fromRGB(255, 220, 130)
-	dayLabel.Text = "DAY 1"
+	local function statRow(order, clickable)
+		local row = Instance.new(clickable and "TextButton" or "Frame")
+		row.LayoutOrder = order
+		row.Size = UDim2.new(1, 0, 0, 24)
+		row.BackgroundColor3 = UIKit.PANEL
+		row.BackgroundTransparency = 0.03
+		row.BorderSizePixel = 0
+		if clickable then
+			row.Text = ""
+			row.AutoButtonColor = true
+		end
+		UIKit.stroke(row, UIKit.EDGE_DIM, 1, 0)
+		local left = Instance.new("TextLabel")
+		left.Position = UDim2.new(0, 8, 0, 0)
+		left.Size = UDim2.new(0, 80, 1, 0)
+		left.BackgroundTransparency = 1
+		left.Font = Enum.Font.GothamMedium
+		left.TextSize = 12
+		left.TextXAlignment = Enum.TextXAlignment.Left
+		left.TextColor3 = UIKit.DIM
+		left.Parent = row
+		local right = Instance.new("TextLabel")
+		right.AnchorPoint = Vector2.new(1, 0)
+		right.Position = UDim2.new(1, -8, 0, 0)
+		right.Size = UDim2.new(0, 120, 1, 0)
+		right.BackgroundTransparency = 1
+		right.Font = Enum.Font.GothamBold
+		right.TextSize = 14
+		right.TextXAlignment = Enum.TextXAlignment.Right
+		right.TextColor3 = UIKit.TEXT
+		right.Parent = row
+		row.Parent = stack
+		return row, left, right
+	end
 
-	local cashChip, cashLabel = chip(bar, 2, 150)
-	cashLabel.TextColor3 = Color3.fromRGB(140, 255, 150)
-	cashLabel.Text = Format.money(cashValue.Value)
+	local infoRow, infoLeft, infoRight = statRow(1, false)
+	infoRow.Size = UDim2.new(1, 0, 0, 18)
+	infoRow.BackgroundTransparency = 0.35
+	infoLeft.Text = "Grants"
+	infoRight.Font = Enum.Font.GothamMedium
+	infoRight.TextSize = 11
+	infoRight.TextColor3 = UIKit.DIM
 
-	local _, crewLabel = chip(bar, 3, 70)
-	crewLabel.Text = "👷 " .. Config.WorkmenPerPlot
+	local balanceRow, balanceLeft, balanceRight = statRow(2, false)
+	balanceLeft.Text = "Balance"
+	balanceRight.TextColor3 = UIKit.GOOD
+	balanceRight.Text = Format.money(cashValue.Value)
 
-	local prisonersChip, prisonersLabel = chip(bar, 4, 100)
-	prisonersLabel.Text = "🧍 0/0"
+	local prisonersRow, prisonersLeft, prisonersRight = statRow(3, true)
+	prisonersLeft.Text = "Prisoners"
+	prisonersRight.Text = "0 / 0"
+	prisonersRow.Activated:Connect(function()
+		if opts.onPrisoners then
+			opts.onPrisoners()
+		end
+	end)
 
-	bar.Parent = gui
-
-	-- Income + session line and the gate warning, under the bar.
-	local subLine = Instance.new("TextLabel")
-	subLine.AnchorPoint = Vector2.new(0.5, 0)
-	subLine.Position = UDim2.new(0.5, 0, 0, 50)
-	subLine.Size = UDim2.new(0, 420, 0, 15)
-	subLine.BackgroundTransparency = 1
-	subLine.Font = Enum.Font.GothamBold
-	subLine.TextScaled = true
-	subLine.TextColor3 = Color3.fromRGB(200, 200, 200)
-	subLine.TextStrokeTransparency = 0.6
-	subLine.Text = ""
-	subLine.Parent = gui
-
+	-- The gate-stuck warning, top-center where PA floats its alerts.
 	local stuckLine = Instance.new("TextLabel")
 	stuckLine.AnchorPoint = Vector2.new(0.5, 0)
-	stuckLine.Position = UDim2.new(0.5, 0, 0, 67)
+	stuckLine.Position = UDim2.new(0.5, 0, 0, 12)
 	stuckLine.Size = UDim2.new(0, 440, 0, 18)
 	stuckLine.BackgroundTransparency = 1
 	stuckLine.Font = Enum.Font.GothamBold
@@ -5901,41 +5861,10 @@ function CashHud.start()
 	stuckLine.Text = ""
 	stuckLine.Parent = gui
 
-	-- The clock, top-right like PA -------------------------------------
-	local clockPanel = Instance.new("Frame")
-	clockPanel.AnchorPoint = Vector2.new(1, 0)
-	clockPanel.Position = UDim2.new(1, -14, 0, 8)
-	clockPanel.Size = UDim2.new(0, 110, 0, 52)
-	clockPanel.BackgroundColor3 = CHIP_BG
-	clockPanel.BackgroundTransparency = 0.25
-	local clockCorner = Instance.new("UICorner")
-	clockCorner.CornerRadius = UDim.new(0, 10)
-	clockCorner.Parent = clockPanel
-	local clockLabel = Instance.new("TextLabel")
-	clockLabel.Size = UDim2.new(1, -10, 0, 30)
-	clockLabel.Position = UDim2.new(0, 5, 0, 3)
-	clockLabel.BackgroundTransparency = 1
-	clockLabel.Font = Enum.Font.GothamBlack
-	clockLabel.TextScaled = true
-	clockLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-	clockLabel.Text = "00:00"
-	clockLabel.Parent = clockPanel
-	local clockSub = Instance.new("TextLabel")
-	clockSub.Size = UDim2.new(1, -10, 0, 14)
-	clockSub.Position = UDim2.new(0, 5, 0, 34)
-	clockSub.BackgroundTransparency = 1
-	clockSub.Font = Enum.Font.GothamBold
-	clockSub.TextScaled = true
-	clockSub.TextColor3 = Color3.fromRGB(180, 180, 180)
-	clockSub.Text = "FreeTime"
-	clockSub.Parent = clockPanel
-	clockPanel.Parent = gui
-
 	gui.Parent = playerGui
 
-	-- Cash count-up + blips --------------------------------------------
+	-- Cash count-up + blips off the Balance row -------------------------
 	local shown = cashValue.Value
-	local earned, spent = 0, 0
 	local lastValue = cashValue.Value
 
 	cashValue.Changed:Connect(function(value)
@@ -5944,25 +5873,20 @@ function CashHud.start()
 		if delta == 0 then
 			return
 		end
-		if delta > 0 then
-			earned += delta
-		else
-			spent -= delta
-		end
-
 		local blip = Instance.new("TextLabel")
-		blip.AnchorPoint = Vector2.new(0.5, 0)
-		blip.Position = UDim2.new(0.5, math.random(-30, 30), 1, 2)
-		blip.Size = UDim2.new(0, 110, 0, 20)
+		blip.AnchorPoint = Vector2.new(1, 1)
+		blip.Position = UDim2.new(1, -4, 0, -2)
+		blip.Size = UDim2.new(0, 110, 0, 18)
 		blip.BackgroundTransparency = 1
 		blip.Font = Enum.Font.GothamBlack
 		blip.TextScaled = true
-		blip.TextColor3 = delta > 0 and Color3.fromRGB(140, 255, 150) or Color3.fromRGB(255, 130, 120)
+		blip.TextXAlignment = Enum.TextXAlignment.Right
+		blip.TextColor3 = delta > 0 and UIKit.GOOD or UIKit.BAD
 		blip.TextStrokeTransparency = 0.5
 		blip.Text = (delta > 0 and "+" or "-") .. Format.money(math.abs(delta))
-		blip.Parent = cashChip
+		blip.Parent = balanceRow
 		TweenService:Create(blip, TweenInfo.new(1.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-			Position = blip.Position + UDim2.new(0, 0, 0, 26),
+			Position = blip.Position + UDim2.new(0, 0, 0, -24),
 			TextTransparency = 1,
 			TextStrokeTransparency = 1,
 		}):Play()
@@ -5976,31 +5900,35 @@ function CashHud.start()
 		local housed = player:GetAttribute("PrisonHoused") or 0
 		local capacity = player:GetAttribute("PrisonCapacity") or 0
 		local waiting = player:GetAttribute("PrisonWaiting") or 0
-		prisonersLabel.Text = ("🧍 %d/%d"):format(housed, capacity)
-		prisonersLabel.TextColor3 = waiting > 0 and Color3.fromRGB(255, 200, 120) or Color3.fromRGB(255, 255, 255)
-		prisonersChip.BackgroundColor3 = waiting > 0 and Color3.fromRGB(45, 32, 18) or CHIP_BG
+		if waiting > 0 then
+			prisonersRight.Text = ("%d / %d  (+%d)"):format(housed, capacity, waiting)
+			prisonersRight.TextColor3 = UIKit.WARN
+		else
+			prisonersRight.Text = ("%d / %d"):format(housed, capacity)
+			prisonersRight.TextColor3 = UIKit.TEXT
+		end
 
 		local unrest = player:GetAttribute("PrisonUnrest") or 0
 		local perMin = housed * Config.GrantPerPrisoner * (60 / Config.GrantInterval) * (1 - unrest / 200)
-		subLine.Text = ("%s/min in grants · unrest %d%% · session +%s / -%s"):format(
-			Format.money(perMin), unrest, Format.money(earned), Format.money(spent))
-		subLine.TextColor3 = unrest >= 60 and Color3.fromRGB(255, 150, 120)
-			or (unrest >= 30 and Color3.fromRGB(255, 210, 130) or Color3.fromRGB(200, 200, 200))
+		infoRight.Text = ("%s/min · unrest %d%%"):format(Format.money(perMin), unrest)
+		infoRight.TextColor3 = unrest >= 60 and UIKit.BAD or (unrest >= 30 and UIKit.WARN or UIKit.DIM)
 
 		stuckLine.Text = player:GetAttribute("IntakeStuck") == true
 			and "⚠ Arrivals can't reach a cell — is there a door path?" or ""
-
-		dayLabel.Text = ("DAY %d"):format(player:GetAttribute("PrisonDay") or 1)
 	end
-	local function refreshRegime()
-		clockSub.Text = player:GetAttribute("RegimeActivity") or "FreeTime"
+	local function refreshClockSub()
+		clockSub.Text = ("Day %d — %s"):format(
+			player:GetAttribute("PrisonDay") or 1,
+			player:GetAttribute("RegimeActivity") or "FreeTime"
+		)
 	end
-	for _, attr in ipairs({ "PrisonHoused", "PrisonCapacity", "PrisonWaiting", "IntakeStuck", "PrisonDay", "PrisonUnrest" }) do
+	for _, attr in ipairs({ "PrisonHoused", "PrisonCapacity", "PrisonWaiting", "IntakeStuck", "PrisonUnrest" }) do
 		player:GetAttributeChangedSignal(attr):Connect(refreshStats)
 	end
-	player:GetAttributeChangedSignal("RegimeActivity"):Connect(refreshRegime)
+	player:GetAttributeChangedSignal("PrisonDay"):Connect(refreshClockSub)
+	player:GetAttributeChangedSignal("RegimeActivity"):Connect(refreshClockSub)
 	refreshStats()
-	refreshRegime()
+	refreshClockSub()
 
 	RunService.RenderStepped:Connect(function(dt)
 		-- Smooth cash count-up.
@@ -6010,7 +5938,7 @@ function CashHud.start()
 			if math.abs(target - shown) < 1 then
 				shown = target
 			end
-			cashLabel.Text = Format.money(shown)
+			balanceRight.Text = Format.money(shown)
 		end
 
 		-- The shared clock, derived from the server's epoch.
@@ -6028,97 +5956,6 @@ return CashHud
           </Properties>
         </Item>
         <Item class="ModuleScript" referent="28">
-          <Properties>
-            <string name="Name">EmergencyBar</string>
-            <string name="Source"><![CDATA[-- EmergencyBar: Prison Architect's red emergency buttons, bottom-right.
--- The real systems (Lockdown, searches, roll call) arrive in Phase 5 —
--- until then the buttons sit grayed out like PA's locked tools, so the
--- layout is final from day one.
-
-local Players = game:GetService("Players")
-
-local EmergencyBar = {}
-
-local BUTTONS = {
-	{ icon = "🚨", name = "Lockdown" },
-	{ icon = "🔍", name = "Shakedown" },
-	{ icon = "🕳️", name = "Tunnel Search" },
-	{ icon = "📢", name = "Roll Call" },
-}
-
-function EmergencyBar.start()
-	local player = Players.LocalPlayer
-	local playerGui = player:WaitForChild("PlayerGui")
-
-	local gui = Instance.new("ScreenGui")
-	gui.Name = "LockdownEmergencies"
-	gui.ResetOnSpawn = false
-
-	local row = Instance.new("Frame")
-	row.AnchorPoint = Vector2.new(0, 1)
-	row.Position = UDim2.new(0, 14, 1, -14)
-	row.AutomaticSize = Enum.AutomaticSize.X
-	row.Size = UDim2.new(0, 0, 0, 48)
-	row.BackgroundTransparency = 1
-	local layout = Instance.new("UIListLayout")
-	layout.FillDirection = Enum.FillDirection.Horizontal
-	layout.Padding = UDim.new(0, 6)
-	layout.VerticalAlignment = Enum.VerticalAlignment.Center
-	layout.Parent = row
-
-	local note = Instance.new("TextLabel")
-	note.AnchorPoint = Vector2.new(0, 1)
-	note.Position = UDim2.new(0, 14, 1, -66)
-	note.Size = UDim2.new(0, 240, 0, 18)
-	note.BackgroundTransparency = 1
-	note.Font = Enum.Font.GothamBold
-	note.TextScaled = true
-	note.TextXAlignment = Enum.TextXAlignment.Left
-	note.TextColor3 = Color3.fromRGB(255, 170, 150)
-	note.TextStrokeTransparency = 0.5
-	note.Text = ""
-	note.Parent = gui
-
-	local noteId = 0
-	for _, def in ipairs(BUTTONS) do
-		local button = Instance.new("TextButton")
-		button.Size = UDim2.new(0, 52, 0, 44)
-		button.BackgroundColor3 = Color3.fromRGB(60, 25, 25)
-		button.BackgroundTransparency = 0.35
-		button.Font = Enum.Font.GothamBold
-		button.TextSize = 18
-		button.TextTransparency = 0.4
-		button.Text = def.icon
-		local corner = Instance.new("UICorner")
-		corner.CornerRadius = UDim.new(0, 10)
-		corner.Parent = button
-		local stroke = Instance.new("UIStroke")
-		stroke.Color = Color3.fromRGB(160, 60, 60)
-		stroke.Transparency = 0.5
-		stroke.Thickness = 1.5
-		stroke.Parent = button
-		button.Activated:Connect(function()
-			noteId += 1
-			local id = noteId
-			note.Text = def.name .. " — coming in Phase 5!"
-			task.delay(2.5, function()
-				if noteId == id then
-					note.Text = ""
-				end
-			end)
-		end)
-		button.Parent = row
-	end
-
-	row.Parent = gui
-	gui.Parent = playerGui
-end
-
-return EmergencyBar
-]]></string>
-          </Properties>
-        </Item>
-        <Item class="ModuleScript" referent="29">
           <Properties>
             <string name="Name">InmateAnimator</string>
             <string name="Source"><![CDATA[-- InmateAnimator: brings the blocky prisoners to life — entirely on each
@@ -6399,12 +6236,14 @@ return InmateAnimator
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="30">
+        <Item class="ModuleScript" referent="29">
           <Properties>
             <string name="Name">IntakePanel</string>
-            <string name="Source"><![CDATA[-- IntakePanel: the warden's intake report — accept prisoners and toggle
--- auto-intake. Lives in the shared dock (UIKit) so it can't overlap the
--- other menus, and its dock button shows a badge when prisoners queue.
+            <string name="Source"><![CDATA[-- IntakePanel: the warden's intake report — accept prisoners by hand or
+-- flip on auto-intake. It's the popup behind the Prisoners readout in
+-- the bottom-right corner (CashHud wires the click through the client
+-- bootstrap), styled as a PA panel and coordinated by UIKit so it never
+-- overlaps another menu.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -6412,6 +6251,15 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UIKit = require(script.Parent.UIKit)
 
 local IntakePanel = {}
+
+local panel = nil
+
+-- CashHud's Prisoners row calls this.
+function IntakePanel.toggle()
+	if panel then
+		UIKit.showOnly(panel)
+	end
+end
 
 function IntakePanel.start()
 	local player = Players.LocalPlayer
@@ -6423,61 +6271,48 @@ function IntakePanel.start()
 	gui.ResetOnSpawn = false
 	gui.DisplayOrder = 6
 
-	local panel = UIKit.card(gui, "IntakePanel")
+	panel = UIKit.panel(gui, "IntakePanel")
 	panel.AnchorPoint = Vector2.new(1, 1)
-	panel.Position = UDim2.new(1, -82, 1, -12)
-	panel.Size = UDim2.new(0, 250, 0, 176)
+	panel.Position = UDim2.new(1, -12, 1, -104)
+	panel.Size = UDim2.new(0, 232, 0, 168)
+	UIKit.titleBar(panel, "Intake")
 	UIKit.registerPanel(panel)
-
-	local title = Instance.new("TextLabel")
-	title.Position = UDim2.new(0, 14, 0, 10)
-	title.Size = UDim2.new(1, -28, 0, 20)
-	title.BackgroundTransparency = 1
-	title.Font = Enum.Font.GothamBlack
-	title.TextScaled = true
-	title.TextXAlignment = Enum.TextXAlignment.Left
-	title.TextColor3 = UIKit.WARN
-	title.Text = "🚔 INTAKE"
-	title.Parent = panel
 
 	local function label(y, color)
 		local l = Instance.new("TextLabel")
-		l.Position = UDim2.new(0, 14, 0, y)
-		l.Size = UDim2.new(1, -28, 0, 20)
+		l.Position = UDim2.new(0, 10, 0, y)
+		l.Size = UDim2.new(1, -20, 0, 18)
 		l.BackgroundTransparency = 1
-		l.Font = Enum.Font.GothamBold
-		l.TextScaled = true
+		l.Font = Enum.Font.GothamMedium
+		l.TextSize = 13
 		l.TextXAlignment = Enum.TextXAlignment.Left
 		l.TextColor3 = color or UIKit.TEXT
 		l.Parent = panel
 		return l
 	end
-	local housedLabel = label(36)
-	local waitingLabel = label(60)
-	local statusLabel = label(84, UIKit.DIM)
+	local housedLabel = label(32)
+	local waitingLabel = label(52)
+	local statusLabel = label(72, UIKit.DIM)
 
-	local function bigButton(y, color, text)
+	local function paButton(y, text)
 		local b = Instance.new("TextButton")
-		b.Position = UDim2.new(0, 14, 0, y)
-		b.Size = UDim2.new(1, -28, 0, 32)
-		b.BackgroundColor3 = color
+		b.Position = UDim2.new(0, 10, 0, y)
+		b.Size = UDim2.new(1, -20, 0, 26)
+		b.BackgroundColor3 = UIKit.BTN
+		b.BorderSizePixel = 0
 		b.AutoButtonColor = true
 		b.Font = Enum.Font.GothamBold
-		b.TextSize = 16
-		b.TextColor3 = Color3.fromRGB(255, 255, 255)
+		b.TextSize = 13
+		b.TextColor3 = UIKit.TEXT
 		b.Text = text
-		UIKit.corner(b, 10)
+		UIKit.stroke(b, UIKit.EDGE, 1, 0.35)
 		b.Parent = panel
 		return b
 	end
-	local acceptButton = bigButton(108, Color3.fromRGB(52, 120, 66), "➕ Accept prisoner")
-	local autoButton = bigButton(144, UIKit.BG2, "Auto-intake: …")
+	local acceptButton = paButton(96, "Accept Prisoner")
+	local autoButton = paButton(128, "Auto-Intake: …")
 
 	gui.Parent = playerGui
-
-	local dockButton = UIKit.dockButton(playerGui, 2, "🚔", "Intake", function()
-		UIKit.showOnly(panel)
-	end)
 
 	local statusId = 0
 	local function flash(text, color)
@@ -6497,12 +6332,11 @@ function IntakePanel.start()
 		local capacity = player:GetAttribute("PrisonCapacity") or 0
 		local waiting = player:GetAttribute("PrisonWaiting") or 0
 		local auto = player:GetAttribute("AutoIntake")
-		housedLabel.Text = ("🔒 Housed: %d / %d"):format(housed, capacity)
-		waitingLabel.Text = ("⛓️ At the gate: %d"):format(waiting)
+		housedLabel.Text = ("Housed: %d / %d"):format(housed, capacity)
+		waitingLabel.Text = ("At the gate: %d"):format(waiting)
 		waitingLabel.TextColor3 = waiting > 0 and UIKit.WARN or UIKit.TEXT
-		autoButton.Text = auto and "Auto-intake: ON" or "Auto-intake: OFF"
-		autoButton.BackgroundColor3 = auto and Color3.fromRGB(52, 120, 66) or UIKit.BG2
-		UIKit.setBadge(dockButton, waiting > 0 and tostring(waiting) or nil)
+		autoButton.Text = auto and "Auto-Intake: ON" or "Auto-Intake: OFF"
+		autoButton.BackgroundColor3 = auto and UIKit.BTN_ON or UIKit.BTN
 	end
 	for _, attr in ipairs({ "PrisonHoused", "PrisonCapacity", "PrisonWaiting", "AutoIntake" }) do
 		player:GetAttributeChangedSignal(attr):Connect(refresh)
@@ -6530,7 +6364,7 @@ return IntakePanel
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="31">
+        <Item class="ModuleScript" referent="30">
           <Properties>
             <string name="Name">MoodDisplay</string>
             <string name="Source"><![CDATA[-- MoodDisplay: a small mood face that floats over unhappy prisoners so
@@ -6613,12 +6447,504 @@ return MoodDisplay
 ]]></string>
           </Properties>
         </Item>
+        <Item class="ModuleScript" referent="31">
+          <Properties>
+            <string name="Name">PAIcons</string>
+            <string name="Source"><![CDATA[-- PAIcons: the toolbar's icon art, drawn in code.
+--
+-- Prison Architect's real icons are copyrighted image files, so shipping
+-- them would get the game struck. Instead, every icon here is a tiny
+-- picture assembled from plain Frames — rectangles, rotated rectangles
+-- and rounded circles — in the same flat single-color style. Original
+-- art, nothing to upload, and each icon is one function, so swapping one
+-- for a real image later touches exactly one place.
+
+local PAIcons = {}
+
+local function rect(canvas, color, x, y, w, h, rot, round)
+	local f = Instance.new("Frame")
+	f.AnchorPoint = Vector2.new(0.5, 0.5)
+	f.Position = UDim2.fromScale(x, y)
+	f.Size = UDim2.fromScale(w, h)
+	f.BackgroundColor3 = color
+	f.BorderSizePixel = 0
+	f.Rotation = rot or 0
+	if round then
+		local c = Instance.new("UICorner")
+		c.CornerRadius = UDim.new(round, 0)
+		c.Parent = f
+	end
+	f.Parent = canvas
+	return f
+end
+
+local function outline(canvas, color, x, y, w, h, thickness, rot, round)
+	local f = rect(canvas, color, x, y, w, h, rot, round)
+	f.BackgroundTransparency = 1
+	local s = Instance.new("UIStroke")
+	s.Color = color
+	s.Thickness = thickness or 2
+	s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	s.Parent = f
+	return f
+end
+
+local DRAW = {}
+
+function DRAW.build(c, col) -- hammer
+	rect(c, col, 0.42, 0.6, 0.14, 0.62, 45)
+	rect(c, col, 0.6, 0.3, 0.46, 0.22, 45)
+end
+
+function DRAW.foundations(c, col) -- house plan
+	outline(c, col, 0.5, 0.64, 0.56, 0.46, 2)
+	rect(c, col, 0.5, 0.28, 0.34, 0.34, 45)
+end
+
+function DRAW.walls(c, col) -- brick courses
+	rect(c, col, 0.3, 0.26, 0.44, 0.16)
+	rect(c, col, 0.76, 0.26, 0.36, 0.16)
+	rect(c, col, 0.24, 0.5, 0.32, 0.16)
+	rect(c, col, 0.68, 0.5, 0.48, 0.16)
+	rect(c, col, 0.3, 0.74, 0.44, 0.16)
+	rect(c, col, 0.76, 0.74, 0.36, 0.16)
+end
+
+function DRAW.flooring(c, col) -- checkerboard tiles
+	rect(c, col, 0.34, 0.34, 0.3, 0.3)
+	rect(c, col, 0.68, 0.68, 0.3, 0.3)
+	outline(c, col, 0.68, 0.34, 0.3, 0.3, 1.5)
+	outline(c, col, 0.34, 0.68, 0.3, 0.3, 1.5)
+end
+
+function DRAW.rooms(c, col) -- paint roller
+	rect(c, col, 0.46, 0.28, 0.64, 0.26, 0, 0.25)
+	rect(c, col, 0.72, 0.52, 0.1, 0.26)
+	rect(c, col, 0.72, 0.78, 0.16, 0.24, 0, 0.3)
+end
+
+function DRAW.objects(c, col) -- chair, side on
+	rect(c, col, 0.34, 0.4, 0.12, 0.56)
+	rect(c, col, 0.54, 0.62, 0.52, 0.12)
+	rect(c, col, 0.74, 0.82, 0.1, 0.3)
+	rect(c, col, 0.38, 0.82, 0.1, 0.3)
+end
+
+function DRAW.staff(c, col) -- person with a cap
+	rect(c, col, 0.5, 0.1, 0.32, 0.1)
+	rect(c, col, 0.5, 0.27, 0.26, 0.26, 0, 0.5)
+	rect(c, col, 0.5, 0.68, 0.5, 0.4, 0, 0.25)
+end
+
+function DRAW.utilities(c, col) -- lightning bolt
+	rect(c, col, 0.56, 0.3, 0.18, 0.44, 20)
+	rect(c, col, 0.44, 0.68, 0.18, 0.44, 20)
+end
+
+function DRAW.deployment(c, col) -- shield
+	outline(c, col, 0.5, 0.5, 0.52, 0.52, 2, 45)
+	rect(c, col, 0.5, 0.5, 0.22, 0.22, 45)
+end
+
+function DRAW.logistics(c, col) -- shipping crate
+	outline(c, col, 0.5, 0.55, 0.62, 0.5, 2)
+	rect(c, col, 0.5, 0.42, 0.62, 0.07)
+	rect(c, col, 0.5, 0.64, 0.08, 0.32)
+end
+
+function DRAW.intelligence(c, col) -- watching eye
+	outline(c, col, 0.5, 0.5, 0.8, 0.44, 2, 0, 0.5)
+	rect(c, col, 0.5, 0.5, 0.2, 0.2, 0, 0.5)
+end
+
+function DRAW.quickbuild(c, col) -- room with a plus
+	outline(c, col, 0.5, 0.55, 0.56, 0.46, 2)
+	rect(c, col, 0.5, 0.55, 0.3, 0.08)
+	rect(c, col, 0.5, 0.55, 0.08, 0.3)
+end
+
+function DRAW.planning(c, col) -- pencil
+	rect(c, col, 0.56, 0.44, 0.16, 0.6, 45)
+	rect(c, col, 0.28, 0.72, 0.13, 0.13, 45)
+	rect(c, col, 0.78, 0.22, 0.18, 0.1, 45)
+end
+
+function DRAW.emergencies(c, col) -- alarm "!"
+	rect(c, col, 0.5, 0.36, 0.16, 0.44)
+	rect(c, col, 0.5, 0.76, 0.16, 0.14)
+end
+
+function DRAW.move(c, col) -- crossed arrows
+	rect(c, col, 0.5, 0.5, 0.8, 0.13)
+	rect(c, col, 0.5, 0.5, 0.13, 0.8)
+	rect(c, col, 0.5, 0.12, 0.18, 0.18, 45)
+	rect(c, col, 0.5, 0.88, 0.18, 0.18, 45)
+	rect(c, col, 0.12, 0.5, 0.18, 0.18, 45)
+	rect(c, col, 0.88, 0.5, 0.18, 0.18, 45)
+end
+
+function DRAW.bulldoze(c, col) -- demolish X
+	rect(c, col, 0.5, 0.5, 0.16, 0.9, 45)
+	rect(c, col, 0.5, 0.5, 0.16, 0.9, -45)
+end
+
+function DRAW.box(c, col) -- generic category crate
+	outline(c, col, 0.5, 0.5, 0.6, 0.55, 2)
+	rect(c, col, 0.5, 0.35, 0.6, 0.07)
+end
+
+-- Draw `name` into `parent` (any square-ish GuiObject). The art scales
+-- with the parent, minus `inset` px of breathing room per side.
+function PAIcons.draw(parent, name, color, inset)
+	local canvas = Instance.new("Frame")
+	canvas.Name = "IconArt"
+	canvas.AnchorPoint = Vector2.new(0.5, 0.5)
+	canvas.Position = UDim2.fromScale(0.5, 0.5)
+	canvas.Size = UDim2.new(1, -2 * (inset or 7), 1, -2 * (inset or 7))
+	canvas.BackgroundTransparency = 1
+	local fn = DRAW[name] or DRAW.box
+	fn(canvas, color)
+	canvas.Parent = parent
+	return canvas
+end
+
+return PAIcons
+]]></string>
+          </Properties>
+        </Item>
         <Item class="ModuleScript" referent="32">
           <Properties>
+            <string name="Name">PAToolbar</string>
+            <string name="Source"><![CDATA[-- PAToolbar: Prison Architect's bottom-left toolbar, rebuilt for Roblox.
+--
+-- A strip of square blueprint-blue buttons hugs the bottom-left corner
+-- (icon art drawn in code — see PAIcons). Hovering shows a tooltip;
+-- locked tabs render dark exactly like PA's, and clicking a live tab
+-- opens a PA-style menu ABOVE the strip: a titled panel of rows, each
+-- with an icon, a name and a price. UIKit's coordinator guarantees only
+-- one menu is open at a time.
+--
+-- Other files register their tabs through addTab/menu — the strip builds
+-- itself lazily on the first call, so registration order doesn't matter
+-- (LayoutOrder decides the on-screen order).
+
+local Players = game:GetService("Players")
+
+local UIKit = require(script.Parent.UIKit)
+local PAIcons = require(script.Parent.PAIcons)
+
+local PAToolbar = {}
+
+local BTN = 44 -- toolbar buttons are squares this big
+
+local gui, strip, tooltip
+local entries = {} -- id -> { button, enabled, pressed }
+local menus = {} -- id -> menu panel frame
+local activeTool = nil
+
+local function ensure()
+	if gui then
+		return
+	end
+	local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
+	gui = Instance.new("ScreenGui")
+	gui.Name = "LockdownToolbar"
+	gui.ResetOnSpawn = false
+	gui.DisplayOrder = 5
+
+	strip = Instance.new("Frame")
+	strip.Name = "Strip"
+	strip.AnchorPoint = Vector2.new(0, 1)
+	strip.Position = UDim2.new(0, 12, 1, -12)
+	strip.AutomaticSize = Enum.AutomaticSize.X
+	strip.Size = UDim2.new(0, 0, 0, BTN + 8)
+	strip.BackgroundColor3 = UIKit.STRIP
+	strip.BackgroundTransparency = 0.05
+	strip.BorderSizePixel = 0
+	UIKit.stroke(strip, UIKit.EDGE_DIM, 1, 0)
+	UIKit.pad(strip, 4)
+	local layout = Instance.new("UIListLayout")
+	layout.FillDirection = Enum.FillDirection.Horizontal
+	layout.Padding = UDim.new(0, 4)
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Parent = strip
+	strip.Parent = gui
+
+	tooltip = Instance.new("TextLabel")
+	tooltip.Name = "Tooltip"
+	tooltip.AnchorPoint = Vector2.new(0.5, 1)
+	tooltip.AutomaticSize = Enum.AutomaticSize.XY
+	tooltip.Size = UDim2.new(0, 0, 0, 0)
+	tooltip.BackgroundColor3 = UIKit.STRIP
+	tooltip.BorderSizePixel = 0
+	tooltip.Font = Enum.Font.GothamMedium
+	tooltip.TextSize = 13
+	tooltip.TextColor3 = UIKit.TEXT
+	tooltip.Visible = false
+	tooltip.ZIndex = 60
+	UIKit.stroke(tooltip, UIKit.EDGE_DIM, 1, 0)
+	UIKit.pad(tooltip, 5)
+	tooltip.Parent = gui
+
+	gui.Parent = playerGui
+end
+
+local function paint(id)
+	local e = entries[id]
+	if not e then
+		return
+	end
+	if e.pressed then
+		e.button.BackgroundColor3 = UIKit.BTN_ON
+	elseif e.enabled then
+		e.button.BackgroundColor3 = UIKit.BTN
+	else
+		e.button.BackgroundColor3 = UIKit.BTN_DARK
+	end
+end
+
+-- Add a square tab. def = { id, icon (PAIcons name), label (tooltip),
+-- order, enabled (default true), onClick }.
+function PAToolbar.addTab(def)
+	ensure()
+	local enabled = def.enabled ~= false
+	local button = Instance.new("TextButton")
+	button.Name = def.id
+	button.LayoutOrder = def.order or 0
+	button.Size = UDim2.fromOffset(BTN, BTN)
+	button.BackgroundColor3 = enabled and UIKit.BTN or UIKit.BTN_DARK
+	button.BorderSizePixel = 0
+	button.AutoButtonColor = false
+	button.Text = ""
+	UIKit.stroke(button, enabled and UIKit.EDGE or UIKit.EDGE_DIM, 1, 0.35)
+	PAIcons.draw(button, def.icon, enabled and UIKit.ICON or UIKit.ICON_DARK)
+
+	-- The little red attention dot (payroll missed, etc.).
+	local alert = Instance.new("Frame")
+	alert.Name = "Alert"
+	alert.AnchorPoint = Vector2.new(1, 0)
+	alert.Position = UDim2.new(1, -3, 0, 3)
+	alert.Size = UDim2.fromOffset(9, 9)
+	alert.BackgroundColor3 = UIKit.BAD
+	alert.BorderSizePixel = 0
+	alert.Visible = false
+	alert.Parent = button
+
+	local entry = { button = button, enabled = enabled, pressed = false }
+	entries[def.id] = entry
+
+	button.MouseEnter:Connect(function()
+		if enabled and not entry.pressed then
+			button.BackgroundColor3 = UIKit.BTN_HOVER
+		end
+		tooltip.Text = def.label .. (enabled and "" or "  (locked)")
+		tooltip.Position = UDim2.fromOffset(
+			button.AbsolutePosition.X + button.AbsoluteSize.X / 2,
+			button.AbsolutePosition.Y - 6
+		)
+		tooltip.Visible = true
+	end)
+	button.MouseLeave:Connect(function()
+		paint(def.id)
+		tooltip.Visible = false
+	end)
+	button.Activated:Connect(function()
+		tooltip.Visible = false
+		if def.onClick then
+			def.onClick(button)
+		end
+	end)
+	button.Parent = strip
+	return button
+end
+
+function PAToolbar.setPressed(id, on)
+	local e = entries[id]
+	if e then
+		e.pressed = on == true
+		paint(id)
+	end
+end
+
+-- Exactly one TOOL tab is pressed at a time (the walk toggle is managed
+-- separately with setPressed — it can be lit alongside a tool).
+function PAToolbar.setActiveTool(id)
+	if activeTool and activeTool ~= id then
+		PAToolbar.setPressed(activeTool, false)
+	end
+	activeTool = id
+	if id then
+		PAToolbar.setPressed(id, true)
+	end
+end
+
+function PAToolbar.setAlert(id, on)
+	local e = entries[id]
+	local a = e and e.button:FindFirstChild("Alert")
+	if a then
+		a.Visible = on == true
+	end
+end
+
+-- Create the PA menu that opens above the strip for a tab. Fill its
+-- .list with row()s, then call .fit() to size the panel to its contents.
+function PAToolbar.menu(id, title, width)
+	ensure()
+	width = width or 272
+	local panel = Instance.new("Frame")
+	panel.Name = id .. "Menu"
+	panel.AnchorPoint = Vector2.new(0, 1)
+	panel.Position = UDim2.new(0, 12, 1, -(12 + BTN + 8 + 6))
+	panel.Size = UDim2.new(0, width, 0, 120)
+	panel.BackgroundColor3 = UIKit.PANEL
+	panel.BackgroundTransparency = 0.03
+	panel.BorderSizePixel = 0
+	UIKit.stroke(panel, UIKit.EDGE_DIM, 1, 0)
+	UIKit.titleBar(panel, title)
+
+	local list = Instance.new("ScrollingFrame")
+	list.Name = "List"
+	list.Position = UDim2.new(0, 0, 0, 26)
+	list.Size = UDim2.new(1, 0, 1, -26)
+	list.BackgroundTransparency = 1
+	list.BorderSizePixel = 0
+	list.ScrollBarThickness = 4
+	list.ScrollingDirection = Enum.ScrollingDirection.Y
+	list.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	list.CanvasSize = UDim2.new(0, 0, 0, 0)
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0, 2)
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	layout.Parent = list
+	local pad = Instance.new("UIPadding")
+	pad.PaddingTop = UDim.new(0, 4)
+	pad.PaddingBottom = UDim.new(0, 4)
+	pad.Parent = list
+	list.Parent = panel
+
+	panel.Parent = gui
+	UIKit.registerPanel(panel)
+	menus[id] = panel
+
+	local handle = { panel = panel, list = list }
+	function handle.fit()
+		local total = 8
+		local count = 0
+		for _, child in ipairs(list:GetChildren()) do
+			if child:IsA("GuiObject") then
+				total += child.Size.Y.Offset
+				count += 1
+			end
+		end
+		total += math.max(count - 1, 0) * 2
+		panel.Size = UDim2.new(0, width, 0, 26 + math.min(total, 400))
+	end
+	return handle
+end
+
+-- Toggle a tab's menu (closing every other panel). Returns visibility.
+function PAToolbar.toggleMenu(id)
+	return UIKit.showOnly(menus[id])
+end
+
+-- Open a tab's menu if it isn't already the one showing.
+function PAToolbar.openMenu(id)
+	local panel = menus[id]
+	if panel and not panel.Visible then
+		UIKit.showOnly(panel)
+	end
+end
+
+-- One PA menu row: [icon] Name ............ $price. opts = { order,
+-- name, right, height, onClick }. Put art in .icon; flip .setSelected.
+function PAToolbar.row(list, opts)
+	local button = Instance.new("TextButton")
+	button.LayoutOrder = opts.order or 0
+	button.Size = UDim2.new(1, -8, 0, opts.height or 34)
+	button.BackgroundColor3 = UIKit.ROW_HOVER
+	button.BackgroundTransparency = 1
+	button.BorderSizePixel = 0
+	button.AutoButtonColor = false
+	button.Text = ""
+
+	local selectedState = false
+	local function paintRow(hover)
+		if selectedState then
+			button.BackgroundColor3 = UIKit.ROW_ON
+			button.BackgroundTransparency = 0
+		elseif hover then
+			button.BackgroundColor3 = UIKit.ROW_HOVER
+			button.BackgroundTransparency = 0
+		else
+			button.BackgroundTransparency = 1
+		end
+	end
+	button.MouseEnter:Connect(function()
+		paintRow(true)
+	end)
+	button.MouseLeave:Connect(function()
+		paintRow(false)
+	end)
+
+	local iconSlot = Instance.new("Frame")
+	iconSlot.Name = "IconSlot"
+	iconSlot.AnchorPoint = Vector2.new(0, 0.5)
+	iconSlot.Position = UDim2.new(0, 8, 0.5, 0)
+	iconSlot.Size = UDim2.fromOffset(26, 26)
+	iconSlot.BackgroundTransparency = 1
+	iconSlot.Parent = button
+
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Name = "ItemName"
+	nameLabel.Position = UDim2.new(0, 42, 0, 0)
+	nameLabel.Size = UDim2.new(1, -116, 1, 0)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Font = Enum.Font.GothamMedium
+	nameLabel.TextSize = 15
+	nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+	nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	nameLabel.TextColor3 = UIKit.TEXT
+	nameLabel.Text = opts.name or ""
+	nameLabel.Parent = button
+
+	local rightLabel = Instance.new("TextLabel")
+	rightLabel.Name = "ItemRight"
+	rightLabel.AnchorPoint = Vector2.new(1, 0.5)
+	rightLabel.Position = UDim2.new(1, -10, 0.5, 0)
+	rightLabel.Size = UDim2.new(0, 64, 0, 18)
+	rightLabel.BackgroundTransparency = 1
+	rightLabel.Font = Enum.Font.GothamBold
+	rightLabel.TextSize = 14
+	rightLabel.TextXAlignment = Enum.TextXAlignment.Right
+	rightLabel.TextColor3 = UIKit.GOOD
+	rightLabel.Text = opts.right or ""
+	rightLabel.Parent = button
+
+	if opts.onClick then
+		button.Activated:Connect(opts.onClick)
+	end
+	button.Parent = list
+
+	local handle = { button = button, icon = iconSlot, name = nameLabel, right = rightLabel }
+	function handle.setSelected(on)
+		selectedState = on == true
+		paintRow(false)
+	end
+	return handle
+end
+
+return PAToolbar
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="33">
+          <Properties>
             <string name="Name">StaffPanel</string>
-            <string name="Source"><![CDATA[-- StaffPanel: hire/fire Guards, Cooks, Janitors (PA's Staff tab). Lives in
--- the shared dock (UIKit) alongside Intake, so only one is open at a time
--- and nothing overlaps.
+            <string name="Source"><![CDATA[-- StaffPanel: PA's Staff tab, living in the toolbar like the original.
+-- Its menu lists each staff type as a PA row — click the row to hire
+-- one, the − to let one go. The payroll footer shows the running wage
+-- bill, and the tab grows a red alert dot the moment payroll is missed.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -6626,88 +6952,100 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
 local Format = require(ReplicatedStorage.Shared:WaitForChild("Format"))
 local UIKit = require(script.Parent.UIKit)
+local PAIcons = require(script.Parent.PAIcons)
+local PAToolbar = require(script.Parent.PAToolbar)
 
 local StaffPanel = {}
 
+-- Icon tints so the three trades read apart at a glance.
+local TINTS = {
+	Guard = Color3.fromRGB(126, 156, 224),
+	Cook = Color3.fromRGB(236, 236, 236),
+	Janitor = Color3.fromRGB(120, 196, 140),
+}
+
 function StaffPanel.start()
 	local player = Players.LocalPlayer
-	local playerGui = player:WaitForChild("PlayerGui")
 	local staffRequest = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("StaffRequest")
 
-	local gui = Instance.new("ScreenGui")
-	gui.Name = "LockdownStaff"
-	gui.ResetOnSpawn = false
-	gui.DisplayOrder = 6
-
-	local rowH = 50
-	local panel = UIKit.card(gui, "StaffPanel")
-	panel.AnchorPoint = Vector2.new(1, 1)
-	panel.Position = UDim2.new(1, -82, 1, -12)
-	panel.Size = UDim2.new(0, 310, 0, 44 + rowH * #Config.StaffTypes)
-	UIKit.registerPanel(panel)
-
-	local wageLabel = Instance.new("TextLabel")
-	wageLabel.Position = UDim2.new(0, 14, 0, 10)
-	wageLabel.Size = UDim2.new(1, -28, 0, 22)
-	wageLabel.BackgroundTransparency = 1
-	wageLabel.Font = Enum.Font.GothamBlack
-	wageLabel.TextScaled = true
-	wageLabel.TextXAlignment = Enum.TextXAlignment.Left
-	wageLabel.TextColor3 = UIKit.WARN
-	wageLabel.Parent = panel
-
-	local countLabels = {}
+	local menu = PAToolbar.menu("staff", "Staff", 260)
+	local rows = {}
 	for i, def in ipairs(Config.StaffTypes) do
-		local y = 40 + (i - 1) * rowH
-		local info = Instance.new("TextLabel")
-		info.Position = UDim2.new(0, 14, 0, y)
-		info.Size = UDim2.new(0, 180, 0, rowH - 8)
-		info.BackgroundTransparency = 1
-		info.Font = Enum.Font.GothamBold
-		info.TextScaled = true
-		info.TextXAlignment = Enum.TextXAlignment.Left
-		info.TextColor3 = UIKit.TEXT
-		info.Parent = panel
-		countLabels[def.id] = info
-
-		local function actionButton(text, color, xoff, action)
-			local b = Instance.new("TextButton")
-			b.AnchorPoint = Vector2.new(1, 0.5)
-			b.Position = UDim2.new(1, xoff, 0, y + (rowH - 8) / 2)
-			b.Size = UDim2.new(0, 40, 0, 34)
-			b.BackgroundColor3 = color
-			b.Font = Enum.Font.GothamBlack
-			b.TextSize = 20
-			b.TextColor3 = Color3.fromRGB(255, 255, 255)
-			b.Text = text
-			UIKit.corner(b, 10)
-			b.Activated:Connect(function()
+		local handle = PAToolbar.row(menu.list, {
+			order = i,
+			name = def.id,
+			right = Format.money(def.wage),
+			onClick = function()
 				pcall(function()
-					return staffRequest:InvokeServer(action, def.id)
+					return staffRequest:InvokeServer("hire", def.id)
 				end)
+			end,
+		})
+		PAIcons.draw(handle.icon, "staff", TINTS[def.id] or UIKit.ICON, 2)
+
+		-- The little − lets one go (the row itself hires).
+		local fire = Instance.new("TextButton")
+		fire.AnchorPoint = Vector2.new(1, 0.5)
+		fire.Position = UDim2.new(1, -80, 0.5, 0)
+		fire.Size = UDim2.new(0, 22, 0, 22)
+		fire.BackgroundColor3 = UIKit.PANEL
+		fire.BorderSizePixel = 0
+		fire.AutoButtonColor = true
+		fire.Font = Enum.Font.GothamBold
+		fire.TextSize = 16
+		fire.TextColor3 = UIKit.BAD
+		fire.Text = "−"
+		UIKit.stroke(fire, UIKit.EDGE_DIM, 1, 0)
+		fire.Activated:Connect(function()
+			pcall(function()
+				return staffRequest:InvokeServer("fire", def.id)
 			end)
-			b.Parent = panel
-		end
-		actionButton("−", Color3.fromRGB(120, 50, 50), -14, "fire")
-		actionButton("+", Color3.fromRGB(52, 120, 66), -60, "hire")
+		end)
+		fire.Parent = handle.button
+		rows[def.id] = handle
 	end
 
-	gui.Parent = playerGui
+	-- Payroll footer under the rows.
+	local payroll = Instance.new("TextLabel")
+	payroll.LayoutOrder = 99
+	payroll.Size = UDim2.new(1, -8, 0, 22)
+	payroll.BackgroundTransparency = 1
+	payroll.Font = Enum.Font.GothamMedium
+	payroll.TextSize = 12
+	payroll.TextXAlignment = Enum.TextXAlignment.Left
+	payroll.TextColor3 = UIKit.DIM
+	payroll.Text = ""
+	local pad = Instance.new("UIPadding")
+	pad.PaddingLeft = UDim.new(0, 8)
+	pad.Parent = payroll
+	payroll.Parent = menu.list
+	menu.fit()
 
-	local dockButton = UIKit.dockButton(playerGui, 3, "👮", "Staff", function()
-		UIKit.showOnly(panel)
+	PAToolbar.addTab({
+		id = "staff",
+		icon = "staff",
+		label = "Staff",
+		order = 12,
+		onClick = function()
+			PAToolbar.toggleMenu("staff")
+		end,
+	})
+	-- Stay lit exactly while the menu shows (however it gets closed).
+	menu.panel:GetPropertyChangedSignal("Visible"):Connect(function()
+		PAToolbar.setPressed("staff", menu.panel.Visible)
 	end)
 
 	local function refresh()
 		local total = player:GetAttribute("StaffWage") or 0
 		local unpaid = player:GetAttribute("StaffUnpaid") == true
-		wageLabel.Text = ("Payroll %s / %ds%s"):format(Format.money(total), Config.WageInterval, unpaid and "  ⚠ UNPAID" or "")
-		wageLabel.TextColor3 = unpaid and UIKit.BAD or UIKit.WARN
+		payroll.Text = ("Payroll %s / %ds%s"):format(
+			Format.money(total), Config.WageInterval, unpaid and " — UNPAID!" or "")
+		payroll.TextColor3 = unpaid and UIKit.BAD or UIKit.DIM
 		for _, def in ipairs(Config.StaffTypes) do
 			local n = player:GetAttribute("Staff_" .. def.id) or 0
-			countLabels[def.id].Text = ("%s %s: %d  (%s ea)"):format(def.icon, def.id, n, Format.money(def.wage))
+			rows[def.id].name.Text = n > 0 and ("%s  ×%d"):format(def.id, n) or def.id
 		end
-		UIKit.setBadge(dockButton, unpaid and "!" or nil)
+		PAToolbar.setAlert("staff", unpaid)
 	end
 	for _, def in ipairs(Config.StaffTypes) do
 		player:GetAttributeChangedSignal("Staff_" .. def.id):Connect(refresh)
@@ -6721,41 +7059,53 @@ return StaffPanel
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="33">
+        <Item class="ModuleScript" referent="34">
           <Properties>
             <string name="Name">UIKit</string>
-            <string name="Source"><![CDATA[-- UIKit: shared look-and-feel so every panel matches, plus two things
--- that fix the "scattered corners / overlapping panels" mess:
---   * a single bottom-right DOCK of icon buttons (Build, Intake, Staff…)
---   * a panel coordinator so opening one panel closes the others.
+            <string name="Source"><![CDATA[-- UIKit: the shared Prison Architect look. One palette, a few builders,
+-- and a panel coordinator so only one menu is ever open at a time.
 --
+-- PA's HUD is steel-gray panels with sharp corners, 1px borders and
+-- blueprint-blue buttons — so that's what everything here produces. The
+-- art itself is ours (see PAIcons); only the layout language is PA's.
 -- Every client menu builds through here, so restyling the whole game is
 -- one file.
 
 local UIKit = {}
 
 -- Palette -----------------------------------------------------------------
-UIKit.BG = Color3.fromRGB(22, 26, 24)
-UIKit.BG2 = Color3.fromRGB(38, 44, 40)
-UIKit.ACCENT = Color3.fromRGB(90, 200, 130)
-UIKit.GOOD = Color3.fromRGB(120, 230, 140)
-UIKit.WARN = Color3.fromRGB(255, 200, 120)
-UIKit.BAD = Color3.fromRGB(255, 120, 110)
-UIKit.TEXT = Color3.fromRGB(240, 244, 240)
-UIKit.DIM = Color3.fromRGB(160, 168, 162)
 
-function UIKit.corner(inst, radius)
-	local c = Instance.new("UICorner")
-	c.CornerRadius = UDim.new(0, radius or 12)
-	c.Parent = inst
-	return c
-end
+UIKit.STRIP = Color3.fromRGB(24, 28, 33) -- the toolbar strip / tooltips
+UIKit.PANEL = Color3.fromRGB(33, 37, 43) -- menu + readout bodies
+UIKit.TITLE = Color3.fromRGB(45, 51, 59) -- menu title bars
+
+UIKit.BTN = Color3.fromRGB(42, 58, 76) -- blueprint-blue buttons
+UIKit.BTN_HOVER = Color3.fromRGB(54, 74, 96)
+UIKit.BTN_ON = Color3.fromRGB(66, 110, 152) -- pressed / active tab
+UIKit.BTN_DARK = Color3.fromRGB(27, 32, 38) -- locked tabs (PA's dark ones)
+
+UIKit.EDGE = Color3.fromRGB(106, 137, 168) -- thin border on live buttons
+UIKit.EDGE_DIM = Color3.fromRGB(56, 66, 78) -- border on panels/locked tabs
+
+UIKit.ROW_HOVER = Color3.fromRGB(52, 58, 66) -- menu row under the mouse
+UIKit.ROW_ON = Color3.fromRGB(45, 95, 138) -- selected menu row
+
+UIKit.ICON = Color3.fromRGB(208, 224, 238) -- icon art on live buttons
+UIKit.ICON_DARK = Color3.fromRGB(74, 85, 96) -- icon art on locked ones
+
+UIKit.TEXT = Color3.fromRGB(232, 236, 239)
+UIKit.DIM = Color3.fromRGB(154, 164, 173)
+UIKit.GOOD = Color3.fromRGB(125, 220, 132)
+UIKit.WARN = Color3.fromRGB(232, 179, 75)
+UIKit.BAD = Color3.fromRGB(224, 94, 80)
+
+-- Builders ----------------------------------------------------------------
 
 function UIKit.stroke(inst, color, thickness, transparency)
 	local s = Instance.new("UIStroke")
 	s.Color = color or Color3.fromRGB(0, 0, 0)
 	s.Thickness = thickness or 1
-	s.Transparency = transparency or 0.7
+	s.Transparency = transparency or 0
 	s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 	s.Parent = inst
 	return s
@@ -6769,26 +7119,60 @@ function UIKit.pad(inst, px)
 	return p
 end
 
--- A soft drop shadow behind a frame (an ImageLabel would need an asset;
--- a translucent stroke reads clean enough and needs nothing external).
-function UIKit.card(parent, name)
+-- A PA panel: sharp corners, PANEL fill, 1px EDGE_DIM border.
+function UIKit.panel(parent, name)
 	local frame = Instance.new("Frame")
-	frame.Name = name or "Card"
-	frame.BackgroundColor3 = UIKit.BG
-	frame.BackgroundTransparency = 0.08
+	frame.Name = name or "Panel"
+	frame.BackgroundColor3 = UIKit.PANEL
+	frame.BackgroundTransparency = 0.03
 	frame.BorderSizePixel = 0
-	UIKit.corner(frame, 14)
-	UIKit.stroke(frame, Color3.fromRGB(0, 0, 0), 1, 0.5)
+	UIKit.stroke(frame, UIKit.EDGE_DIM, 1, 0)
 	frame.Parent = parent
 	return frame
+end
+
+-- The 26px title bar every PA menu carries: name left, × on the right.
+function UIKit.titleBar(panel, text)
+	local bar = Instance.new("Frame")
+	bar.Name = "TitleBar"
+	bar.Size = UDim2.new(1, 0, 0, 26)
+	bar.BackgroundColor3 = UIKit.TITLE
+	bar.BorderSizePixel = 0
+	bar.Parent = panel
+
+	local label = Instance.new("TextLabel")
+	label.Position = UDim2.new(0, 8, 0, 0)
+	label.Size = UDim2.new(1, -40, 1, 0)
+	label.BackgroundTransparency = 1
+	label.Font = Enum.Font.GothamBold
+	label.TextSize = 14
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.TextColor3 = UIKit.TEXT
+	label.Text = text
+	label.Parent = bar
+
+	local close = Instance.new("TextButton")
+	close.AnchorPoint = Vector2.new(1, 0)
+	close.Position = UDim2.new(1, 0, 0, 0)
+	close.Size = UDim2.new(0, 26, 0, 26)
+	close.BackgroundTransparency = 1
+	close.Font = Enum.Font.GothamBold
+	close.TextSize = 14
+	close.TextColor3 = UIKit.DIM
+	close.Text = "×"
+	close.Activated:Connect(function()
+		UIKit.closeAll()
+	end)
+	close.Parent = bar
+	return bar
 end
 
 -- Panel coordination ------------------------------------------------------
 
 local panels = {} -- frame -> true
 
--- Show `panel` and hide every other registered panel. Pass nil to close
--- them all. Returns the panel's new visibility.
+-- Show `panel` and hide every other registered panel. Showing an already
+-- visible panel hides it instead (toggle). Returns the new visibility.
 function UIKit.showOnly(panel)
 	local wasVisible = panel and panel.Visible
 	for other in pairs(panels) do
@@ -6809,113 +7193,6 @@ end
 function UIKit.closeAll()
 	for other in pairs(panels) do
 		other.Visible = false
-	end
-end
-
--- The dock ----------------------------------------------------------------
-
-local dockList = nil
-
-local function ensureDock(playerGui)
-	if dockList then
-		return dockList
-	end
-	local gui = Instance.new("ScreenGui")
-	gui.Name = "LockdownDock"
-	gui.ResetOnSpawn = false
-	gui.DisplayOrder = 5
-
-	local holder = Instance.new("Frame")
-	holder.AnchorPoint = Vector2.new(1, 1)
-	holder.Position = UDim2.new(1, -12, 1, -12)
-	holder.Size = UDim2.new(0, 60, 0, 0)
-	holder.AutomaticSize = Enum.AutomaticSize.Y
-	holder.BackgroundTransparency = 1
-	local layout = Instance.new("UIListLayout")
-	layout.FillDirection = Enum.FillDirection.Vertical
-	layout.VerticalAlignment = Enum.VerticalAlignment.Bottom
-	layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-	layout.Padding = UDim.new(0, 8)
-	layout.SortOrder = Enum.SortOrder.LayoutOrder
-	layout.Parent = holder
-	holder.Parent = gui
-
-	gui.Parent = playerGui
-	dockList = holder
-	return holder
-end
-
--- Add a square icon button to the dock. onClick receives the button so it
--- can flip its own highlight. Returns the button.
-function UIKit.dockButton(playerGui, order, icon, label, onClick)
-	local dock = ensureDock(playerGui)
-	local button = Instance.new("TextButton")
-	button.LayoutOrder = order
-	button.Size = UDim2.new(0, 60, 0, 58)
-	button.BackgroundColor3 = UIKit.BG
-	button.BackgroundTransparency = 0.08
-	button.AutoButtonColor = false
-	button.Text = ""
-	UIKit.corner(button, 12)
-	UIKit.stroke(button, Color3.fromRGB(0, 0, 0), 1, 0.55)
-
-	local iconLabel = Instance.new("TextLabel")
-	iconLabel.Name = "Icon"
-	iconLabel.Size = UDim2.new(1, 0, 0, 30)
-	iconLabel.Position = UDim2.new(0, 0, 0, 5)
-	iconLabel.BackgroundTransparency = 1
-	iconLabel.Font = Enum.Font.GothamBold
-	iconLabel.TextSize = 22
-	iconLabel.Text = icon
-	iconLabel.Parent = button
-
-	local nameLabel = Instance.new("TextLabel")
-	nameLabel.Size = UDim2.new(1, -4, 0, 16)
-	nameLabel.Position = UDim2.new(0, 2, 1, -18)
-	nameLabel.BackgroundTransparency = 1
-	nameLabel.Font = Enum.Font.GothamBold
-	nameLabel.TextScaled = true
-	nameLabel.TextColor3 = UIKit.TEXT
-	nameLabel.Text = label
-	nameLabel.Parent = button
-
-	local badge = Instance.new("TextLabel")
-	badge.Name = "Badge"
-	badge.AnchorPoint = Vector2.new(1, 0)
-	badge.Position = UDim2.new(1, -2, 0, 2)
-	badge.Size = UDim2.new(0, 20, 0, 20)
-	badge.BackgroundColor3 = UIKit.BAD
-	badge.Font = Enum.Font.GothamBlack
-	badge.TextScaled = true
-	badge.TextColor3 = Color3.fromRGB(255, 255, 255)
-	badge.Text = ""
-	badge.Visible = false
-	UIKit.corner(badge, 10)
-	badge.Parent = button
-
-	button.Activated:Connect(function()
-		onClick(button)
-	end)
-	button.Parent = dock
-
-	return button
-end
-
--- Flip a dock button's "active" look.
-function UIKit.setActive(button, active)
-	button.BackgroundColor3 = active and UIKit.ACCENT or UIKit.BG
-	button.BackgroundTransparency = active and 0 or 0.08
-	local icon = button:FindFirstChild("Icon")
-	if icon then
-		icon.TextColor3 = active and Color3.fromRGB(20, 30, 24) or UIKit.TEXT
-	end
-end
-
-function UIKit.setBadge(button, text)
-	local badge = button:FindFirstChild("Badge")
-	if badge then
-		badge.Text = text or ""
-		badge.Visible = text ~= nil and text ~= ""
 	end
 end
 

@@ -123,22 +123,22 @@ function BuildCamera.enter(part)
 			pan += Vector3.new(1, 0, 0)
 		end
 		-- Edge scrolling (PC): nudge the mouse against a screen edge to
-		-- pan, like every city builder since forever.
+		-- pan, like every city builder since forever. The corners where
+		-- UI lives (toolbar bottom-left, readouts bottom-right) don't pan.
 		if UserInputService.MouseEnabled and not panDragging then
 			local mouse = UserInputService:GetMouseLocation()
 			local viewport = camera.ViewportSize
 			local margin = 14
 			if mouse.X <= margin then
 				pan += Vector3.new(-1, 0, 0)
-			-- Skip the RIGHT edge: the dock buttons live there, so nudging
-			-- toward them shouldn't pan the camera.
-			elseif mouse.X >= viewport.X - margin and mouse.X < viewport.X - 90 then
+			elseif mouse.X >= viewport.X - margin and mouse.Y < viewport.Y - 140 then
 				pan += Vector3.new(1, 0, 0)
 			end
-			-- Skip the very bottom too (toolbar), keep the top.
 			if mouse.Y <= margin then
 				pan += Vector3.new(0, 0, -1)
-			elseif mouse.Y >= viewport.Y - margin and mouse.Y < viewport.Y - 80 then
+			elseif mouse.Y >= viewport.Y - margin
+				and mouse.X > 820 and mouse.X < viewport.X - 220
+			then
 				pan += Vector3.new(0, 0, 1)
 			end
 		end

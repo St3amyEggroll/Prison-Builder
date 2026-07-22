@@ -59,6 +59,7 @@ The economy returns, plus PA's construction feel — and pathfinding, pulled for
 - [x] Worker teleport fixed (walk routes ended inside the object; now they stop beside it)
 - [x] Undo button removed from the toolbar (Ctrl+Z remains for PC)
 - [x] Objectives system removed per owner
+- [x] **PA-style HUD** (per the owner's screenshot): segmented top bar (DAY / cash with ±$ blips / crew / prisoners, amber when arrivals queue), shared prison clock top-right (10-min days, day counter saves), grayed-out emergency buttons bottom-right awaiting Phase 5. Left to-do panel intentionally empty; speed controls intentionally omitted (multiplayer time is shared)
 
 ## Phase 4 — Prisoner life: needs, regime & staff 👮
 

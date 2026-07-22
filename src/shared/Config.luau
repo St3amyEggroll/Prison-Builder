@@ -27,6 +27,9 @@ Config.RefundRate = 0.5
 Config.GrantInterval = 30
 Config.GrantPerPrisoner = 60
 
+-- One in-game day, in real seconds (the top-bar clock and DAY counter).
+Config.DayLength = 600
+
 -- An asset's price = its "Price" attribute, else its category's default.
 Config.DefaultLandPrice = 2000 -- buyable parcels without a Price attribute
 

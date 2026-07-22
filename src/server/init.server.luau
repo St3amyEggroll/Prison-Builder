@@ -29,6 +29,7 @@ end
 remotes.Parent = ReplicatedStorage
 
 local SaveService = require(script.SaveService)
+local TimeService = require(script.TimeService)
 local EconomyService = require(script.EconomyService)
 local Buildables = require(script.Buildables)
 local DoorService = require(script.DoorService)
@@ -40,6 +41,7 @@ local IntakeService = require(script.IntakeService)
 local PlotService = require(script.PlotService)
 
 SaveService.init()
+TimeService.init()
 EconomyService.init()
 Buildables.init()
 DoorService.init()

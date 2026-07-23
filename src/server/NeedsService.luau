@@ -144,6 +144,7 @@ local function step(player)
 		or guardCount >= math.ceil(prisonerCount / Config.GuardsPerPrisoners)
 
 	local unrestSum = 0
+	local needTotals = { food = 0, sleep = 0, hygiene = 0, recreation = 0, safety = 0 }
 
 	for _, entry in ipairs(housed) do
 		local model = entry.model
@@ -163,9 +164,10 @@ local function step(player)
 		)
 
 		-- Behaviour: go where the regime says, recover the right need there.
-		-- Runners answer to SecurityService, not the regime — just keep
-		-- their logical position roughly in sync while they sprint.
+		-- Runners and rioters answer to SecurityService, not the regime —
+		-- just keep their logical position roughly in sync meanwhile.
 		local escaping = model:GetAttribute("Escaping") == true
+			or model:GetAttribute("Rioting") == true
 		if escaping then
 			life.pos = model:GetPivot().Position - Vector3.new(0, PIVOT_HEIGHT, 0)
 			life.walking = false
@@ -196,13 +198,20 @@ local function step(player)
 
 		-- This prisoner's contribution to unrest.
 		local avg = 0
-		for _, val in pairs(life.needs) do
+		for need, val in pairs(life.needs) do
 			avg += val
+			needTotals[need] += val
 		end
 		avg /= 5
 		if avg < 40 then
 			unrestSum += (40 - avg)
 		end
+	end
+
+	-- Prison-wide need averages, for the Reports screen's live bars.
+	for need, total in pairs(needTotals) do
+		player:SetAttribute("NeedAvg_" .. need,
+			prisonerCount > 0 and math.floor(total / prisonerCount) or 100)
 	end
 
 	-- Prison-wide unrest: nudge toward the neglect level. A lockdown

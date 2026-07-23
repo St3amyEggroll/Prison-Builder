@@ -1,5 +1,5 @@
--- SecurityService: Phase 5's teeth — guard patrols, escape attempts, and
--- the warden's emergency powers (Lockdown, Roll Call).
+-- SecurityService: the prison's teeth — guard patrols, escape attempts,
+-- RIOTS, and the warden's emergency powers (Lockdown, Roll Call).
 --
 -- ESCAPES: a prisoner in an angry prison (high unrest) or at the end of
 -- their rope (worst need below 20) may bolt for the plot's front row.
@@ -12,6 +12,11 @@
 --
 -- PATROLS: idle guards wander to random walkable squares so the prison
 -- feels watched (and chases start from useful places).
+--
+-- RIOTS (Phase 6): unrest boiling past the threshold turns a chunk of
+-- the population red — they rampage in erratic dashes until a guard
+-- wrestles each one down, or a lockdown saps their will. Grants stop
+-- for the duration; ending the riot settles unrest back down.
 --
 -- EMERGENCIES: Lockdown confines everyone to their cells (regime forced
 -- to Sleep, no new escapes, unrest cools fast, grants halved while it
@@ -34,12 +39,33 @@ local SecurityService = {}
 
 local PIVOT_HEIGHT = 3
 
--- player -> { zone, walks, guardBusy, escapes, alertCount, escaped, lastRollCall }
+-- player -> { zone, walks, guardBusy, escapes, riot, ... }
 --   walks[model]     = { points, start, duration } (so a walker can be
 --                      stopped mid-stride at the right spot)
 --   guardBusy[model] = "patrol" | "chase" (chases may interrupt patrols)
 --   escapes[model]   = { active, house }
+--   riot             = nil | { rioters = { [model] = {house, subdued} } }
 local records = {}
+
+local ESCAPE_GLOW = Color3.fromRGB(255, 150, 60)
+local RIOT_GLOW = Color3.fromRGB(255, 70, 60)
+
+-- A colored outline everyone can see: runners orange, rioters red.
+local function setGlow(model, color)
+	local glow = model:FindFirstChild("AlertGlow")
+	if color then
+		if not glow then
+			glow = Instance.new("Highlight")
+			glow.Name = "AlertGlow"
+			glow.FillTransparency = 0.75
+			glow.Parent = model
+		end
+		glow.FillColor = color
+		glow.OutlineColor = color
+	elseif glow then
+		glow:Destroy()
+	end
+end
 
 -- Alerts land in a player attribute; the counter prefix guarantees the
 -- changed-signal fires even for identical texts (client strips it).
@@ -120,6 +146,7 @@ end
 
 -- March a rounded-up prisoner back to their bed.
 local function sendHome(rec, prisoner, house, fromPos)
+	setGlow(prisoner, nil) -- back under control
 	if not (house and house.Parent) then
 		prisoner:SetAttribute("Escaping", nil)
 		return
@@ -200,6 +227,7 @@ local function tryEscape(player, rec, entry)
 	local attempt = { active = true, house = entry.house }
 	rec.escapes[prisoner] = attempt
 	prisoner:SetAttribute("Escaping", true)
+	setGlow(prisoner, ESCAPE_GLOW)
 	local duration = PathService.startWalk(prisoner, route, Config.EscapeRunSpeed)
 	rememberWalk(rec, prisoner, route, duration)
 	local name = prisoner:GetAttribute("NpcName") or "A prisoner"
@@ -271,6 +299,55 @@ local function tryEscape(player, rec, entry)
 	end)
 end
 
+-- Riots ---------------------------------------------------------------
+
+local function endRiot(player, rec, contained)
+	rec.riot = nil
+	rec.riotCooldownUntil = workspace:GetServerTimeNow() + Config.RiotCooldown
+	player:SetAttribute("PrisonRiot", false)
+	local unrest = player:GetAttribute("PrisonUnrest") or 0
+	player:SetAttribute("PrisonUnrest", math.min(unrest, Config.RiotUnrestAfter))
+	alert(player, contained and "✅ Riot contained — tempers cooling." or "✅ The riot burned itself out.")
+end
+
+-- One rioter stands down: cleared, un-glowed, marched home.
+local function calmRioter(rec, prisoner, house)
+	prisoner:SetAttribute("Rioting", nil)
+	if rec.riot then
+		rec.riot.rioters[prisoner] = nil
+	end
+	local pos = stopWalk(rec, prisoner)
+	sendHome(rec, prisoner, house, pos)
+end
+
+local function startRiot(player, rec)
+	local housed = IntakeService.getHoused(player)
+	local wanted = math.max(2, math.floor(#housed * Config.RiotFraction))
+	local rioters = {}
+	local count = 0
+	for _, entry in ipairs(housed) do
+		if count >= wanted then
+			break
+		end
+		local prisoner = entry.model
+		if rec.escapes[prisoner] == nil then
+			count += 1
+			rioters[prisoner] = { house = entry.house, subdued = false }
+			prisoner:SetAttribute("Rioting", true)
+			setGlow(prisoner, RIOT_GLOW)
+		end
+	end
+	if count == 0 then
+		return
+	end
+	rec.riot = { rioters = rioters }
+	rec.riots += 1
+	player:SetAttribute("PrisonRiot", true)
+	player:SetAttribute("PrisonRiots", rec.riots)
+	alert(player, ("🔥 RIOT! %d prisoner%s are tearing the place up — guards, lockdown, anything!"):format(
+		count, count == 1 and "" or "s"))
+end
+
 -- Emergencies --------------------------------------------------------------
 
 function SecurityService.handleRequest(player, action)
@@ -327,12 +404,17 @@ function SecurityService.assignPlayer(player, zone)
 		walks = {},
 		guardBusy = {},
 		escapes = {},
+		riot = nil,
+		riots = 0,
+		riotCooldownUntil = 0,
 		alertCount = 0,
 		escaped = 0,
 		lastRollCall = 0,
 	}
 	player:SetAttribute("PrisonLockdown", false)
 	player:SetAttribute("PrisonEscapes", 0)
+	player:SetAttribute("PrisonRiot", false)
+	player:SetAttribute("PrisonRiots", 0)
 end
 
 function SecurityService.releasePlayer(player)
@@ -417,7 +499,10 @@ function SecurityService.init()
 				local unrest = player:GetAttribute("PrisonUnrest") or 0
 				for _, entry in ipairs(IntakeService.getHoused(player)) do
 					local prisoner = entry.model
-					if rec.escapes[prisoner] == nil and now >= (prisoner:GetAttribute("EscapeCooldown") or 0) then
+					if rec.escapes[prisoner] == nil
+						and prisoner:GetAttribute("Rioting") ~= true -- rioters riot, they don't run
+						and now >= (prisoner:GetAttribute("EscapeCooldown") or 0)
+					then
 						local chance = Config.EscapeUnrestFactor * (unrest / 100)
 						if (prisoner:GetAttribute("MoodValue") or 100) < 20 then
 							chance += Config.EscapeDesperationChance
@@ -425,6 +510,126 @@ function SecurityService.init()
 						if chance > 0 and math.random() < chance then
 							tryEscape(player, rec, entry)
 						end
+					end
+				end
+			end
+		end
+	end)
+
+	-- Riots: trigger, rampage, and the guards who end them.
+	task.spawn(function()
+		while true do
+			task.wait(Config.RiotTick)
+			local now = workspace:GetServerTimeNow()
+			for player, rec in pairs(records) do
+				if not player:IsDescendantOf(Players) then
+					continue
+				end
+				local zone = rec.zone
+				local lockdown = player:GetAttribute("PrisonLockdown") == true
+
+				if not rec.riot then
+					-- Boiling point?
+					local unrest = player:GetAttribute("PrisonUnrest") or 0
+					if not lockdown and unrest >= Config.RiotThreshold and now >= rec.riotCooldownUntil
+						and #IntakeService.getHoused(player) >= 2
+					then
+						startRiot(player, rec)
+					end
+					continue
+				end
+
+				-- Prune rioters whose models vanished; end when none left.
+				local anyLeft = false
+				for prisoner in pairs(rec.riot.rioters) do
+					if prisoner.Parent == nil then
+						rec.riot.rioters[prisoner] = nil
+					else
+						anyLeft = true
+					end
+				end
+				if not anyLeft then
+					endRiot(player, rec, true)
+					continue
+				end
+
+				for prisoner, info in pairs(rec.riot.rioters) do
+					if info.subdued then
+						continue
+					end
+					-- Lockdown saps the fight out of them.
+					if lockdown and math.random() < Config.RiotGiveUpChance then
+						calmRioter(rec, prisoner, info.house)
+						continue
+					end
+					-- Rampage: erratic dashes to nearby squares.
+					if prisoner:GetAttribute("EscortStart") == nil then
+						local from = prisoner:GetPivot().Position - Vector3.new(0, PIVOT_HEIGHT, 0)
+						local cx, cz = GridMath.worldToCell(zone.info, from, 1, 1)
+						for _ = 1, 5 do
+							local x = math.clamp(cx + math.random(-5, 5), 0, zone.info.cols - 1)
+							local z = math.clamp(cz + math.random(-5, 5), 0, zone.info.rows - 1)
+							if PathService.isWalkable(zone, x, z) then
+								local targetPos = GridMath.regionCenter(zone.info, x, z, 1, 1).Position
+								local route = PathService.findRoute(
+									zone, from, { gx = x, gz = z, w = 1, d = 1 }, targetPos)
+								if route then
+									local duration = PathService.startWalk(prisoner, route, Config.RioterSpeed)
+									rememberWalk(rec, prisoner, route, duration)
+									task.delay(duration, function()
+										if prisoner.Parent ~= nil and prisoner:GetAttribute("Rioting") == true then
+											PathService.finishWalk(prisoner,
+												CFrame.new(targetPos + Vector3.new(0, PIVOT_HEIGHT, 0)))
+											rec.walks[prisoner] = nil
+										end
+									end)
+								end
+								break
+							end
+						end
+					end
+				end
+
+				-- Guards wade in: one free guard per un-subdued rioter.
+				for prisoner, info in pairs(rec.riot.rioters) do
+					if info.subdued then
+						continue
+					end
+					local grabbed = nil
+					for _, guard in ipairs(StaffService.getStaff(player, "Guard")) do
+						local busy = rec.guardBusy[guard]
+						if busy == nil or busy == "patrol" then
+							grabbed = guard
+							break
+						end
+					end
+					if not grabbed then
+						break -- everyone's hands are full
+					end
+					local gFrom = currentFloorPos(rec, grabbed)
+					local target = currentFloorPos(rec, prisoner)
+					local tx, tz = GridMath.worldToCell(zone.info, target, 1, 1)
+					local route = PathService.findRoute(zone, gFrom, { gx = tx, gz = tz, w = 1, d = 1 }, target)
+					if route then
+						info.subdued = true
+						stopWalk(rec, grabbed)
+						rec.guardBusy[grabbed] = "chase"
+						local duration = PathService.startWalk(grabbed, route, Config.EscapeRunSpeed)
+						rememberWalk(rec, grabbed, route, duration)
+						task.delay(duration + Config.RiotSubdueTime, function()
+							if grabbed.Parent ~= nil then
+								stopWalk(rec, grabbed)
+							end
+							task.delay(1.5, function()
+								rec.guardBusy[grabbed] = nil
+							end)
+							if prisoner.Parent == nil or prisoner:GetAttribute("Rioting") ~= true then
+								return
+							end
+							local name = prisoner:GetAttribute("NpcName") or "A rioter"
+							alert(player, "👮 " .. name .. " subdued and marched back.")
+							calmRioter(rec, prisoner, info.house)
+						end)
 					end
 				end
 			end

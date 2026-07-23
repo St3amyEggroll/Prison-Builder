@@ -256,6 +256,19 @@ Config.GuardCatchGrace = 1.5 -- seconds of slack the guard is allowed
 Config.RollCallCooldown = 45 -- seconds between roll calls
 Config.LockdownCalm = 0.5 -- unrest drop per second while locked down
 
+-- Riots (Phase 6): unrest at the threshold boils over — a chunk of the
+-- population turns red and rampages until guards subdue them one by one
+-- (or a lockdown saps their will). Grants stop entirely during a riot,
+-- and when it ends, unrest settles back down to RiotUnrestAfter.
+Config.RiotThreshold = 80
+Config.RiotFraction = 0.34 -- share of the population that joins in
+Config.RiotTick = 4 -- seconds between riot updates
+Config.RioterSpeed = 5 -- studs/sec of angry rampage dashes
+Config.RiotSubdueTime = 2 -- seconds a guard wrestles before it's over
+Config.RiotGiveUpChance = 0.35 -- per tick, under lockdown
+Config.RiotCooldown = 120 -- calm seconds before another can start
+Config.RiotUnrestAfter = 40
+
 -- Foundations ------------------------------------------------------------
 
 -- The 🏗️ tool: drag a rectangle, walls go up around the edge with floor
@@ -584,7 +597,7 @@ RoomService.onRoomsChanged(function(player)
 	IntakeService.poke(player)
 end)
 
-print("[Lockdown] Server ready — Phase 5: security, escapes, emergencies")
+print("[Lockdown] Server ready — Phase 6: riots, reports, day/night")
 ]]></string>
       </Properties>
       <Item class="ModuleScript" referent="8">
@@ -1283,7 +1296,9 @@ function EconomyService.init()
 					-- Miserable prisons pay less: 100% unrest halves grants.
 					local unrest = player:GetAttribute("PrisonUnrest") or 0
 					local amount = math.floor(housed * Config.GrantPerPrisoner * (1 - unrest / 200))
-					if player:GetAttribute("PrisonLockdown") == true then
+					if player:GetAttribute("PrisonRiot") == true then
+						amount = 0 -- nobody pays grants mid-riot
+					elseif player:GetAttribute("PrisonLockdown") == true then
 						amount = math.floor(amount * 0.5) -- locked-down prisons earn half
 					end
 					EconomyService.credit(player, amount)
@@ -1949,6 +1964,7 @@ local function step(player)
 		or guardCount >= math.ceil(prisonerCount / Config.GuardsPerPrisoners)
 
 	local unrestSum = 0
+	local needTotals = { food = 0, sleep = 0, hygiene = 0, recreation = 0, safety = 0 }
 
 	for _, entry in ipairs(housed) do
 		local model = entry.model
@@ -1968,9 +1984,10 @@ local function step(player)
 		)
 
 		-- Behaviour: go where the regime says, recover the right need there.
-		-- Runners answer to SecurityService, not the regime — just keep
-		-- their logical position roughly in sync while they sprint.
+		-- Runners and rioters answer to SecurityService, not the regime —
+		-- just keep their logical position roughly in sync meanwhile.
 		local escaping = model:GetAttribute("Escaping") == true
+			or model:GetAttribute("Rioting") == true
 		if escaping then
 			life.pos = model:GetPivot().Position - Vector3.new(0, PIVOT_HEIGHT, 0)
 			life.walking = false
@@ -2001,13 +2018,20 @@ local function step(player)
 
 		-- This prisoner's contribution to unrest.
 		local avg = 0
-		for _, val in pairs(life.needs) do
+		for need, val in pairs(life.needs) do
 			avg += val
+			needTotals[need] += val
 		end
 		avg /= 5
 		if avg < 40 then
 			unrestSum += (40 - avg)
 		end
+	end
+
+	-- Prison-wide need averages, for the Reports screen's live bars.
+	for need, total in pairs(needTotals) do
+		player:SetAttribute("NeedAvg_" .. need,
+			prisonerCount > 0 and math.floor(total / prisonerCount) or 100)
 	end
 
 	-- Prison-wide unrest: nudge toward the neglect level. A lockdown
@@ -3876,8 +3900,8 @@ return SaveService
       <Item class="ModuleScript" referent="20">
         <Properties>
           <string name="Name">SecurityService</string>
-          <string name="Source"><![CDATA[-- SecurityService: Phase 5's teeth — guard patrols, escape attempts, and
--- the warden's emergency powers (Lockdown, Roll Call).
+          <string name="Source"><![CDATA[-- SecurityService: the prison's teeth — guard patrols, escape attempts,
+-- RIOTS, and the warden's emergency powers (Lockdown, Roll Call).
 --
 -- ESCAPES: a prisoner in an angry prison (high unrest) or at the end of
 -- their rope (worst need below 20) may bolt for the plot's front row.
@@ -3890,6 +3914,11 @@ return SaveService
 --
 -- PATROLS: idle guards wander to random walkable squares so the prison
 -- feels watched (and chases start from useful places).
+--
+-- RIOTS (Phase 6): unrest boiling past the threshold turns a chunk of
+-- the population red — they rampage in erratic dashes until a guard
+-- wrestles each one down, or a lockdown saps their will. Grants stop
+-- for the duration; ending the riot settles unrest back down.
 --
 -- EMERGENCIES: Lockdown confines everyone to their cells (regime forced
 -- to Sleep, no new escapes, unrest cools fast, grants halved while it
@@ -3912,12 +3941,33 @@ local SecurityService = {}
 
 local PIVOT_HEIGHT = 3
 
--- player -> { zone, walks, guardBusy, escapes, alertCount, escaped, lastRollCall }
+-- player -> { zone, walks, guardBusy, escapes, riot, ... }
 --   walks[model]     = { points, start, duration } (so a walker can be
 --                      stopped mid-stride at the right spot)
 --   guardBusy[model] = "patrol" | "chase" (chases may interrupt patrols)
 --   escapes[model]   = { active, house }
+--   riot             = nil | { rioters = { [model] = {house, subdued} } }
 local records = {}
+
+local ESCAPE_GLOW = Color3.fromRGB(255, 150, 60)
+local RIOT_GLOW = Color3.fromRGB(255, 70, 60)
+
+-- A colored outline everyone can see: runners orange, rioters red.
+local function setGlow(model, color)
+	local glow = model:FindFirstChild("AlertGlow")
+	if color then
+		if not glow then
+			glow = Instance.new("Highlight")
+			glow.Name = "AlertGlow"
+			glow.FillTransparency = 0.75
+			glow.Parent = model
+		end
+		glow.FillColor = color
+		glow.OutlineColor = color
+	elseif glow then
+		glow:Destroy()
+	end
+end
 
 -- Alerts land in a player attribute; the counter prefix guarantees the
 -- changed-signal fires even for identical texts (client strips it).
@@ -3998,6 +4048,7 @@ end
 
 -- March a rounded-up prisoner back to their bed.
 local function sendHome(rec, prisoner, house, fromPos)
+	setGlow(prisoner, nil) -- back under control
 	if not (house and house.Parent) then
 		prisoner:SetAttribute("Escaping", nil)
 		return
@@ -4078,6 +4129,7 @@ local function tryEscape(player, rec, entry)
 	local attempt = { active = true, house = entry.house }
 	rec.escapes[prisoner] = attempt
 	prisoner:SetAttribute("Escaping", true)
+	setGlow(prisoner, ESCAPE_GLOW)
 	local duration = PathService.startWalk(prisoner, route, Config.EscapeRunSpeed)
 	rememberWalk(rec, prisoner, route, duration)
 	local name = prisoner:GetAttribute("NpcName") or "A prisoner"
@@ -4149,6 +4201,55 @@ local function tryEscape(player, rec, entry)
 	end)
 end
 
+-- Riots ---------------------------------------------------------------
+
+local function endRiot(player, rec, contained)
+	rec.riot = nil
+	rec.riotCooldownUntil = workspace:GetServerTimeNow() + Config.RiotCooldown
+	player:SetAttribute("PrisonRiot", false)
+	local unrest = player:GetAttribute("PrisonUnrest") or 0
+	player:SetAttribute("PrisonUnrest", math.min(unrest, Config.RiotUnrestAfter))
+	alert(player, contained and "✅ Riot contained — tempers cooling." or "✅ The riot burned itself out.")
+end
+
+-- One rioter stands down: cleared, un-glowed, marched home.
+local function calmRioter(rec, prisoner, house)
+	prisoner:SetAttribute("Rioting", nil)
+	if rec.riot then
+		rec.riot.rioters[prisoner] = nil
+	end
+	local pos = stopWalk(rec, prisoner)
+	sendHome(rec, prisoner, house, pos)
+end
+
+local function startRiot(player, rec)
+	local housed = IntakeService.getHoused(player)
+	local wanted = math.max(2, math.floor(#housed * Config.RiotFraction))
+	local rioters = {}
+	local count = 0
+	for _, entry in ipairs(housed) do
+		if count >= wanted then
+			break
+		end
+		local prisoner = entry.model
+		if rec.escapes[prisoner] == nil then
+			count += 1
+			rioters[prisoner] = { house = entry.house, subdued = false }
+			prisoner:SetAttribute("Rioting", true)
+			setGlow(prisoner, RIOT_GLOW)
+		end
+	end
+	if count == 0 then
+		return
+	end
+	rec.riot = { rioters = rioters }
+	rec.riots += 1
+	player:SetAttribute("PrisonRiot", true)
+	player:SetAttribute("PrisonRiots", rec.riots)
+	alert(player, ("🔥 RIOT! %d prisoner%s are tearing the place up — guards, lockdown, anything!"):format(
+		count, count == 1 and "" or "s"))
+end
+
 -- Emergencies --------------------------------------------------------------
 
 function SecurityService.handleRequest(player, action)
@@ -4205,12 +4306,17 @@ function SecurityService.assignPlayer(player, zone)
 		walks = {},
 		guardBusy = {},
 		escapes = {},
+		riot = nil,
+		riots = 0,
+		riotCooldownUntil = 0,
 		alertCount = 0,
 		escaped = 0,
 		lastRollCall = 0,
 	}
 	player:SetAttribute("PrisonLockdown", false)
 	player:SetAttribute("PrisonEscapes", 0)
+	player:SetAttribute("PrisonRiot", false)
+	player:SetAttribute("PrisonRiots", 0)
 end
 
 function SecurityService.releasePlayer(player)
@@ -4295,7 +4401,10 @@ function SecurityService.init()
 				local unrest = player:GetAttribute("PrisonUnrest") or 0
 				for _, entry in ipairs(IntakeService.getHoused(player)) do
 					local prisoner = entry.model
-					if rec.escapes[prisoner] == nil and now >= (prisoner:GetAttribute("EscapeCooldown") or 0) then
+					if rec.escapes[prisoner] == nil
+						and prisoner:GetAttribute("Rioting") ~= true -- rioters riot, they don't run
+						and now >= (prisoner:GetAttribute("EscapeCooldown") or 0)
+					then
 						local chance = Config.EscapeUnrestFactor * (unrest / 100)
 						if (prisoner:GetAttribute("MoodValue") or 100) < 20 then
 							chance += Config.EscapeDesperationChance
@@ -4303,6 +4412,126 @@ function SecurityService.init()
 						if chance > 0 and math.random() < chance then
 							tryEscape(player, rec, entry)
 						end
+					end
+				end
+			end
+		end
+	end)
+
+	-- Riots: trigger, rampage, and the guards who end them.
+	task.spawn(function()
+		while true do
+			task.wait(Config.RiotTick)
+			local now = workspace:GetServerTimeNow()
+			for player, rec in pairs(records) do
+				if not player:IsDescendantOf(Players) then
+					continue
+				end
+				local zone = rec.zone
+				local lockdown = player:GetAttribute("PrisonLockdown") == true
+
+				if not rec.riot then
+					-- Boiling point?
+					local unrest = player:GetAttribute("PrisonUnrest") or 0
+					if not lockdown and unrest >= Config.RiotThreshold and now >= rec.riotCooldownUntil
+						and #IntakeService.getHoused(player) >= 2
+					then
+						startRiot(player, rec)
+					end
+					continue
+				end
+
+				-- Prune rioters whose models vanished; end when none left.
+				local anyLeft = false
+				for prisoner in pairs(rec.riot.rioters) do
+					if prisoner.Parent == nil then
+						rec.riot.rioters[prisoner] = nil
+					else
+						anyLeft = true
+					end
+				end
+				if not anyLeft then
+					endRiot(player, rec, true)
+					continue
+				end
+
+				for prisoner, info in pairs(rec.riot.rioters) do
+					if info.subdued then
+						continue
+					end
+					-- Lockdown saps the fight out of them.
+					if lockdown and math.random() < Config.RiotGiveUpChance then
+						calmRioter(rec, prisoner, info.house)
+						continue
+					end
+					-- Rampage: erratic dashes to nearby squares.
+					if prisoner:GetAttribute("EscortStart") == nil then
+						local from = prisoner:GetPivot().Position - Vector3.new(0, PIVOT_HEIGHT, 0)
+						local cx, cz = GridMath.worldToCell(zone.info, from, 1, 1)
+						for _ = 1, 5 do
+							local x = math.clamp(cx + math.random(-5, 5), 0, zone.info.cols - 1)
+							local z = math.clamp(cz + math.random(-5, 5), 0, zone.info.rows - 1)
+							if PathService.isWalkable(zone, x, z) then
+								local targetPos = GridMath.regionCenter(zone.info, x, z, 1, 1).Position
+								local route = PathService.findRoute(
+									zone, from, { gx = x, gz = z, w = 1, d = 1 }, targetPos)
+								if route then
+									local duration = PathService.startWalk(prisoner, route, Config.RioterSpeed)
+									rememberWalk(rec, prisoner, route, duration)
+									task.delay(duration, function()
+										if prisoner.Parent ~= nil and prisoner:GetAttribute("Rioting") == true then
+											PathService.finishWalk(prisoner,
+												CFrame.new(targetPos + Vector3.new(0, PIVOT_HEIGHT, 0)))
+											rec.walks[prisoner] = nil
+										end
+									end)
+								end
+								break
+							end
+						end
+					end
+				end
+
+				-- Guards wade in: one free guard per un-subdued rioter.
+				for prisoner, info in pairs(rec.riot.rioters) do
+					if info.subdued then
+						continue
+					end
+					local grabbed = nil
+					for _, guard in ipairs(StaffService.getStaff(player, "Guard")) do
+						local busy = rec.guardBusy[guard]
+						if busy == nil or busy == "patrol" then
+							grabbed = guard
+							break
+						end
+					end
+					if not grabbed then
+						break -- everyone's hands are full
+					end
+					local gFrom = currentFloorPos(rec, grabbed)
+					local target = currentFloorPos(rec, prisoner)
+					local tx, tz = GridMath.worldToCell(zone.info, target, 1, 1)
+					local route = PathService.findRoute(zone, gFrom, { gx = tx, gz = tz, w = 1, d = 1 }, target)
+					if route then
+						info.subdued = true
+						stopWalk(rec, grabbed)
+						rec.guardBusy[grabbed] = "chase"
+						local duration = PathService.startWalk(grabbed, route, Config.EscapeRunSpeed)
+						rememberWalk(rec, grabbed, route, duration)
+						task.delay(duration + Config.RiotSubdueTime, function()
+							if grabbed.Parent ~= nil then
+								stopWalk(rec, grabbed)
+							end
+							task.delay(1.5, function()
+								rec.guardBusy[grabbed] = nil
+							end)
+							if prisoner.Parent == nil or prisoner:GetAttribute("Rioting") ~= true then
+								return
+							end
+							local name = prisoner:GetAttribute("NpcName") or "A rioter"
+							alert(player, "👮 " .. name .. " subdued and marched back.")
+							calmRioter(rec, prisoner, info.house)
+						end)
 					end
 				end
 			end
@@ -4663,8 +4892,10 @@ local build = require(script.BuildMode).start()
 local IntakePanel = require(script.IntakePanel)
 IntakePanel.start()
 require(script.StaffPanel).start(build)
+require(script.ReportsPanel).start()
 require(script.EmergencyPanel).start()
 require(script.CashHud).start({ onPrisoners = IntakePanel.toggle })
+require(script.DayNight).start()
 require(script.InmateAnimator).start()
 require(script.MoodDisplay).start()
 ]]></string>
@@ -6622,7 +6853,10 @@ function CashHud.start(opts)
 	end
 	local function refreshClockSub()
 		local day = player:GetAttribute("PrisonDay") or 1
-		if player:GetAttribute("PrisonLockdown") == true then
+		if player:GetAttribute("PrisonRiot") == true then
+			clockSub.Text = ("Day %d — RIOT!"):format(day)
+			clockSub.TextColor3 = UIKit.BAD
+		elseif player:GetAttribute("PrisonLockdown") == true then
 			clockSub.Text = ("Day %d — LOCKDOWN"):format(day)
 			clockSub.TextColor3 = UIKit.BAD
 		else
@@ -6636,6 +6870,7 @@ function CashHud.start(opts)
 	player:GetAttributeChangedSignal("PrisonDay"):Connect(refreshClockSub)
 	player:GetAttributeChangedSignal("RegimeActivity"):Connect(refreshClockSub)
 	player:GetAttributeChangedSignal("PrisonLockdown"):Connect(refreshClockSub)
+	player:GetAttributeChangedSignal("PrisonRiot"):Connect(refreshClockSub)
 	refreshStats()
 	refreshClockSub()
 
@@ -6665,6 +6900,38 @@ return CashHud
           </Properties>
         </Item>
         <Item class="ModuleScript" referent="29">
+          <Properties>
+            <string name="Name">DayNight</string>
+            <string name="Source"><![CDATA[-- DayNight: the shared prison clock made visible. Lighting follows the
+-- same ClockEpoch every HUD clock derives from, so 06:00 on the top-right
+-- clock IS sunrise and the Sleep regime really happens in the dark. One
+-- full day-night cycle = Config.DayLength real seconds (10 minutes by
+-- default), identical for every player on the server — time is shared.
+
+local Lighting = game:GetService("Lighting")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
+
+local DayNight = {}
+
+function DayNight.start()
+	RunService.Heartbeat:Connect(function()
+		local epoch = workspace:GetAttribute("ClockEpoch")
+		if not epoch then
+			return
+		end
+		local frac = ((workspace:GetServerTimeNow() - epoch) % Config.DayLength) / Config.DayLength
+		Lighting.ClockTime = frac * 24
+	end)
+end
+
+return DayNight
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="30">
           <Properties>
             <string name="Name">EmergencyPanel</string>
             <string name="Source"><![CDATA[-- EmergencyPanel: PA's Emergencies tab — live as of Phase 5. Lockdown
@@ -6762,7 +7029,7 @@ return EmergencyPanel
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="30">
+        <Item class="ModuleScript" referent="31">
           <Properties>
             <string name="Name">InmateAnimator</string>
             <string name="Source"><![CDATA[-- InmateAnimator: brings the blocky prisoners to life — entirely on each
@@ -7043,7 +7310,7 @@ return InmateAnimator
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="31">
+        <Item class="ModuleScript" referent="32">
           <Properties>
             <string name="Name">IntakePanel</string>
             <string name="Source"><![CDATA[-- IntakePanel: the warden's intake report — accept prisoners by hand or
@@ -7171,7 +7438,7 @@ return IntakePanel
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="32">
+        <Item class="ModuleScript" referent="33">
           <Properties>
             <string name="Name">MoodDisplay</string>
             <string name="Source"><![CDATA[-- MoodDisplay: a small mood face that floats over unhappy prisoners so
@@ -7254,7 +7521,7 @@ return MoodDisplay
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="33">
+        <Item class="ModuleScript" referent="34">
           <Properties>
             <string name="Name">PAIcons</string>
             <string name="Source"><![CDATA[-- PAIcons: the toolbar's icon art, drawn in code.
@@ -7395,6 +7662,13 @@ function DRAW.bulldoze(c, col) -- demolish X
 	rect(c, col, 0.5, 0.5, 0.16, 0.9, -45)
 end
 
+function DRAW.reports(c, col) -- report page
+	outline(c, col, 0.5, 0.5, 0.54, 0.76, 2)
+	rect(c, col, 0.5, 0.32, 0.32, 0.07)
+	rect(c, col, 0.5, 0.48, 0.32, 0.07)
+	rect(c, col, 0.44, 0.64, 0.2, 0.07)
+end
+
 function DRAW.box(c, col) -- generic category crate
 	outline(c, col, 0.5, 0.5, 0.6, 0.55, 2)
 	rect(c, col, 0.5, 0.35, 0.6, 0.07)
@@ -7419,7 +7693,7 @@ return PAIcons
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="34">
+        <Item class="ModuleScript" referent="35">
           <Properties>
             <string name="Name">PAToolbar</string>
             <string name="Source"><![CDATA[-- PAToolbar: Prison Architect's bottom-left toolbar, rebuilt for Roblox.
@@ -7745,7 +8019,222 @@ return PAToolbar
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="35">
+        <Item class="ModuleScript" referent="36">
+          <Properties>
+            <string name="Name">ReportsPanel</string>
+            <string name="Source"><![CDATA[-- ReportsPanel: PA's Reports window — the warden's numbers in one place.
+-- Population, finance and security stats on the left; live bars for the
+-- prison-wide average of every need on the right (fed by the NeedAvg_*
+-- attributes NeedsService publishes). Opens from its own toolbar tab,
+-- centered like PA's report screen, coordinated by UIKit so it never
+-- overlaps another menu.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"))
+local Format = require(ReplicatedStorage.Shared:WaitForChild("Format"))
+local UIKit = require(script.Parent.UIKit)
+local PAToolbar = require(script.Parent.PAToolbar)
+
+local ReportsPanel = {}
+
+local NEEDS = { "food", "sleep", "hygiene", "recreation", "safety" }
+
+function ReportsPanel.start()
+	local player = Players.LocalPlayer
+	local playerGui = player:WaitForChild("PlayerGui")
+	local leaderstats = player:WaitForChild("leaderstats")
+	local cashValue = leaderstats:WaitForChild("Cash")
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "LockdownReports"
+	gui.ResetOnSpawn = false
+	gui.DisplayOrder = 7
+
+	local panel = UIKit.panel(gui, "ReportsPanel")
+	panel.AnchorPoint = Vector2.new(0.5, 0.5)
+	panel.Position = UDim2.new(0.5, 0, 0.5, -20)
+	panel.Size = UDim2.new(0, 470, 0, 336)
+	UIKit.titleBar(panel, "Reports")
+	UIKit.registerPanel(panel)
+	panel.Parent = gui
+
+	local function header(x, y, w, text)
+		local label = Instance.new("TextLabel")
+		label.Position = UDim2.new(0, x, 0, y)
+		label.Size = UDim2.new(0, w, 0, 16)
+		label.BackgroundTransparency = 1
+		label.Font = Enum.Font.GothamBold
+		label.TextSize = 11
+		label.TextXAlignment = Enum.TextXAlignment.Left
+		label.TextColor3 = UIKit.EDGE
+		label.Text = string.upper(text)
+		label.Parent = panel
+	end
+
+	local function statLine(x, y, w, name)
+		local left = Instance.new("TextLabel")
+		left.Position = UDim2.new(0, x, 0, y)
+		left.Size = UDim2.new(0, w - 80, 0, 18)
+		left.BackgroundTransparency = 1
+		left.Font = Enum.Font.GothamMedium
+		left.TextSize = 12
+		left.TextXAlignment = Enum.TextXAlignment.Left
+		left.TextColor3 = UIKit.DIM
+		left.Text = name
+		left.Parent = panel
+		local value = Instance.new("TextLabel")
+		value.Position = UDim2.new(0, x + w - 96, 0, y)
+		value.Size = UDim2.new(0, 96, 0, 18)
+		value.BackgroundTransparency = 1
+		value.Font = Enum.Font.GothamBold
+		value.TextSize = 13
+		value.TextXAlignment = Enum.TextXAlignment.Right
+		value.TextColor3 = UIKit.TEXT
+		value.Text = "—"
+		value.Parent = panel
+		return value
+	end
+
+	-- Left column ------------------------------------------------------
+	local LX, LW = 16, 210
+	header(LX, 36, LW, "Population")
+	local housedValue = statLine(LX, 56, LW, "Housed")
+	local gateValue = statLine(LX, 76, LW, "At the gate")
+	local escapesValue = statLine(LX, 96, LW, "Escapes")
+	local riotsValue = statLine(LX, 116, LW, "Riots")
+
+	header(LX, 146, LW, "Finance")
+	local balanceValue = statLine(LX, 166, LW, "Balance")
+	local grantsValue = statLine(LX, 186, LW, "Grants")
+	local payrollValue = statLine(LX, 206, LW, "Payroll")
+
+	header(LX, 236, LW, "Security")
+	local unrestValue = statLine(LX, 256, LW, "Unrest")
+	local guardsValue = statLine(LX, 276, LW, "Guards")
+	local statusValue = statLine(LX, 296, LW, "Status")
+
+	-- Right column: the need bars --------------------------------------
+	local RX, RW = 252, 202
+	header(RX, 36, RW, "Prisoner needs (average)")
+	local needBars = {}
+	for i, need in ipairs(NEEDS) do
+		local y = 60 + (i - 1) * 50
+		local name = Instance.new("TextLabel")
+		name.Position = UDim2.new(0, RX, 0, y)
+		name.Size = UDim2.new(0, RW - 44, 0, 16)
+		name.BackgroundTransparency = 1
+		name.Font = Enum.Font.GothamMedium
+		name.TextSize = 12
+		name.TextXAlignment = Enum.TextXAlignment.Left
+		name.TextColor3 = UIKit.DIM
+		name.Text = need:sub(1, 1):upper() .. need:sub(2)
+		name.Parent = panel
+
+		local pct = Instance.new("TextLabel")
+		pct.Position = UDim2.new(0, RX + RW - 40, 0, y)
+		pct.Size = UDim2.new(0, 40, 0, 16)
+		pct.BackgroundTransparency = 1
+		pct.Font = Enum.Font.GothamBold
+		pct.TextSize = 12
+		pct.TextXAlignment = Enum.TextXAlignment.Right
+		pct.TextColor3 = UIKit.TEXT
+		pct.Text = "—"
+		pct.Parent = panel
+
+		local track = Instance.new("Frame")
+		track.Position = UDim2.new(0, RX, 0, y + 20)
+		track.Size = UDim2.new(0, RW, 0, 10)
+		track.BackgroundColor3 = UIKit.STRIP
+		track.BorderSizePixel = 0
+		UIKit.stroke(track, UIKit.EDGE_DIM, 1, 0)
+		track.Parent = panel
+
+		local fill = Instance.new("Frame")
+		fill.Size = UDim2.new(0, 0, 1, 0)
+		fill.BackgroundColor3 = UIKit.GOOD
+		fill.BorderSizePixel = 0
+		fill.Parent = track
+
+		needBars[need] = { fill = fill, pct = pct }
+	end
+
+	gui.Parent = playerGui
+
+	-- Refresh ----------------------------------------------------------
+	local function refresh()
+		if not panel.Visible then
+			return
+		end
+		local housed = player:GetAttribute("PrisonHoused") or 0
+		local capacity = player:GetAttribute("PrisonCapacity") or 0
+		housedValue.Text = ("%d / %d"):format(housed, capacity)
+		gateValue.Text = tostring(player:GetAttribute("PrisonWaiting") or 0)
+		escapesValue.Text = tostring(player:GetAttribute("PrisonEscapes") or 0)
+		riotsValue.Text = tostring(player:GetAttribute("PrisonRiots") or 0)
+
+		local unrest = player:GetAttribute("PrisonUnrest") or 0
+		balanceValue.Text = Format.money(cashValue.Value)
+		local perMin = housed * Config.GrantPerPrisoner * (60 / Config.GrantInterval) * (1 - unrest / 200)
+		grantsValue.Text = Format.money(perMin) .. "/min"
+		payrollValue.Text = ("%s / %ds"):format(
+			Format.money(player:GetAttribute("StaffWage") or 0), Config.WageInterval)
+
+		unrestValue.Text = unrest .. "%"
+		unrestValue.TextColor3 = unrest >= 60 and UIKit.BAD or (unrest >= 30 and UIKit.WARN or UIKit.TEXT)
+		guardsValue.Text = tostring(player:GetAttribute("Staff_Guard") or 0)
+		if player:GetAttribute("PrisonRiot") == true then
+			statusValue.Text = "RIOT!"
+			statusValue.TextColor3 = UIKit.BAD
+		elseif player:GetAttribute("PrisonLockdown") == true then
+			statusValue.Text = "Lockdown"
+			statusValue.TextColor3 = UIKit.WARN
+		else
+			statusValue.Text = "Calm"
+			statusValue.TextColor3 = UIKit.GOOD
+		end
+
+		for need, bar in pairs(needBars) do
+			local value = player:GetAttribute("NeedAvg_" .. need)
+			if type(value) ~= "number" then
+				value = 100
+			end
+			bar.pct.Text = value .. "%"
+			bar.fill.Size = UDim2.new(value / 100, 0, 1, 0)
+			bar.fill.BackgroundColor3 = value < 25 and UIKit.BAD or (value < 50 and UIKit.WARN or UIKit.GOOD)
+		end
+	end
+
+	for _, attr in ipairs({
+		"PrisonHoused", "PrisonCapacity", "PrisonWaiting", "PrisonEscapes", "PrisonRiots",
+		"PrisonUnrest", "PrisonLockdown", "PrisonRiot", "StaffWage", "Staff_Guard",
+		"NeedAvg_food", "NeedAvg_sleep", "NeedAvg_hygiene", "NeedAvg_recreation", "NeedAvg_safety",
+	}) do
+		player:GetAttributeChangedSignal(attr):Connect(refresh)
+	end
+	cashValue.Changed:Connect(refresh)
+	panel:GetPropertyChangedSignal("Visible"):Connect(function()
+		PAToolbar.setPressed("reports", panel.Visible)
+		refresh()
+	end)
+
+	PAToolbar.addTab({
+		id = "reports",
+		icon = "reports",
+		label = "Reports",
+		order = 13,
+		onClick = function()
+			UIKit.showOnly(panel)
+		end,
+	})
+end
+
+return ReportsPanel
+]]></string>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="37">
           <Properties>
             <string name="Name">StaffPanel</string>
             <string name="Source"><![CDATA[-- StaffPanel: PA's Staff tab, living in the toolbar like the original.
@@ -7868,7 +8357,7 @@ return StaffPanel
 ]]></string>
           </Properties>
         </Item>
-        <Item class="ModuleScript" referent="36">
+        <Item class="ModuleScript" referent="38">
           <Properties>
             <string name="Name">UIKit</string>
             <string name="Source"><![CDATA[-- UIKit: the shared Prison Architect look. One palette, a few builders,

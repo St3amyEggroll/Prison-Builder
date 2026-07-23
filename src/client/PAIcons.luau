@@ -136,6 +136,13 @@ function DRAW.bulldoze(c, col) -- demolish X
 	rect(c, col, 0.5, 0.5, 0.16, 0.9, -45)
 end
 
+function DRAW.reports(c, col) -- report page
+	outline(c, col, 0.5, 0.5, 0.54, 0.76, 2)
+	rect(c, col, 0.5, 0.32, 0.32, 0.07)
+	rect(c, col, 0.5, 0.48, 0.32, 0.07)
+	rect(c, col, 0.44, 0.64, 0.2, 0.07)
+end
+
 function DRAW.box(c, col) -- generic category crate
 	outline(c, col, 0.5, 0.5, 0.6, 0.55, 2)
 	rect(c, col, 0.5, 0.35, 0.6, 0.07)

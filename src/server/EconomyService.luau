@@ -97,7 +97,9 @@ function EconomyService.init()
 					-- Miserable prisons pay less: 100% unrest halves grants.
 					local unrest = player:GetAttribute("PrisonUnrest") or 0
 					local amount = math.floor(housed * Config.GrantPerPrisoner * (1 - unrest / 200))
-					if player:GetAttribute("PrisonLockdown") == true then
+					if player:GetAttribute("PrisonRiot") == true then
+						amount = 0 -- nobody pays grants mid-riot
+					elseif player:GetAttribute("PrisonLockdown") == true then
 						amount = math.floor(amount * 0.5) -- locked-down prisons earn half
 					end
 					EconomyService.credit(player, amount)

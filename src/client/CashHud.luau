@@ -231,7 +231,10 @@ function CashHud.start(opts)
 	end
 	local function refreshClockSub()
 		local day = player:GetAttribute("PrisonDay") or 1
-		if player:GetAttribute("PrisonLockdown") == true then
+		if player:GetAttribute("PrisonRiot") == true then
+			clockSub.Text = ("Day %d — RIOT!"):format(day)
+			clockSub.TextColor3 = UIKit.BAD
+		elseif player:GetAttribute("PrisonLockdown") == true then
 			clockSub.Text = ("Day %d — LOCKDOWN"):format(day)
 			clockSub.TextColor3 = UIKit.BAD
 		else
@@ -245,6 +248,7 @@ function CashHud.start(opts)
 	player:GetAttributeChangedSignal("PrisonDay"):Connect(refreshClockSub)
 	player:GetAttributeChangedSignal("RegimeActivity"):Connect(refreshClockSub)
 	player:GetAttributeChangedSignal("PrisonLockdown"):Connect(refreshClockSub)
+	player:GetAttributeChangedSignal("PrisonRiot"):Connect(refreshClockSub)
 	refreshStats()
 	refreshClockSub()
 

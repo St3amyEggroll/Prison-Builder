@@ -77,4 +77,4 @@ RoomService.onRoomsChanged(function(player)
 	IntakeService.poke(player)
 end)
 
-print("[Lockdown] Server ready — Phase 5: security, escapes, emergencies")
+print("[Lockdown] Server ready — Phase 6: riots, reports, day/night")

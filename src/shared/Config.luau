@@ -168,6 +168,19 @@ Config.GuardCatchGrace = 1.5 -- seconds of slack the guard is allowed
 Config.RollCallCooldown = 45 -- seconds between roll calls
 Config.LockdownCalm = 0.5 -- unrest drop per second while locked down
 
+-- Riots (Phase 6): unrest at the threshold boils over — a chunk of the
+-- population turns red and rampages until guards subdue them one by one
+-- (or a lockdown saps their will). Grants stop entirely during a riot,
+-- and when it ends, unrest settles back down to RiotUnrestAfter.
+Config.RiotThreshold = 80
+Config.RiotFraction = 0.34 -- share of the population that joins in
+Config.RiotTick = 4 -- seconds between riot updates
+Config.RioterSpeed = 5 -- studs/sec of angry rampage dashes
+Config.RiotSubdueTime = 2 -- seconds a guard wrestles before it's over
+Config.RiotGiveUpChance = 0.35 -- per tick, under lockdown
+Config.RiotCooldown = 120 -- calm seconds before another can start
+Config.RiotUnrestAfter = 40
+
 -- Foundations ------------------------------------------------------------
 
 -- The 🏗️ tool: drag a rectangle, walls go up around the edge with floor
